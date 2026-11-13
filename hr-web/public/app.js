@@ -8,23 +8,30 @@
  *      token, parse the events, render assistant text, and raise the tool-
  *      result cards documented in docs/hr/tools.md and the review cards
  *      documented in custom-app-plan/human-review.md.
- *   4. Gate `submit_leave_request` behind the employee confirmation card and
- *      `record_leave_decision` behind the manager review card. Typing
- *      "approve" in the chat does nothing: only the card's button posts the
- *      AG-UI `resume` list.
+ *   4. Render every card through A2UI v1.0 (``a2ui.js`` + ``hr-primitives.js``).
+ *      This file owns the sign-in, AG-UI streaming, and the "an A2UI action
+ *      is the only path to a resume" gate; the rendering is the catalog's.
+ *   5. Gate ``submit_leave_request`` behind the EmployeeConfirmForm primitive
+ *      and ``record_leave_decision`` behind the ManagerReviewCard primitive.
+ *      Typing "approve" in the chat does nothing: only the Button's A2UI
+ *      action posts the AG-UI `resume` list.
  *
  * Nothing in this file talks to AWS SDKs. The browser fetches openid-
  * configuration from the Cognito issuer URL and POSTs the AG-UI RunAgentInput
- * to the runtime directly, with the user's access token.
+ * to the runtime directly, with the user's access token. See hr-web/README.md
+ * § "A2UI design choice" for why AG-UI stays the transport and A2UI is only
+ * the payload shape the renderer consumes.
  */
 
 (() => {
   "use strict";
 
+  if (!window.A2UI || !window.HrCatalog || !window.HrToolAdapter) {
+    throw new Error("A2UI, HrCatalog and HrToolAdapter must load before app.js");
+  }
+
   /* ------------------------------------------------------------- constants */
 
-  // The redirect URI must match a callback URL registered on the Cognito
-  // web client. The Layer 3 README documents this requirement.
   const REDIRECT_URI = `${location.protocol}//${location.host}/`;
   const SCOPES = ["openid", "email", "profile"];
 
@@ -37,19 +44,30 @@
   const PROMPT_MAX = 4000;
   const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
+  const CONFIG_FIELDS = Object.freeze([
+    "runtime_arn",
+    "region",
+    "web_client_id",
+    "issuer_url",
+    "gateway_url",
+    "a2ui_protocol_version",
+  ]);
+
   /* --------------------------------------------------------------- state */
 
   const state = {
-    config: null,        // PublicConfig from /config.json
-    discovery: null,     // openid-configuration fetched once per sign-in
-    accessToken: null,   // kept in memory only
+    config: null,
+    discovery: null,
+    accessToken: null,
     idClaims: null,
     userLabel: "",
     threadId: null,
     runId: null,
     busy: false,
-    pendingInterrupt: null,  // the open review payload, or null
-    sseController: null,     // AbortController for the current stream
+    pendingInterrupt: null,
+    sseController: null,
+    processor: null,
+    outboundErrors: [],
   };
 
   /* ------------------------------------------------------------- helpers */
@@ -61,8 +79,6 @@
     if (text !== undefined) n.textContent = text;
     return n;
   };
-  const show = (id) => { $(id).hidden = false; };
-  const hide = (id) => { $(id).hidden = true; };
 
   function newId(prefix) {
     const c = window.crypto;
@@ -91,17 +107,21 @@
     const res = await fetch("/config.json", { cache: "no-store" });
     if (!res.ok) throw new Error(`config.json HTTP ${res.status}`);
     const data = await res.json();
-    for (const key of ["runtime_arn", "region", "web_client_id", "issuer_url", "gateway_url"]) {
+    for (const key of CONFIG_FIELDS) {
       if (typeof data[key] !== "string" || !data[key]) {
         throw new Error(`config.json is missing ${key}`);
       }
     }
     state.config = Object.freeze({ ...data });
+    if (state.config.a2ui_protocol_version !== window.A2UI.PROTOCOL_VERSION) {
+      throw new Error(
+        `Server pins A2UI ${state.config.a2ui_protocol_version} but this `
+        + `renderer speaks ${window.A2UI.PROTOCOL_VERSION}.`,
+      );
+    }
   }
 
   async function loadDiscovery() {
-    // OIDC discovery lets the browser find the Cognito hosted-UI auth and
-    // token endpoints without the server shipping the hosted-UI domain.
     const cached = sessionStorage.getItem(STORAGE_KEYS.discovery);
     if (cached) {
       try {
@@ -110,7 +130,7 @@
           state.discovery = obj;
           return;
         }
-      } catch { /* fall through and refetch */ }
+      } catch { /* refetch */ }
     }
     const url = `${state.config.issuer_url.replace(/\/$/, "")}/.well-known/openid-configuration`;
     const res = await fetch(url, { cache: "no-store" });
@@ -166,16 +186,12 @@
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
     });
-    if (!res.ok) {
-      throw new Error(`Token exchange failed (HTTP ${res.status}).`);
-    }
+    if (!res.ok) throw new Error(`Token exchange failed (HTTP ${res.status}).`);
     const tokens = await res.json();
     if (!tokens.access_token) throw new Error("Token exchange returned no access_token.");
     state.accessToken = tokens.access_token;
     state.idClaims = decodeClaims(tokens.id_token || tokens.access_token);
     state.userLabel = (state.idClaims && (state.idClaims.email || state.idClaims["cognito:username"])) || "Signed in";
-    // Fresh thread on every sign-in. Signing out and signing in as another
-    // person must not reveal the previous thread.
     state.threadId = newId("thread");
   }
 
@@ -198,7 +214,8 @@
     state.pendingInterrupt = null;
     sessionStorage.clear();
     if (state.sseController) state.sseController.abort();
-    renderCards({ reset: true });
+    if (state.processor) state.processor.clear();
+    state.outboundErrors = [];
     renderMessages({ reset: true });
     renderIdentity();
     updateControls();
@@ -213,15 +230,17 @@
       label.dataset.state = "signed-in";
       $("signInBtn").hidden = true;
       $("signOutBtn").hidden = false;
-      hide("authBanner");
+      $("authBanner").hidden = true;
     } else {
       label.textContent = "Not signed in";
       label.dataset.state = "unknown";
       $("signInBtn").hidden = false;
       $("signOutBtn").hidden = true;
-      show("authBanner");
+      $("authBanner").hidden = false;
     }
-    $("footerSession").textContent = state.threadId ? `session · ${state.threadId}` : "session · —";
+    $("footerSession").textContent = state.threadId
+      ? `session · ${state.threadId}`
+      : "session · —";
   }
 
   function updateControls() {
@@ -262,17 +281,9 @@
     if (reset) $("chatMessages").replaceChildren();
   }
 
-  function renderCards({ reset }) {
-    if (reset) {
-      for (const id of [
-        "leaveBalanceCard",
-        "allowanceCard",
-        "reportsCard",
-        "employeeConfirmCard",
-        "managerReviewCard",
-        "probationCard",
-      ]) hide(id);
-    }
+  function applyA2uiMessages(messages) {
+    if (!state.processor || !Array.isArray(messages) || messages.length === 0) return;
+    state.processor.processMessages(messages);
   }
 
   /* ------------------------------------------------------------- SSE */
@@ -299,7 +310,7 @@
       state: {},
       tools: [],
       context: [],
-      forwardedProps: {},
+      forwardedProps: rendererMetadata(),
     };
     try {
       await streamAgent(input);
@@ -318,10 +329,24 @@
     return msg;
   }
 
+  /**
+   * The A2UI renderer-side metadata the agent is entitled to see on its next
+   * turn: capabilities (which catalogs we draw, which protocol version we
+   * speak) and any renderer errors we have not yet shipped.
+   */
+  function rendererMetadata() {
+    const out = {
+      a2uiRendererCapabilities: state.processor
+        ? state.processor.getRendererCapabilities()
+        : null,
+    };
+    if (state.outboundErrors.length > 0) {
+      out.a2uiRendererErrors = state.outboundErrors.splice(0, state.outboundErrors.length);
+    }
+    return out;
+  }
+
   async function sendResume(resumePayload) {
-    // The AG-UI resume carries the decision. The runtime checks the token
-    // before applying Command(resume=...), so a forged resume for somebody
-    // else's thread is still NOT_REVIEWER.
     if (state.busy || !state.accessToken) return;
     state.busy = true;
     updateControls();
@@ -333,7 +358,7 @@
       state: {},
       tools: [],
       context: [],
-      forwardedProps: { resume: [resumePayload] },
+      forwardedProps: Object.assign({ resume: [resumePayload] }, rendererMetadata()),
     };
     try {
       await streamAgent(input);
@@ -367,7 +392,7 @@
     let read = 0;
     const assistantNode = appendMessage("assistant", "", "HR assistant");
     const body = assistantNode.querySelector(".hr-message-body");
-    const outstanding = new Map(); // toolCallId -> toolCallName
+    const outstanding = new Map();
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -388,324 +413,10 @@
         handleEvent(event, body, assistantNode, outstanding);
       }
     }
-    // Drop assistant placeholder when the model emitted no text and the
-    // stream carried only tool events or an interrupt.
     if (!body.textContent.trim()) {
       assistantNode.remove();
     }
   }
-
-  /* ------------------------------------------------- card rendering */
-
-  function renderLeaveBalance(result) {
-    const card = $("leaveBalanceCard");
-    const tag = $("leaveBalanceStatus");
-    if (!result || result.authorized !== true || !result.data) {
-      tag.textContent = reasonLabel(result);
-      tag.className = "hr-card-tag hr-card-tag--err";
-      $("leaveAnnual").textContent = "—";
-      $("leaveSick").textContent = "—";
-      $("leaveProbation").textContent = "—";
-      card.hidden = false;
-      return;
-    }
-    tag.textContent = "OK";
-    tag.className = "hr-card-tag hr-card-tag--ok";
-    const d = result.data;
-    $("leaveAnnual").textContent = formatDays(d.annual);
-    $("leaveSick").textContent = formatDays(d.sick);
-    $("leaveProbation").textContent = d.on_probation
-      ? `Until ${d.probation_end_date || "—"}`
-      : "Not on probation";
-    card.hidden = false;
-    if (d.on_probation) showProbation(d.probation_end_date);
-  }
-
-  function renderAllowance(result) {
-    const card = $("allowanceCard");
-    const tag = $("allowanceStatus");
-    if (!result || result.authorized !== true || !result.data) {
-      tag.textContent = reasonLabel(result);
-      tag.className = "hr-card-tag hr-card-tag--err";
-      $("allowanceItem").textContent = "—";
-      $("allowancePeriod").textContent = "—";
-      $("allowanceAmount").textContent = "—";
-      card.hidden = false;
-      return;
-    }
-    const d = result.data;
-    tag.textContent = d.amount == null ? "No entry" : "OK";
-    tag.className = d.amount == null
-      ? "hr-card-tag hr-card-tag--blocked"
-      : "hr-card-tag hr-card-tag--ok";
-    $("allowanceItem").textContent = String(d.item_type || "—");
-    $("allowancePeriod").textContent = String(d.period || "—");
-    $("allowanceAmount").textContent = d.amount == null
-      ? "No entry for this period"
-      : `${formatAmount(d.amount)} ${d.currency || ""}`.trim();
-    card.hidden = false;
-  }
-
-  function renderDirectReports(result) {
-    const card = $("reportsCard");
-    const tag = $("reportsStatus");
-    const list = $("reportsList");
-    const note = $("reportsNote");
-    list.replaceChildren();
-    note.hidden = true;
-    if (!result || result.authorized !== true || !result.data) {
-      tag.textContent = reasonLabel(result);
-      tag.className = "hr-card-tag hr-card-tag--err";
-      card.hidden = false;
-      return;
-    }
-    const reports = Array.isArray(result.data.reports) ? result.data.reports : [];
-    tag.textContent = `${reports.length} direct`;
-    tag.className = "hr-card-tag hr-card-tag--ok";
-    if (reports.length === 0) {
-      note.textContent = "No direct reports.";
-      note.hidden = false;
-    } else {
-      for (const r of reports) {
-        const li = document.createElement("li");
-        li.append(el("span", "mono", String(r.employee_id || "—")));
-        li.append(el("span", "", String(r.full_name || r.employee_id || "—")));
-        li.append(el("span", "hr-card-tag", "direct"));
-        list.append(li);
-      }
-    }
-    card.hidden = false;
-  }
-
-  function renderCompensation(result) {
-    // Salary isn't a dedicated card in this UI; the assistant text explains
-    // the number. A refusal still surfaces on the chat trace. P1 and
-    // skip-level attempts are therefore not advertised in a visible card.
-    if (!result) return;
-    if (result.authorized !== true) {
-      appendMessage("system",
-        "You are not allowed to see this salary.",
-        "Policy decision");
-    }
-  }
-
-  function renderLeaveEligibility(result) {
-    // check_leave_eligibility is a pre-flight. PROBATION_PERIOD surfaces as
-    // the probation notice; the leave form is never shown in that branch.
-    if (!result) return;
-    if (result.authorized === false && result.reason_code === "PROBATION_PERIOD") {
-      showProbation();
-    }
-  }
-
-  function renderSubmitLeaveRequest(result) {
-    if (!result || result.authorized !== true || !result.data) return;
-    hide("employeeConfirmCard");
-    appendMessage("system",
-      `Request ${result.data.request_id || ""} is pending your manager's review.`,
-      "Leave submitted");
-  }
-
-  function renderRecordLeaveDecision(result) {
-    // The manager clicked Approve or Reject on the review card. The runtime
-    // called hr-ops___record_leave_decision; OPA gates on
-    // requester_manager_id == caller, and Cedar bound this tool to the
-    // review-node agent_id. Reflect the outcome back on the card.
-    if (!result) return;
-    hide("managerReviewCard");
-    state.pendingInterrupt = null;
-    if (result.authorized === true && result.data) {
-      appendMessage("system",
-        `Request ${result.data.request_id || ""} is now ${result.data.status || "updated"}.`,
-        "Decision recorded");
-    } else if (result.reason_code === "NOT_REVIEWER") {
-      // The employee tried to approve their own request; OPA said
-      // NOT_REVIEWER and the pending row is unchanged.
-      appendMessage("system",
-        "You are not the reviewer for that request. The row stays pending.",
-        "Policy decision");
-    } else {
-      appendMessage("system", reasonLabel(result), "Policy decision");
-    }
-  }
-
-  function showProbation(endDate) {
-    const card = $("probationCard");
-    const text = $("probationText");
-    text.textContent = endDate
-      ? `Leave can be booked after ${endDate}. Every leave type is blocked while probation is still active, on eligibility and on submit.`
-      : "Every leave type is blocked while probation is still active, on eligibility and on submit.";
-    card.hidden = false;
-    hide("employeeConfirmCard");
-  }
-
-  function reasonLabel(result) {
-    if (!result) return "—";
-    const code = result.reason_code;
-    if (!code) return "—";
-    if (code === "NOT_AUTHORIZED") return "Not allowed";
-    if (code === "SERVICE_DISABLED") return "HR is paused";
-    if (code === "PROBATION_PERIOD") return "On probation";
-    if (code === "INSUFFICIENT_BALANCE") return "Over balance";
-    if (code === "INVALID_RANGE") return "Invalid range";
-    if (code === "OVERLAP") return "Overlap";
-    if (code === "IDEMPOTENCY_CONFLICT") return "Key conflict";
-    if (code === "NOT_REVIEWER") return "Not reviewer";
-    if (code === "NOT_MAPPED") return "Unmapped caller";
-    return code.replace(/_/g, " ").toLowerCase();
-  }
-
-  function formatDays(value) {
-    if (typeof value !== "number") return "—";
-    return `${value} day${value === 1 ? "" : "s"}`;
-  }
-  function formatAmount(value) {
-    if (typeof value === "number") return value.toFixed(2);
-    return String(value);
-  }
-
-  function derivedDays(start, end) {
-    if (!start || !end) return "—";
-    const a = Date.parse(`${start}T00:00:00Z`);
-    const b = Date.parse(`${end}T00:00:00Z`);
-    if (Number.isNaN(a) || Number.isNaN(b) || b < a) return "—";
-    return String(Math.round((b - a) / 86_400_000) + 1);
-  }
-
-  function validateDateRange(start, end) {
-    // Form-side defence: an end date before the start date is rejected
-    // without a round-trip. The gateway Lambda still re-evaluates OPA for a
-    // forged submit from the dev console, which is the other half of the
-    // probation and range checks.
-    if (!start || !end) return "Start and end dates are required.";
-    const a = Date.parse(`${start}T00:00:00Z`);
-    const b = Date.parse(`${end}T00:00:00Z`);
-    if (Number.isNaN(a) || Number.isNaN(b)) return "Dates must be ISO calendar dates.";
-    if (b < a) return "End date must be on or after the start date.";
-    return null;
-  }
-
-  /* --------------------------------------------- employee confirm card */
-
-  function showEmployeeConfirm(payload) {
-    const proposed = payload.arguments || payload.proposed || payload;
-    $("ecLeaveType").textContent = String(proposed.leave_type || "—");
-    $("ecStart").textContent = String(proposed.start_date || "—");
-    $("ecEnd").textContent = String(proposed.end_date || "—");
-    $("ecDays").textContent = proposed.days != null
-      ? String(proposed.days)
-      : derivedDays(proposed.start_date, proposed.end_date);
-    $("ecReason").textContent = proposed.reason || "—";
-    $("ecError").hidden = true;
-    show("employeeConfirmCard");
-  }
-
-  async function confirmLeave() {
-    const interrupt = state.pendingInterrupt;
-    if (!interrupt || interrupt.kind !== "employee_confirm") return;
-    const proposed = interrupt.arguments || interrupt.proposed || interrupt;
-    const err = validateDateRange(proposed.start_date, proposed.end_date);
-    if (err) {
-      const errNode = $("ecError");
-      errNode.textContent = err;
-      errNode.hidden = false;
-      return;
-    }
-    $("ecError").hidden = true;
-    state.pendingInterrupt = null;
-    hide("employeeConfirmCard");
-    // The Confirm button is the ONLY path that calls submit_leave_request.
-    // A chat message that says "approve" never reaches this code.
-    await sendResume({
-      decision: "approve",
-      kind: "employee_confirm",
-      arguments: proposed,
-    });
-  }
-
-  async function rejectLeave() {
-    if (!state.pendingInterrupt || state.pendingInterrupt.kind !== "employee_confirm") return;
-    state.pendingInterrupt = null;
-    hide("employeeConfirmCard");
-    appendMessage("system", "You declined to submit this request.", "No request");
-    await sendResume({ decision: "reject", kind: "employee_confirm" });
-  }
-
-  async function editLeave() {
-    if (!state.pendingInterrupt || state.pendingInterrupt.kind !== "employee_confirm") return;
-    const proposed = state.pendingInterrupt.arguments || state.pendingInterrupt.proposed || state.pendingInterrupt;
-    const nextStart = prompt("New start date (YYYY-MM-DD)", proposed.start_date || "");
-    if (nextStart == null) return;
-    const nextEnd = prompt("New end date (YYYY-MM-DD)", proposed.end_date || "");
-    if (nextEnd == null) return;
-    const err = validateDateRange(nextStart, nextEnd);
-    if (err) {
-      const errNode = $("ecError");
-      errNode.textContent = err;
-      errNode.hidden = false;
-      return;
-    }
-    const edited = { ...proposed, start_date: nextStart, end_date: nextEnd };
-    state.pendingInterrupt = null;
-    hide("employeeConfirmCard");
-    await sendResume({
-      decision: "edit",
-      kind: "employee_confirm",
-      arguments: edited,
-    });
-  }
-
-  /* --------------------------------------------- manager review card */
-
-  function showManagerReview(payload) {
-    $("mrRequestId").textContent = String(payload.request_id || "—");
-    $("mrEmployee").textContent = String(payload.employee_id || "—");
-    $("mrLeaveType").textContent = String(payload.leave_type || "—");
-    $("mrStart").textContent = String(payload.start_date || "—");
-    $("mrEnd").textContent = String(payload.end_date || "—");
-    $("mrDays").textContent = payload.days != null
-      ? String(payload.days)
-      : derivedDays(payload.start_date, payload.end_date);
-    // The leave reason is drawn as plain text and never put into a model
-    // message. See custom-app-plan/human-review.md and the R-04 red-team.
-    $("mrReason").textContent = payload.reason != null ? String(payload.reason) : "";
-    $("mrError").hidden = true;
-    show("managerReviewCard");
-  }
-
-  async function approveReview() {
-    const interrupt = state.pendingInterrupt;
-    if (!interrupt || interrupt.kind !== "manager_review") return;
-    // NOTE: a chat message that says "approve" never gets here. Only this
-    // click sends the decision. The runtime still checks the reviewer's
-    // token against reviewer_employee_id before applying Command(resume=).
-    await sendResume({
-      decision: "approve",
-      kind: "manager_review",
-      request_id: interrupt.request_id,
-    });
-  }
-
-  async function rejectReview() {
-    const interrupt = state.pendingInterrupt;
-    if (!interrupt || interrupt.kind !== "manager_review") return;
-    await sendResume({
-      decision: "reject",
-      kind: "manager_review",
-      request_id: interrupt.request_id,
-    });
-  }
-
-  /* ----------------------------------------------- event dispatch */
-  const toolResultRenderers = {
-    get_leave_balance: renderLeaveBalance,
-    get_allowance: renderAllowance,
-    list_direct_reports: renderDirectReports,
-    get_employee_compensation: renderCompensation,
-    check_leave_eligibility: renderLeaveEligibility,
-    submit_leave_request: renderSubmitLeaveRequest,
-    record_leave_decision: renderRecordLeaveDecision,
-  };
 
   function handleEvent(event, body, assistantNode, outstanding) {
     if (!event || typeof event !== "object") return;
@@ -728,8 +439,8 @@
         const name = outstanding.get(id) || "tool";
         outstanding.delete(id);
         const result = parseToolResult(event.content);
-        const renderer = toolResultRenderers[name];
-        if (renderer) renderer(result, assistantNode);
+        const a2uiMessages = window.HrToolAdapter.fromToolResult(name, result);
+        applyA2uiMessages(a2uiMessages);
         const traceKind = result && result.authorized === false ? "deny"
           : result && result.authorized === true ? "allow" : "info";
         const tag = result && result.reason_code ? ` · ${result.reason_code}` : "";
@@ -739,7 +450,7 @@
       case "TOOL_CALL_END": break;
       case "RUN_STARTED": break;
       case "RUN_FINISHED": {
-        handleRunFinished(event, assistantNode);
+        handleRunFinished(event);
         break;
       }
       case "RUN_ERROR": {
@@ -759,30 +470,160 @@
     catch { return null; }
   }
 
-  function handleRunFinished(event, _node) {
-    // @ag-ui/langgraph emits RUN_FINISHED with outcome.type === "interrupt"
-    // when emitInterruptOutcome is true. The outcome's value is the JSON
-    // payload the runtime's interrupt() call passed, which carries kind,
-    // request_id, employee_id, reviewer_employee_id, and so on
-    // (custom-app-plan/human-review.md). The manager-review branch wires
-    // onto the same hook in the next commit.
+  function handleRunFinished(event) {
     const outcome = event && event.outcome;
     if (!outcome || outcome.type !== "interrupt") return;
     const payload = outcome.value || outcome.payload || outcome.data;
     if (!payload || typeof payload !== "object") return;
     state.pendingInterrupt = payload;
-    if (payload.kind === "employee_confirm") {
-      showEmployeeConfirm(payload);
-    } else if (payload.kind === "manager_review") {
-      showManagerReview(payload);
-    } else {
+    const messages = window.HrToolAdapter.fromInterrupt(payload);
+    if (messages.length === 0) {
       appendMessage("system",
         `Review pause received for ${String(payload.kind || "unknown")}. Use the card to decide.`,
         "Interrupt");
+      return;
     }
+    applyA2uiMessages(messages);
+  }
+
+  /* ------------------------------------------------- A2UI action router */
+
+  /**
+   * The ONLY path by which a decision leaves the browser. A free-text chat
+   * message that says "approve" does not get here: it goes through
+   * ``sendMessage`` to the agent as plain user text, which is governed by
+   * OPA, Cedar, and the gateway Lambda — none of which trust the chat.
+   */
+  function handleRendererMessage(message) {
+    if (!message || typeof message !== "object") return;
+    if (message.error) {
+      state.outboundErrors.push(message);
+      return;
+    }
+    if (!message.action) return;
+    const action = message.action;
+    const name = action.name;
+    const ctx = action.context || {};
+    if (name === "employee_confirm_leave") {
+      onEmployeeConfirm(ctx);
+      return;
+    }
+    if (name === "employee_reject_leave") {
+      onEmployeeReject(ctx);
+      return;
+    }
+    if (name === "employee_edit_leave") {
+      onEmployeeEdit(ctx);
+      return;
+    }
+    if (name === "manager_approve_review") {
+      onManagerApprove(ctx);
+      return;
+    }
+    if (name === "manager_reject_review") {
+      onManagerReject(ctx);
+      return;
+    }
+    // Unknown action is noise — the router ignores it. The A2UI catalog
+    // only declares the five action names above, so a renderer message with
+    // a different name is an agent-side bug.
+  }
+
+  function validateDateRange(start, end) {
+    if (!start || !end) return "Start and end dates are required.";
+    const a = Date.parse(`${start}T00:00:00Z`);
+    const b = Date.parse(`${end}T00:00:00Z`);
+    if (Number.isNaN(a) || Number.isNaN(b)) return "Dates must be ISO calendar dates.";
+    if (b < a) return "End date must be on or after the start date.";
+    return null;
+  }
+
+  async function onEmployeeConfirm(ctx) {
+    const interrupt = state.pendingInterrupt;
+    if (!interrupt || interrupt.kind !== "employee_confirm") return;
+    const proposed = interrupt.arguments || interrupt.proposed || interrupt;
+    const merged = {
+      ...proposed,
+      start_date: ctx.start_date || proposed.start_date,
+      end_date: ctx.end_date || proposed.end_date,
+      leave_type: ctx.leave_type || proposed.leave_type,
+      reason: ctx.reason != null ? ctx.reason : proposed.reason,
+    };
+    const err = validateDateRange(merged.start_date, merged.end_date);
+    if (err) {
+      appendMessage("error", err, "Invalid range");
+      return;
+    }
+    state.pendingInterrupt = null;
+    applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("employee_confirm"));
+    await sendResume({
+      decision: "approve",
+      kind: "employee_confirm",
+      arguments: merged,
+    });
+  }
+
+  async function onEmployeeReject(_ctx) {
+    if (!state.pendingInterrupt || state.pendingInterrupt.kind !== "employee_confirm") return;
+    state.pendingInterrupt = null;
+    applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("employee_confirm"));
+    appendMessage("system", "You declined to submit this request.", "No request");
+    await sendResume({ decision: "reject", kind: "employee_confirm" });
+  }
+
+  async function onEmployeeEdit(ctx) {
+    if (!state.pendingInterrupt || state.pendingInterrupt.kind !== "employee_confirm") return;
+    const proposed = state.pendingInterrupt.arguments || state.pendingInterrupt.proposed || state.pendingInterrupt;
+    const nextStart = prompt("New start date (YYYY-MM-DD)", ctx.start_date || proposed.start_date || "");
+    if (nextStart == null) return;
+    const nextEnd = prompt("New end date (YYYY-MM-DD)", ctx.end_date || proposed.end_date || "");
+    if (nextEnd == null) return;
+    const err = validateDateRange(nextStart, nextEnd);
+    if (err) {
+      appendMessage("error", err, "Invalid range");
+      return;
+    }
+    const edited = {
+      ...proposed,
+      start_date: nextStart,
+      end_date: nextEnd,
+    };
+    state.pendingInterrupt = null;
+    applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("employee_confirm"));
+    await sendResume({ decision: "edit", kind: "employee_confirm", arguments: edited });
+  }
+
+  async function onManagerApprove(ctx) {
+    const interrupt = state.pendingInterrupt;
+    if (!interrupt || interrupt.kind !== "manager_review") return;
+    const requestId = ctx.request_id || interrupt.request_id;
+    // The runtime still checks the reviewer's token against
+    // reviewer_employee_id before applying Command(resume=...). A forged
+    // resume from the dev console still fails OPA with NOT_REVIEWER.
+    await sendResume({ decision: "approve", kind: "manager_review", request_id: requestId });
+  }
+
+  async function onManagerReject(ctx) {
+    const interrupt = state.pendingInterrupt;
+    if (!interrupt || interrupt.kind !== "manager_review") return;
+    const requestId = ctx.request_id || interrupt.request_id;
+    await sendResume({ decision: "reject", kind: "manager_review", request_id: requestId });
   }
 
   /* ------------------------------------------------------------- init */
+
+  async function loadCatalog() {
+    const res = await fetch("hr-catalog.json", { cache: "no-store" });
+    if (!res.ok) throw new Error(`hr-catalog.json HTTP ${res.status}`);
+    const document = await res.json();
+    if (document.protocolVersion && document.protocolVersion !== window.A2UI.PROTOCOL_VERSION) {
+      throw new Error(
+        `hr-catalog.json pins A2UI ${document.protocolVersion} but this `
+        + `renderer speaks ${window.A2UI.PROTOCOL_VERSION}.`,
+      );
+    }
+    return window.HrCatalog.build(document);
+  }
 
   async function start() {
     try {
@@ -791,6 +632,19 @@
       appendMessage("error", `hr-web could not load /config.json: ${err.message}`, "Setup error");
       return;
     }
+    let catalog;
+    try {
+      catalog = await loadCatalog();
+    } catch (err) {
+      appendMessage("error", `hr-web could not load hr-catalog.json: ${err.message}`, "Setup error");
+      return;
+    }
+    state.processor = new window.A2UI.MessageProcessor({
+      catalog,
+      root: $("hrSurfaces"),
+      protocolVersion: state.config.a2ui_protocol_version,
+      onRendererMessage: handleRendererMessage,
+    });
     const params = new URLSearchParams(location.search);
     const code = params.get("code");
     const returnedState = params.get("state");
@@ -833,22 +687,14 @@
     }
   });
 
-  $("ecConfirm").addEventListener("click", confirmLeave);
-  $("ecReject").addEventListener("click", rejectLeave);
-  $("ecEdit").addEventListener("click", editLeave);
-  $("mrApprove").addEventListener("click", approveReview);
-  $("mrReject").addEventListener("click", rejectReview);
-
-  // Exported shape for the cards commit and for tests that may load this
-  // module. Everything here is pure wiring; secrets are never put on this
-  // namespace.
   window.HrWeb = Object.freeze({
     state,
-    toolResultRenderers,
     sendMessage,
     sendResume,
+    handleRendererMessage,
     validateDateRange,
-    reasonLabel,
+    reasonLabel: window.HrToolAdapter.reasonLabel,
+    PROMPT_MAX,
   });
 
   start();

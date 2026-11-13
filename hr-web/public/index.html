@@ -28,12 +28,13 @@
 
 <div class="hr-body">
 
-  <!-- Chat column -->
   <main class="hr-chat" aria-label="Chat with the HR assistant">
     <div class="hr-banner" id="authBanner" role="status">
       Sign in with your corporate account to talk to the HR assistant. The
       conversation uses the AG-UI SSE stream from the module&nbsp;6 runtime;
-      this page never calls AWS directly from a server.
+      this page never calls AWS directly from a server. Every card on the right
+      is rendered through the A2UI v1.0 protocol
+      (<a href="https://a2ui.org/specification/v1_0/" rel="noopener">specification</a>).
     </div>
 
     <div class="hr-messages" id="chatMessages" aria-live="polite" aria-label="Conversation"></div>
@@ -55,125 +56,38 @@
     </form>
   </main>
 
-  <!-- Side column: cards -->
-  <aside class="hr-side" aria-label="Review and summary cards">
-    <section class="hr-card" id="leaveBalanceCard" hidden>
-      <header class="hr-card-head">
-        <h2>Leave balance</h2>
-        <span class="hr-card-tag" id="leaveBalanceStatus">—</span>
-      </header>
-      <dl class="hr-kv">
-        <div><dt>Annual</dt><dd class="num" id="leaveAnnual">—</dd></div>
-        <div><dt>Sick</dt><dd class="num" id="leaveSick">—</dd></div>
-        <div><dt>Probation</dt><dd id="leaveProbation">—</dd></div>
-      </dl>
-    </section>
+  <!-- A2UI surfaces mount point. The processor owns every child of this
+       node. Each tool result, interrupt, or renderer message becomes one
+       A2UI v1.0 message that createSurface/updateComponents/deleteSurface
+       applies here. The hard-coded cards from the first Layer 3 commit have
+       been replaced with the EmployeeConfirmForm, ManagerReviewCard,
+       ProbationNotice, LeaveBalanceCard, AllowanceCard, DirectReportsTable,
+       and Notice primitives declared in hr-catalog.json. See
+       ui-primitives.md. -->
+  <aside id="hrSurfaces"
+         class="hr-side"
+         aria-label="A2UI surfaces: review cards and summaries"></aside>
 
-    <section class="hr-card" id="allowanceCard" hidden>
-      <header class="hr-card-head">
-        <h2>Allowance</h2>
-        <span class="hr-card-tag" id="allowanceStatus">—</span>
-      </header>
-      <dl class="hr-kv">
-        <div><dt>Item</dt><dd id="allowanceItem">—</dd></div>
-        <div><dt>Period</dt><dd id="allowancePeriod">—</dd></div>
-        <div><dt>Amount</dt><dd class="num" id="allowanceAmount">—</dd></div>
-      </dl>
-    </section>
-
-    <section class="hr-card" id="reportsCard" hidden>
-      <header class="hr-card-head">
-        <h2>Direct reports</h2>
-        <span class="hr-card-tag" id="reportsStatus">—</span>
-      </header>
-      <ul class="hr-reports" id="reportsList"></ul>
-      <p class="hr-note" id="reportsNote" hidden></p>
-    </section>
-
-    <!-- Employee confirmation card: kind=employee_confirm from the runtime.
-         Confirm is the ONLY way this calls submit_leave_request. -->
-    <section class="hr-card hr-card--review" id="employeeConfirmCard" hidden>
-      <header class="hr-card-head">
-        <h2>Confirm leave request</h2>
-        <span class="hr-card-tag hr-card-tag--pending">Awaiting your confirmation</span>
-      </header>
-      <dl class="hr-kv">
-        <div><dt>Leave type</dt><dd id="ecLeaveType">—</dd></div>
-        <div><dt>Start</dt><dd id="ecStart">—</dd></div>
-        <div><dt>End</dt><dd id="ecEnd">—</dd></div>
-        <div><dt>Days</dt><dd class="num" id="ecDays">—</dd></div>
-        <div><dt>Reason</dt><dd id="ecReason">—</dd></div>
-      </dl>
-      <p class="hr-note">Confirming here submits one pending request. Your
-         balance is not reduced until your manager approves. Typing
-         &ldquo;approve&rdquo; in the chat does nothing.</p>
-      <div class="hr-actions">
-        <button class="hr-button hr-button--ghost" id="ecReject" type="button">Reject</button>
-        <button class="hr-button hr-button--outline" id="ecEdit" type="button">Edit</button>
-        <button class="hr-button" id="ecConfirm" type="button">Confirm</button>
-      </div>
-      <p class="hr-error" id="ecError" hidden></p>
-    </section>
-
-    <!-- Manager review card: kind=manager_review from the runtime.
-         Only the Approve / Reject button click sends a decision. -->
-    <section class="hr-card hr-card--review" id="managerReviewCard" hidden>
-      <header class="hr-card-head">
-        <h2>Pending review</h2>
-        <span class="hr-card-tag hr-card-tag--pending">Awaiting your decision</span>
-      </header>
-      <dl class="hr-kv">
-        <div><dt>Request</dt><dd class="mono" id="mrRequestId">—</dd></div>
-        <div><dt>Employee</dt><dd id="mrEmployee">—</dd></div>
-        <div><dt>Leave type</dt><dd id="mrLeaveType">—</dd></div>
-        <div><dt>Start</dt><dd id="mrStart">—</dd></div>
-        <div><dt>End</dt><dd id="mrEnd">—</dd></div>
-        <div><dt>Days</dt><dd class="num" id="mrDays">—</dd></div>
-      </dl>
-      <div class="hr-reason">
-        <span class="hr-reason-label">Reason (shown as plain text; no model reads it)</span>
-        <pre class="hr-reason-body" id="mrReason"></pre>
-      </div>
-      <div class="hr-actions">
-        <button class="hr-button hr-button--ghost" id="mrReject" type="button">Reject</button>
-        <button class="hr-button" id="mrApprove" type="button">Approve</button>
-      </div>
-      <p class="hr-error" id="mrError" hidden></p>
-    </section>
-
-    <!-- Probation explanation. Shown when check_leave_eligibility returns
-         PROBATION_PERIOD. The form is never shown in that branch, and a
-         forged submit from the dev console still fails because the gateway
-         Lambda re-evaluates OPA. -->
-    <section class="hr-card hr-card--notice" id="probationCard" hidden>
-      <header class="hr-card-head">
-        <h2>On probation</h2>
-        <span class="hr-card-tag hr-card-tag--blocked">Leave blocked</span>
-      </header>
-      <p id="probationText">
-        Leave can be booked after your probation ends. Every leave type is
-        blocked while probation is still active, on eligibility and on
-        submit.
-      </p>
-    </section>
-
-  </aside>
 </div>
 
 <footer class="hr-footer">
   <span class="mono" id="footerSession">session · —</span>
   <span class="hr-footer-hint">
     Loopback-only · identity comes from Cognito with PKCE · the browser
-    streams AG-UI events directly from the runtime.
+    streams AG-UI events directly from the runtime · cards render through
+    A2UI v1.0.
   </span>
 </footer>
 
 </div>
 
-<template id="toolTraceTemplate">
-  <li class="hr-trace-item"><span class="hr-trace-dot" aria-hidden="true"></span><span class="hr-trace-label"></span></li>
-</template>
-
+<!-- Load order: the A2UI MessageProcessor and the HR catalog (components +
+     functions) must both be ready before the tool adapter, and the tool
+     adapter before app.js, which boots everything. No CDN; every module is
+     local, matching the loopback-only invariant from server.py. -->
+<script src="a2ui.js" defer></script>
+<script src="hr-primitives.js" defer></script>
+<script src="hr-tool-adapter.js" defer></script>
 <script src="app.js" defer></script>
 </body>
 </html>

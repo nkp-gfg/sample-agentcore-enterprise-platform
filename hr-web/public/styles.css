@@ -344,6 +344,118 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
   margin-top: 10px;
 }
 
+/* ----------------------------------------------------------------- A2UI */
+/*
+ * Shape of the surface mount point. The MessageProcessor appends one
+ * ``section.a2ui-surface`` per createSurface, replaces it on
+ * updateComponents, and removes it on deleteSurface. Every HR card inside a
+ * surface is already styled by the .hr-card rules above; these rules
+ * position surfaces and style the layout primitives (Column, Row, Heading,
+ * Text, Notice).
+ */
+.a2ui-surface {
+  display: block;
+}
+.a2ui-surface:not(:last-child) { margin-bottom: 12px; }
+.a2ui-unknown {
+  padding: 8px 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--ink-3);
+  background: var(--surface-2);
+  font-size: 12px;
+}
+.a2ui-unknown::before {
+  content: "Unknown component: " attr(data-component);
+}
+
+.a2ui-column {
+  display: flex;
+  flex-direction: column;
+}
+.a2ui-column[data-gap="none"] { gap: 0; }
+.a2ui-column[data-gap="sm"] { gap: 6px; }
+.a2ui-column[data-gap="md"] { gap: 10px; }
+.a2ui-column[data-gap="lg"] { gap: 16px; }
+.a2ui-column[data-align="start"] { align-items: flex-start; }
+.a2ui-column[data-align="center"] { align-items: center; }
+.a2ui-column[data-align="stretch"] { align-items: stretch; }
+
+.a2ui-row {
+  display: flex;
+  flex-direction: row;
+}
+.a2ui-row[data-gap="none"] { gap: 0; }
+.a2ui-row[data-gap="sm"] { gap: 6px; }
+.a2ui-row[data-gap="md"] { gap: 10px; }
+.a2ui-row[data-gap="lg"] { gap: 16px; }
+.a2ui-row[data-align="start"] { align-items: flex-start; }
+.a2ui-row[data-align="center"] { align-items: center; }
+.a2ui-row[data-align="end"] { align-items: flex-end; }
+.a2ui-row[data-align="baseline"] { align-items: baseline; }
+.a2ui-row[data-justify="start"] { justify-content: flex-start; }
+.a2ui-row[data-justify="center"] { justify-content: center; }
+.a2ui-row[data-justify="end"] { justify-content: flex-end; }
+.a2ui-row[data-justify="between"] { justify-content: space-between; }
+
+.a2ui-heading {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.a2ui-heading-text { flex: 1; }
+
+.a2ui-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.a2ui-text--muted { color: var(--ink-3); font-size: 12.5px; }
+.a2ui-text--error { color: var(--err); }
+.a2ui-text--warning { color: var(--warn); }
+.a2ui-text--mono { font-family: var(--mono); font-size: 12.5px; }
+
+.hr-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.hr-notice--info {
+  background: var(--info-soft);
+  border-color: #c7dbfb;
+  color: var(--info);
+}
+.hr-notice--ok {
+  background: var(--ok-soft);
+  border-color: transparent;
+  color: var(--ok);
+}
+.hr-notice--warn {
+  background: var(--warn-soft);
+  border-color: #f6d78b;
+  color: var(--warn);
+}
+.hr-notice--err {
+  background: var(--err-soft);
+  border-color: #f2b4b4;
+  color: var(--err);
+}
+.hr-notice-title {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
 /* ----------------------------------------------------------------- buttons */
 .hr-button {
   height: 34px;
