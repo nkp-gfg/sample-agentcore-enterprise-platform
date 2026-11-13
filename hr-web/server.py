@@ -61,12 +61,19 @@ PUBLIC_CONFIG_FIELDS = frozenset(
         "web_client_id",
         "issuer_url",
         "gateway_url",
+        "a2ui_protocol_version",
     }
 )
 
 RUNTIME_ARN_RE = re.compile(
     r"^arn:aws:bedrock-agentcore:([a-z]{2}(?:-[a-z]+)+-\d):\d{12}:runtime/.+$"
 )
+
+# The A2UI wire protocol version this UI speaks. Pinned so a mismatched
+# catalog or renderer is a visible, reviewable change — not a silent upgrade.
+# Not an SSM value: it is a compile-time constant that the browser uses to
+# refuse messages whose ``version`` field disagrees.
+A2UI_PROTOCOL_VERSION = "1.0"
 
 
 class ConfigError(RuntimeError):
@@ -96,6 +103,7 @@ class PublicConfig:
     web_client_id: str
     issuer_url: str
     gateway_url: str
+    a2ui_protocol_version: str
 
     def as_public_dict(self) -> dict[str, str]:
         """Serialize only the whitelisted fields, in a stable order."""
@@ -194,6 +202,7 @@ def load_config(
         web_client_id=values["auth/web-client-id"],
         issuer_url=values["auth/issuer-url"],
         gateway_url=values["gateway/url"],
+        a2ui_protocol_version=A2UI_PROTOCOL_VERSION,
     )
 
 

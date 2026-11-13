@@ -6,10 +6,10 @@ Three guarantees this file pins:
    authority, even though the socket is already bound to ``127.0.0.1``.
 2. The server exposes no create / update / delete routes: every write verb
    on every path answers ``4xx``, and the response is a safe JSON envelope.
-3. ``GET /config.json`` returns exactly the five non-secret fields built
-   from the four whitelisted SSM parameters. A secret value sitting at an
-   unrelated SSM path, or an extra field in the SSM-sourced payload, is
-   never written to the browser.
+3. ``GET /config.json`` returns exactly the six non-secret fields built
+   from the four whitelisted SSM parameters plus the pinned A2UI protocol
+   version. A secret value sitting at an unrelated SSM path, or an extra
+   field in the SSM-sourced payload, is never written to the browser.
 
 SSM is mocked. The server reads nothing from AWS.
 """
@@ -49,6 +49,7 @@ def _public_config() -> server.PublicConfig:
         web_client_id=VALID_WEB_CLIENT_ID,
         issuer_url=VALID_ISSUER,
         gateway_url=VALID_GATEWAY,
+        a2ui_protocol_version=server.A2UI_PROTOCOL_VERSION,
     )
 
 
@@ -202,12 +203,18 @@ def test_config_endpoint_returns_only_whitelisted_fields(running_server):
         "web_client_id",
         "issuer_url",
         "gateway_url",
+        "a2ui_protocol_version",
     }
     assert payload["runtime_arn"] == VALID_RUNTIME_ARN
     assert payload["region"] == "eu-west-1"
     assert payload["issuer_url"] == VALID_ISSUER
     assert payload["gateway_url"] == VALID_GATEWAY
     assert payload["web_client_id"] == VALID_WEB_CLIENT_ID
+    # The A2UI protocol version is a pinned compile-time constant, not an SSM
+    # value. The browser refuses any inbound message whose ``version`` field
+    # disagrees, which is how a stale catalog in the agent surfaces as a
+    # single failed render instead of a silent shape mismatch.
+    assert payload["a2ui_protocol_version"] == server.A2UI_PROTOCOL_VERSION
     # Every value is a URL or a public identifier. None of them look like
     # an access key, a password, or a client secret.
     serialized = json.dumps(payload)
@@ -252,6 +259,11 @@ def test_config_endpoint_never_leaks_an_unrelated_ssm_secret():
     # Even if someone later adds a free-form field to PublicConfig, the
     # browser can only ever receive the PUBLIC_CONFIG_FIELDS names.
     assert set(config.as_public_dict()) == server.PUBLIC_CONFIG_FIELDS
+    # Including the pinned A2UI version, which is a compile-time constant,
+    # not something that could have been coerced to a secret by the reader.
+    assert (
+        config.as_public_dict()["a2ui_protocol_version"] == server.A2UI_PROTOCOL_VERSION
+    )
     serialized = json.dumps(config.as_public_dict())
     assert SECRET_CANARY not in serialized
 
@@ -300,3 +312,19 @@ def test_public_config_dataclass_cannot_hold_unknown_fields():
     from dataclasses import fields
 
     assert {f.name for f in fields(server.PublicConfig)} == server.PUBLIC_CONFIG_FIELDS
+
+
+def test_a2ui_protocol_version_is_a_bare_semver_string():
+    """The pinned A2UI protocol version is a short public string, never a URL.
+
+    A version pin that ever carries a scheme, a credential or a host is
+    almost certainly a configuration mistake: the A2UI v1.0 wire spec names
+    its version as ``"1.0"``, not as a URL.
+    """
+    value = server.A2UI_PROTOCOL_VERSION
+    assert isinstance(value, str)
+    assert value.strip() == value and value
+    assert "://" not in value
+    assert "@" not in value
+    assert "/" not in value
+    assert "secret" not in value.lower()
