@@ -43,9 +43,13 @@ HR module keeps) that this file locks:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
+import subprocess  # nosec B404 — pip-install into the Lambda asset at synth time
+import sys
 import tempfile
+import urllib.request
 from pathlib import Path
 
 import aws_cdk as cdk
@@ -679,25 +683,127 @@ def _build_lambda_asset(target_name: str, tool_names: list[str]) -> str:
     # the HR_POLICY_FILE environment variable (set in stack.py above).
     shutil.copy(HERE / "policy" / "authz.rego", bundle / "authz.rego")
 
-    # requirements.txt lists psycopg[binary] so a deploy-time pip
-    # install can vendor the driver. CDK synth does not run pip; a
-    # follow-up deploy step (or Docker bundling) installs it. Keeping
-    # the file inside the asset is the contract a reviewer can read.
+    # psycopg[binary] driver. Lambda runtime is linux/x86_64 and the manylinux
+    # wheels are installed at synth time into the bundle so cold-starts do
+    # not fail with ModuleNotFoundError. The deployer's own Python runs pip;
+    # the --platform/--only-binary flags force a manylinux wheel regardless of
+    # the host OS, so a macOS deployer still produces a Linux-compatible zip.
     requirements = HERE / "lambdas" / "requirements.txt"
     if requirements.exists():
         shutil.copy(requirements, bundle / "requirements.txt")
+        _pip_install_manylinux(requirements, bundle)
 
-    # Vendor the OPA binary into the bundle if it is available locally
-    # (the pytest job has it on PATH). Missing-binary is tolerated so
-    # offline CDK synth works even on a machine without opa; a real
-    # deploy still fails cleanly at runtime with POLICY_UNAVAILABLE.
-    opa_source = os.environ.get("OPA_BINARY") or shutil.which("opa")
-    if opa_source and Path(opa_source).is_file():
-        destination = bundle / "opa"
-        shutil.copy(opa_source, destination)
-        destination.chmod(0o755)
+    # OPA binary. The deployer's local `opa` is the wrong architecture on a
+    # macOS laptop, so H4 downloads a pinned linux/x86_64 static release here
+    # with a sha256 check. The URL and the digest match .gitlab-ci.yml;
+    # bumping one bumps the other. Fail synth loudly if the download fails:
+    # a missing opa makes every HR tool answer POLICY_UNAVAILABLE at runtime.
+    _vendor_opa_linux_binary(bundle)
 
     return str(bundle)
+
+
+# ---------------------------------------------------------------------------
+# Deterministic asset vendoring
+#
+# The two helpers below run at synth time, not deploy time, so the Lambda zip
+# CDK uploads already contains psycopg and opa. Both are idempotent: the
+# deployer can re-run synth without re-downloading.
+# ---------------------------------------------------------------------------
+
+
+# Pinned to match .gitlab-ci.yml (H2 OPA_VERSION). The CI pipeline runs x86_64;
+# the Lambda runtime is ARM_64 per aws_lambda.Architecture.ARM_64 above, so H4
+# downloads the arm64 static binary for the deployment asset and the CI
+# pipeline downloads the x86_64 static binary for pytest. Bump version + both
+# digests together on any OPA upgrade.
+_OPA_VERSION = "1.22.4"
+_OPA_SHA256_ARM64 = (
+    "9e9afee01319a5044790e59b1a2ece39a943f9b6059b97bd86c7aab88830d833"
+)
+_OPA_URL = (
+    f"https://openpolicyagent.org/downloads/v{_OPA_VERSION}/opa_linux_arm64_static"
+)
+
+
+def _vendor_opa_linux_binary(bundle: Path) -> None:
+    """Download the pinned linux/x86_64 opa binary into `bundle/opa`.
+
+    A deployer-local opa override (`OPA_BINARY` env var) is still honoured for
+    tests, but ONLY when the file matches the pinned sha256 — a mismatched
+    binary is rejected rather than silently shipped.
+    """
+    destination = bundle / "opa"
+
+    override = os.environ.get("OPA_BINARY")
+    if override and Path(override).is_file():
+        digest = _sha256(Path(override))
+        if digest == _OPA_SHA256_ARM64:
+            shutil.copy(override, destination)
+            destination.chmod(0o755)
+            return
+        # Fall through to the trusted download; a stale override must not
+        # produce an unverified Lambda asset.
+
+    cache_dir = Path(tempfile.gettempdir()) / "hr-tools-opa-cache"
+    cache_dir.mkdir(exist_ok=True)
+    cached = cache_dir / f"opa_linux_arm64_static-{_OPA_VERSION}"
+    if not cached.exists() or _sha256(cached) != _OPA_SHA256_ARM64:
+        urllib.request.urlretrieve(_OPA_URL, cached)  # nosec B310 — pinned HTTPS
+        actual = _sha256(cached)
+        if actual != _OPA_SHA256_ARM64:
+            cached.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"opa download sha256 mismatch: expected {_OPA_SHA256_ARM64}, got "
+                f"{actual}. If OPA was bumped, update _OPA_VERSION and "
+                "_OPA_SHA256_ARM64 in stack.py and .gitlab-ci.yml together."
+            )
+    shutil.copy(cached, destination)
+    destination.chmod(0o755)
+
+
+def _pip_install_manylinux(requirements: Path, bundle: Path) -> None:
+    """pip-install requirements into the Lambda asset for linux/x86_64.
+
+    --platform + --only-binary forces a manylinux wheel even when the deployer
+    runs CDK on macOS/arm64; without that psycopg-binary resolves to the
+    host wheel and crashes at Lambda cold-start.
+    """
+    subprocess.run(  # nosec B603 — fixed argv, sys.executable, fixed requirements
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--no-color",
+            "--disable-pip-version-check",
+            "--target",
+            str(bundle),
+            # H4 Lambdas run on ARM_64 (see HrToolsStack above). Force the
+            # aarch64 manylinux wheel so a macOS/arm64 deployer and a
+            # Linux/x86_64 deployer both produce a Lambda-compatible asset.
+            "--platform",
+            "manylinux2014_aarch64",
+            "--implementation",
+            "cp",
+            "--python-version",
+            "3.13",
+            "--only-binary=:all:",
+            "--upgrade",
+            "-r",
+            str(requirements),
+        ],
+        check=True,
+    )
+
+
+def _sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 # ---------------------------------------------------------------------------

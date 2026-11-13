@@ -44,6 +44,9 @@ Platform-interface compliance (docs/PLATFORM_INTERFACE.md):
 
 from __future__ import annotations
 
+import shutil
+import subprocess  # nosec B404 — pip-install into the layer asset at synth time
+import sys
 from pathlib import Path
 
 import aws_cdk as cdk
@@ -218,6 +221,12 @@ class HrIdentityStack(cdk.Stack):
         # time, but no synth test depends on that.
         # --------------------------------------------------------------
 
+        # pg8000 is pure Python, so a synth-time `pip install --target`
+        # populates `layer/python/` deterministically on any deployer OS.
+        # The committed `.gitignore` keeps the installed wheels out of
+        # version control; the asset hash reflects their content.
+        _install_pg8000_into_layer(Path(__file__).parent / "layer" / "python")
+
         driver_layer = lambda_.LayerVersion(
             self,
             "PostgresDriverLayer",
@@ -227,8 +236,8 @@ class HrIdentityStack(cdk.Stack):
             compatible_architectures=[lambda_.Architecture.X86_64],
             description=(
                 "Pure-Python PostgreSQL driver (pg8000) for hr-identity. "
-                "See use-cases/hr-identity/walkthrough.md for the one "
-                "pip-install step that populates it before deploy."
+                "Installed into layer/python/ at CDK synth so no manual "
+                "pip-install step is required before deploy."
             ),
         )
 
@@ -443,6 +452,51 @@ class HrIdentityStack(cdk.Stack):
 
         cdk.CfnOutput(self, "FunctionArn", value=pretoken_function.function_arn)
         cdk.CfnOutput(self, "UserPoolArn", value=user_pool_arn)
+
+
+_PG8000_PIN = "pg8000==1.31.5"
+
+
+def _install_pg8000_into_layer(target: Path) -> None:
+    """Install the pinned pg8000 into the layer's python/ directory.
+
+    Runs at CDK synth time with the deployer's own Python. pg8000 is pure
+    Python, so there is no manylinux concern — any OS the deployer runs on
+    produces the same layer content. Idempotent: if the pin's dist-info is
+    already present, this is a no-op.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+
+    sentinel = target / ".pg8000-pin"
+    if sentinel.exists() and sentinel.read_text().strip() == _PG8000_PIN:
+        return
+
+    # Clear previous installs so a bump leaves no stale files behind.
+    for child in target.iterdir():
+        if child.name == ".gitignore":
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+    subprocess.run(  # nosec B603 — fixed argv, sys.executable, pinned dep
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--no-color",
+            "--disable-pip-version-check",
+            "--target",
+            str(target),
+            "--upgrade",
+            _PG8000_PIN,
+        ],
+        check=True,
+    )
+    sentinel.write_text(_PG8000_PIN + "\n")
 
 
 def build(app, ctx: dict, config: dict) -> None:

@@ -7,6 +7,7 @@ focused on their one job: build the OPA input, map OPA output to the
 response shape, and nothing else.
 """
 
+from .db import connect
 from .errors import (
     DataUnavailable,
     HRToolError,
@@ -33,6 +34,7 @@ __all__ = [
     "PolicyUnavailable",
     "ServiceDisabled",
     "build_response",
+    "connect",
     "get_identity",
     "is_service_enabled",
     "log_decision",

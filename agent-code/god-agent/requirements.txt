@@ -11,7 +11,10 @@ langgraph-checkpoint-postgres==3.2.0
 langchain-aws==1.7.1
 langchain-mcp-adapters==0.3.2
 psycopg[binary]==3.3.9
-boto3==1.43.72
+# boto3 is pinned to the floor bedrock-agentcore 1.26 requires (>=1.43.127);
+# langchain-aws 1.7 also accepts it (>=1.43.64). A pin below 1.43.127 fails
+# `pip install` in the CodeBuild image build.
+boto3==1.43.127
 copilotkit==0.1.94
 ag-ui-protocol==1.0.0
 mcp==1.29.0
