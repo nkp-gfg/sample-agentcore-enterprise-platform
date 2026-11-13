@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "catalogId": "https://hr-web.local/catalogs/hr-platform-v1/catalog.json",
+  "protocolVersion": "1.0",
+  "title": "HR assistant primitives",
+  "description": "The small set of primitives the HR assistant renders. The catalog is the guardrail for what the agent is allowed to draw; the renderer refuses any component name outside this list. See ui-primitives.md for the plain-language description of each primitive, the fields it reads, and the action events it emits.",
+  "instructions": "The orchestrator SHOULD prefer an HR primitive to one composed from Column, Row and Text when a tool result corresponds to one: a leave-balance answer is a LeaveBalanceCard, a probation refusal is a ProbationNotice. The two review primitives — EmployeeConfirmForm and ManagerReviewCard — are the ONLY path by which a decision leaves the browser; the agent MUST NOT infer approval from free-form chat text. Every pressable Button carries action.event.name and action.event.context so the UI's reply is unambiguous.",
+  "components": {
+    "Column": {
+      "type": "object",
+      "properties": {
+        "component": {"const": "Column"},
+        "gap": {"enum": ["none", "sm", "md", "lg"]},
+        "align": {"enum": ["start", "center", "stretch"]},
+        "children": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["component", "children"]
+    },
+    "Row": {
+      "type": "object",
+      "properties": {
+        "component": {"const": "Row"},
+        "gap": {"enum": ["none", "sm", "md", "lg"]},
+        "align": {"enum": ["start", "center", "end", "baseline"]},
+        "justify": {"enum": ["start", "center", "end", "between"]},
+        "children": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["component", "children"]
+    },
+    "Heading": {
+      "type": "object",
+      "properties": {
+        "component": {"const": "Heading"},
+        "text": {"type": "string"},
+        "level": {"enum": [2, 3, 4]},
+        "tag": {"type": "string"},
+        "tagVariant": {"enum": ["ok", "err", "pending", "blocked"]}
+      },
+      "required": ["component", "text"]
+    },
+    "Text": {
+      "type": "object",
+      "properties": {
+        "component": {"const": "Text"},
+        "text": {"type": "string"},
+        "variant": {"enum": ["body", "muted", "error", "warning", "mono"]}
+      },
+      "required": ["component", "text"]
+    },
+    "Button": {
+      "type": "object",
+      "properties": {
+        "component": {"const": "Button"},
+        "label": {"type": "string"},
+        "variant": {"enum": ["primary", "outline", "ghost"]},
+        "disabled": {"type": "boolean"},
+        "action": {
+          "type": "object",
+          "properties": {
+            "event": {
+              "type": "object",
+              "properties": {
+                "name": {"type": "string"},
+                "userMessage": {"type": "string"},
+                "context": {"type": "object", "additionalProperties": true}
+              },
+              "required": ["name"]
+            }
+          },
+          "required": ["event"]
+        }
+      },
+      "required": ["component", "label"]
+    },
+    "LeaveBalanceCard": {
+      "description": "Summary card for a single employee's remaining leave.",
+      "type": "object",
+      "properties": {
+        "component": {"const": "LeaveBalanceCard"},
+        "annualDays": {"type": ["number", "string", "null"]},
+        "sickDays": {"type": ["number", "string", "null"]},
+        "onProbation": {"type": "boolean"},
+        "probationEndDate": {"type": ["string", "null"]},
+        "status": {"enum": ["ok", "err", "pending"]},
+        "statusLabel": {"type": "string"},
+        "reasonCode": {"type": ["string", "null"]}
+      },
+      "required": ["component"]
+    },
+    "AllowanceCard": {
+      "description": "One allowance entry (item, period, currency, amount) or a refusal.",
+      "type": "object",
+      "properties": {
+        "component": {"const": "AllowanceCard"},
+        "itemType": {"type": "string"},
+        "period": {"type": "string"},
+        "amount": {"type": ["number", "string", "null"]},
+        "currency": {"type": "string"},
+        "status": {"enum": ["ok", "empty", "err"]},
+        "statusLabel": {"type": "string"},
+        "reasonCode": {"type": ["string", "null"]}
+      },
+      "required": ["component"]
+    },
+    "DirectReportsTable": {
+      "description": "List of a manager's direct reports.",
+      "type": "object",
+      "properties": {
+        "component": {"const": "DirectReportsTable"},
+        "reports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "employee_id": {"type": "string"},
+              "full_name": {"type": "string"}
+            }
+          }
+        },
+        "status": {"enum": ["ok", "err"]},
+        "statusLabel": {"type": "string"},
+        "reasonCode": {"type": ["string", "null"]}
+      },
+      "required": ["component"]
+    },
+    "ProbationNotice": {
+      "description": "Explains that leave is blocked while probation is active.",
+      "type": "object",
+      "properties": {
+        "component": {"const": "ProbationNotice"},
+        "probationEndDate": {"type": ["string", "null"]},
+        "reasonCode": {"type": ["string", "null"]}
+      },
+      "required": ["component"]
+    },
+    "EmployeeConfirmForm": {
+      "description": "The employee's own second-person-click gate on submit_leave_request. The Confirm button is the only path that submits; the Edit button opens two prompts (start, end) and re-fires with corrected dates; the Reject button closes the surface and tells the agent no request was made.",
+      "type": "object",
+      "properties": {
+        "component": {"const": "EmployeeConfirmForm"},
+        "leaveType": {"type": "string"},
+        "startDate": {"type": "string", "format": "date"},
+        "endDate": {"type": "string", "format": "date"},
+        "days": {"type": ["number", "string"]},
+        "reason": {"type": "string"},
+        "interruptKind": {"const": "employee_confirm"}
+      },
+      "required": ["component", "startDate", "endDate", "interruptKind"]
+    },
+    "ManagerReviewCard": {
+      "description": "A single manager-review item. The approver clicks Approve or Reject; the leave reason is drawn as plain text and NEVER fed back to the agent as a prompt.",
+      "type": "object",
+      "properties": {
+        "component": {"const": "ManagerReviewCard"},
+        "requestId": {"type": "string"},
+        "employeeId": {"type": "string"},
+        "leaveType": {"type": "string"},
+        "startDate": {"type": "string", "format": "date"},
+        "endDate": {"type": "string", "format": "date"},
+        "days": {"type": ["number", "string"]},
+        "reason": {"type": "string"},
+        "interruptKind": {"const": "manager_review"}
+      },
+      "required": ["component", "requestId", "interruptKind"]
+    },
+    "Notice": {
+      "description": "Short status line surfaced inline in the transcript.",
+      "type": "object",
+      "properties": {
+        "component": {"const": "Notice"},
+        "variant": {"enum": ["info", "ok", "warn", "err"]},
+        "title": {"type": "string"},
+        "body": {"type": "string"}
+      },
+      "required": ["component", "body"]
+    }
+  },
+  "functions": {
+    "deriveDays": {
+      "description": "Number of inclusive calendar days between two ISO dates.",
+      "arguments": {
+        "start": {"type": "string"},
+        "end": {"type": "string"}
+      },
+      "returns": {"type": "string"}
+    }
+  }
+}

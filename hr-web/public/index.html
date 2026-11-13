@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>HR assistant · AgentCore Platform</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="hr-shell">
+
+<header class="hr-topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">HR</span>
+    <div>
+      <span class="brand-name">HR assistant</span>
+      <span class="brand-sub">Layer 3 · facilitator-operated · 127.0.0.1 only</span>
+    </div>
+  </div>
+  <div class="identity" aria-live="polite">
+    <span id="identityState" class="identity-state" data-state="unknown">Not signed in</span>
+    <button type="button" class="hr-button hr-button--outline" id="signInBtn">Sign in</button>
+    <button type="button" class="hr-button hr-button--ghost" id="signOutBtn" hidden>Sign out</button>
+  </div>
+</header>
+
+<div class="hr-body">
+
+  <main class="hr-chat" aria-label="Chat with the HR assistant">
+    <div class="hr-banner" id="authBanner" role="status">
+      Sign in with your corporate account to talk to the HR assistant. The
+      conversation uses the AG-UI SSE stream from the module&nbsp;6 runtime;
+      this page never calls AWS directly from a server. Every card on the right
+      is rendered through the A2UI v1.0 protocol
+      (<a href="https://a2ui.org/specification/v1_0/" rel="noopener">specification</a>).
+    </div>
+
+    <div class="hr-messages" id="chatMessages" aria-live="polite" aria-label="Conversation"></div>
+
+    <form class="hr-composer" id="chatForm">
+      <label class="sr-only" for="chatInput">Message</label>
+      <textarea id="chatInput"
+                class="hr-input"
+                rows="2"
+                maxlength="4000"
+                placeholder="Ask about leave, your allowance, your reports. Typing &quot;approve&quot; does nothing — use the card."
+                required
+                disabled></textarea>
+      <div class="hr-composer-foot">
+        <span><span id="chatCount">0</span> / 4000</span>
+        <span class="hr-composer-hint">Enter to send · Shift+Enter for a new line</span>
+        <button class="hr-button" id="chatSend" type="submit" disabled>Send</button>
+      </div>
+    </form>
+  </main>
+
+  <!-- A2UI surfaces mount point. The processor owns every child of this
+       node. Each tool result, interrupt, or renderer message becomes one
+       A2UI v1.0 message that createSurface/updateComponents/deleteSurface
+       applies here. The hard-coded cards from the first Layer 3 commit have
+       been replaced with the EmployeeConfirmForm, ManagerReviewCard,
+       ProbationNotice, LeaveBalanceCard, AllowanceCard, DirectReportsTable,
+       and Notice primitives declared in hr-catalog.json. See
+       ui-primitives.md. -->
+  <aside id="hrSurfaces"
+         class="hr-side"
+         aria-label="A2UI surfaces: review cards and summaries"></aside>
+
+</div>
+
+<footer class="hr-footer">
+  <span class="mono" id="footerSession">session · —</span>
+  <span class="hr-footer-hint">
+    Loopback-only · identity comes from Cognito with PKCE · the browser
+    streams AG-UI events directly from the runtime · cards render through
+    A2UI v1.0.
+  </span>
+</footer>
+
+</div>
+
+<!-- Load order: the A2UI MessageProcessor and the HR catalog (components +
+     functions) must both be ready before the tool adapter, and the tool
+     adapter before app.js, which boots everything. No CDN; every module is
+     local, matching the loopback-only invariant from server.py. -->
+<script src="a2ui.js" defer></script>
+<script src="hr-primitives.js" defer></script>
+<script src="hr-tool-adapter.js" defer></script>
+<script src="app.js" defer></script>
+</body>
+</html>
