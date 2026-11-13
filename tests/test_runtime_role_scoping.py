@@ -168,6 +168,18 @@ def test_memory_and_gateway_actions_are_pinned_when_arns_are_passed():
     assert 'resources=[memory_arn] if memory_arn else ["*"]' in source
 
 
+def test_memory_kms_grant_is_pinned_to_the_key_and_agentcore():
+    """A CMK-encrypted Memory needs caller KMS access, but only via AgentCore."""
+    statements = {statement["sid"]: statement for statement in _policy_statements()}
+    kms = statements["MemoryKmsViaAgentCore"]
+    assert kms["actions"] == ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
+    assert "*" not in kms["resources"]
+    source = RUNTIME_STACK.read_text()
+    assert "resources=[kms_key_arn]" in source
+    assert '"kms:ViaService"' in source
+    assert "bedrock-agentcore.{cdk.Stack.of(role).region}.amazonaws.com" in source
+
+
 def test_ssm_reads_are_scoped_to_the_project_path():
     source = RUNTIME_STACK.read_text()
     assert "arn:aws:ssm:*:*:parameter/{project_name}/*" in source, (

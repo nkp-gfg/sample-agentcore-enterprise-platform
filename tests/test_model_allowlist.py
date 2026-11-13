@@ -84,6 +84,26 @@ def test_plain_entry_emits_only_the_foundation_model_arn():
     ]
 
 
+@pytest.mark.parametrize(
+    "model",
+    ["meta.llama3.1-70b-instruct-v1:0", "zai.glm-4.7-flash", "openai.gpt-oss-120b-1:0"],
+)
+def test_short_provider_with_dotted_version_is_not_a_profile(model):
+    """Only real geographies are profiles; a provider like meta. or zai. is not."""
+    assert allowed_model_resources([model]) == [
+        f"arn:aws:bedrock:*::foundation-model/{model}*"
+    ]
+
+
+@pytest.mark.parametrize("geo", ["us", "eu", "apac", "global", "jp", "au", "ca", "us-gov"])
+def test_every_profile_geography_emits_a_profile_arn(geo):
+    model = f"{geo}.anthropic.claude-sonnet-4-6"
+    assert allowed_model_resources([model]) == [
+        f"arn:aws:bedrock:*:*:inference-profile/{model}",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6*",
+    ]
+
+
 def test_duplicates_dedupe_and_order_is_preserved():
     resources = allowed_model_resources([SONNET, OPUS, SONNET])
     assert len(resources) == len(set(resources))

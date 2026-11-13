@@ -470,16 +470,18 @@ identity:
 
 agents:
   pattern: strands-agent
-  # EU geo profile. Deploy injects model_id as MODEL_ID, which overrides the
-  # container DEFAULT_MODEL_ID. Leaving the old us.anthropic.claude-sonnet-4-6
-  # value here would send production inference to US regions even after the
-  # agent code defaults changed. eu.anthropic.claude-sonnet-4-6 was ACTIVE in
-  # eu-west-1 on 2026-11-13 and routes only to eu-west-1, eu-central-1,
-  # eu-west-3, eu-north-1, eu-south-1, and eu-south-2. allowed_models must
-  # contain model_id or production validation rejects the file.
-  model_id: eu.anthropic.claude-sonnet-4-6
+  # Choose any Bedrock model that is available in `region` and supports tool
+  # use. Deploy injects model_id as MODEL_ID into every runtime, and the
+  # runtime role may invoke only the models in allowed_models (model_id must be
+  # one of them). The example below runs in-region (no prefix) in us-east-1,
+  # eu-west-1, eu-central-1, and eu-north-1. A prefixed id (us., eu., apac.,
+  # global.) is a cross-region profile: Bedrock then serves calls from other
+  # regions, and a region-deny SCP must allow those regions. List the options:
+  #   aws bedrock list-foundation-models --region <region> --by-inference-type ON_DEMAND
+  #   aws bedrock list-inference-profiles --region <region>
+  model_id: openai.gpt-oss-120b-1:0
   allowed_models:
-    - eu.anthropic.claude-sonnet-4-6
+    - openai.gpt-oss-120b-1:0
   memory:
     event_expiry_days: 30
 

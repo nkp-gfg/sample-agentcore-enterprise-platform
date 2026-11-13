@@ -3,18 +3,15 @@
 import os
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from shared.region import runtime_region
 from strands import Agent
 from strands.models import BedrockModel
 
 app = BedrockAgentCoreApp()
 
-# EU geo inference profile, not Legacy-flagged. eu.anthropic.claude-sonnet-4-6
-# replaces us.anthropic.claude-sonnet-4-6 so a runtime in eu-west-1 does not
-# send inference to US regions. Bedrock routes this profile only to eu-west-1,
-# eu-central-1, eu-west-3, eu-north-1, eu-south-1, and eu-south-2. Confirmed
-# ACTIVE with list-inference-profiles in eu-west-1 on 2026-11-13. MODEL_ID
-# still overrides this default (app.py / deploy.sh). A platform.yaml model_id
-# is injected as MODEL_ID and this constant is then unused.
+# Fallback only when MODEL_ID is unset. Deploy injects platform.yaml
+# agents.model_id as MODEL_ID (production requires it), so the deployed model
+# can be any Bedrock model available in the deployment region.
 DEFAULT_MODEL_ID = "eu.anthropic.claude-sonnet-4-6"
 MODEL_ID = os.environ.get("MODEL_ID", DEFAULT_MODEL_ID)
 
@@ -36,7 +33,9 @@ You help participants understand and use Amazon Bedrock AgentCore services."""
 @app.entrypoint
 async def invoke(payload=None):
     query = payload.get("prompt", "Hello!") if payload else "Hello!"
-    model = BedrockModel(model_id=MODEL_ID, **_GUARDRAIL_KWARGS)
+    model = BedrockModel(
+        model_id=MODEL_ID, region_name=runtime_region(), **_GUARDRAIL_KWARGS
+    )
     agent = Agent(system_prompt=SYSTEM_PROMPT, model=model)
     response = agent(query)
     return {"status": "success", "response": response.message["content"][0]["text"]}

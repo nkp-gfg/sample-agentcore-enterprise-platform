@@ -1816,6 +1816,12 @@ def apply_environment_overrides(
     return PlatformConfig.model_validate(raw)
 
 
+# Only real inference-profile geographies. A generic 2-4 letter match also
+# caught providers such as "meta." and "zai.", turning meta.llama3.1-... into
+# a non-existent profile and dropping the provider from its model ARN.
+_GEO_PROFILE_PREFIX_RE = re.compile(r"^(?:us|us-gov|eu|apac|ca|jp|au|global)\.")
+
+
 def allowed_model_resources(models: list[str]) -> list[str]:
     """IAM resource ARNs for the runtime role's BedrockModels statement.
 
@@ -1829,7 +1835,7 @@ def allowed_model_resources(models: list[str]) -> list[str]:
     """
     resources: list[str] = []
     for m in models:
-        prefix_match = re.match(r"^[a-z]{2,4}\.", m)
+        prefix_match = _GEO_PROFILE_PREFIX_RE.match(m)
         base = m[prefix_match.end() :] if prefix_match else m
         if prefix_match and "." in base:
             resources.append(f"arn:aws:bedrock:*:*:inference-profile/{m}")

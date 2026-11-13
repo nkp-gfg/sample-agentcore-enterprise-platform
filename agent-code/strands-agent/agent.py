@@ -16,13 +16,9 @@ logger = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
 
-# EU geo inference profile, not Legacy-flagged. eu.anthropic.claude-sonnet-4-6
-# replaces us.anthropic.claude-sonnet-4-6 so a runtime in eu-west-1 does not
-# send inference to US regions. Bedrock routes this profile only to eu-west-1,
-# eu-central-1, eu-west-3, eu-north-1, eu-south-1, and eu-south-2. Confirmed
-# ACTIVE with list-inference-profiles in eu-west-1 on 2026-11-13. MODEL_ID
-# still overrides this default (app.py / deploy.sh). A platform.yaml model_id
-# is injected as MODEL_ID and this constant is then unused.
+# Fallback only when MODEL_ID is unset. Deploy injects platform.yaml
+# agents.model_id as MODEL_ID (production requires it), so the deployed model
+# can be any Bedrock model available in the deployment region.
 DEFAULT_MODEL_ID = "eu.anthropic.claude-sonnet-4-6"
 MODEL_ID = os.environ.get("MODEL_ID", DEFAULT_MODEL_ID)
 
@@ -87,7 +83,9 @@ def _create_agent(user_id: str, session_id: str) -> Agent:
         except Exception as e:  # noqa: BLE001
             logger.warning("Memory init failed (continuing without): %s", e)
 
-    model = BedrockModel(model_id=MODEL_ID, temperature=0.1, **_GUARDRAIL_KWARGS)
+    model = BedrockModel(
+        model_id=MODEL_ID, region_name=region, temperature=0.1, **_GUARDRAIL_KWARGS
+    )
 
     return Agent(
         name="strands_agent",

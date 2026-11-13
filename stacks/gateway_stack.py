@@ -247,6 +247,10 @@ class GatewayStack(cdk.Stack):
                 )
             )
         self._gateway = agentcore.CfnGateway(self, "Gateway", **gateway_props)
+        # A Role dependency also covers its DefaultPolicy (KMS, interceptor and
+        # tool invoke). Without it CloudFormation may create the gateway while
+        # that policy is still attaching, and a fresh deploy fails.
+        self._gateway.node.add_dependency(gw_role)
         if policy_engine_access is not None:
             self._gateway.node.add_dependency(policy_engine_access)
 

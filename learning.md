@@ -15,7 +15,13 @@ such as `<ACCOUNT_ID>` stand in for them.
 - `./scripts/deploy.sh verify` reports **8 of 8 checks passed**.
 - The model is `openai.gpt-oss-120b-1:0`, which runs directly in eu-west-1 with no
   cross-region routing.
-- Nothing has been committed or pushed yet.
+- **Region and model are free choices.** Nothing in the code is tied to
+  eu-west-1. A colleague picks any Region where AgentCore runs and any Bedrock
+  model with tool use, and writes both into `platform.yaml`
+  (`GFG_Deployment.md`, Step 5).
+- A person can sign in and chat with `scripts/login_chat.py`
+  (`GFG_Deployment.md`, Step 14).
+- The work is committed on `n-fe-sandbox-deployment` and not pushed.
 
 ---
 
@@ -209,9 +215,11 @@ first.
 
 - **What we saw:** several agents defaulted to `us-east-1`.
 - **Fix:**
-  - `agent-code/shared/region.py` reads `AWS_REGION_NAME`, which the runtime stack
-    sets from `platform.yaml`, and falls back to `eu-west-1`.
-  - All agents and the code-interpreter clients use it.
+  - `agent-code/shared/region.py` reads `AWS_REGION_NAME` (set by the runtime
+    stack from `platform.yaml`), then `AWS_REGION` (set by AgentCore Runtime).
+    With neither, it stops with a clear error instead of guessing a region.
+  - All agents, every Bedrock model client, and the code-interpreter clients use
+    it.
 - **Watch for:** new code that calls `boto3.client(...)` without
   `region_name=runtime_region()`.
 
@@ -221,10 +229,10 @@ first.
   unverified caller: Failed to load tool ...`.
 - **Why:** Strands raises `ValueError` when an MCP tool fails to load. The same
   `except ValueError` also handled token-verification failures.
-- **Fix (strands-agent only):** the token check has its own `try` block. Tool or
-  model failures are now logged as `Agent run failed` with the real error.
-- **Watch for:** the other agent patterns may have the same issue (see pending
-  items).
+- **Fix (every agent pattern):** the token check has its own `try` block and
+  returns a plain `Unauthorized`. Tool or model failures are logged as `Agent run
+  failed` with the real error.
+- **Watch for:** a new agent pattern must copy this split.
 
 ### 5.3 The guardrail's prompt-attack filter flags commands like "use tool X to run Y"
 
@@ -290,8 +298,10 @@ first.
 
 | Risk | What would happen | How to catch it early |
 |---|---|---|
-| Model changed to an `eu.`, `us.` or `global.` ID | Random `AccessDenied` from the SCP | Keep model IDs prefix-free, or get an SCP exception first |
-| A colleague uses `presets/production.yaml` as is | It still names the `eu.` Claude profile, so it hits the SCP | Update the preset (pending item 2) |
+| Model changed to an `eu.`, `us.` or `global.` ID | Random `AccessDenied` if the SCP blocks one of the profile's Regions | Check the profile's Regions (`GFG_Deployment.md`, Step 5) or get an SCP exception first |
+| Colleague picks a model without tool use | The agent answers but never calls its tools | Run the tool-use check in `GFG_Deployment.md`, Step 5 |
+| Colleague picks a Region without AgentCore | `build` fails early | Run the AgentCore check in `GFG_Deployment.md`, Step 5 |
+| Port 3000 is busy when running `login_chat.py` | The sign-in redirect cannot be caught | Stop whatever uses port 3000 |
 | New gateway target or interceptor added | 500 errors from the gateway | Grant `lambda:InvokeFunction` on the gateway role |
 | New Cedar policy file | Gateway creation fails | Name the gateway ARN and depend on the targets |
 | Gateway renamed | Policy-engine check fails during creation | Keep the ARN pattern built from the same name |
@@ -301,63 +311,62 @@ first.
 | CDK default adds a public IP or `Action: "*"` | Control Tower hook rejects the stack | Check the synth output before deploying |
 | Verify passes but the agent fails | Users see errors while verify looks green | Read the runtime logs after every deploy |
 | `gpt-oss-120b` quality isn't good enough | Weak answers or bad tool use | Evaluate on real tasks; Claude needs an SCP change |
-| Model retired or changed by AWS | Invocation errors | Check `aws bedrock list-foundation-models --region eu-west-1` regularly |
+| Model retired or changed by AWS | Invocation errors | Check `aws bedrock list-foundation-models --region <region>` regularly |
 
 ---
 
 ## 10. Pending items
 
+### Done
+
+| Item | Where |
+|---|---|
+| Model and Region are not hard-coded; any model and Region can be chosen | `platform.yaml`, `presets/production.yaml`, `agent-code/shared/region.py` |
+| Every Bedrock model client passes the Region explicitly | All `agent-code/*/agent.py` |
+| `allowed_model_resources` recognises only real profile prefixes, so `meta.`, `zai.` and similar models get the right IAM ARN | `infra_utils/platform_config.py`, `tests/test_model_allowlist.py` |
+| Auth errors separated from tool errors in every agent pattern | All `agent-code/*/agent.py` |
+| Gateway waits for its role policy on a fresh deploy | `stacks/gateway_stack.py` |
+| Unit tests for the interceptor grant, gateway ordering, and Memory KMS grant | `tests/test_gateway_role.py`, `tests/test_runtime_role_scoping.py` |
+| Alert email also subscribed to the security-alerts topic | `stacks/observability_stack.py` |
+| Region- and model-neutral deployment guide, sign-in step, and test checklist | `GFG_Deployment.md`, Steps 5, 14, 15 |
+| Sign-in and chat as a real user | `scripts/login_chat.py` |
+| `stuats.md` (live identifiers) removed from the branch, including its history | git |
+| Both SNS subscriptions confirmed | AWS |
+
 ### Must do
 
-1. **Confirm the SNS email subscription.** AWS sent a confirmation email to the
-   alert address. Until it's confirmed, no alarm or security alert is delivered.
-2. **Update the model in the remaining places:**
-   - `presets/production.yaml` still names `eu.anthropic.claude-sonnet-4-6`.
-   - `DEFAULT_MODEL_ID` in `agent-code/strands-agent/agent.py` is still the `eu.`
-     Claude profile. It's only a fallback, but it would hit the SCP.
-   - Regenerate `docs/PLATFORM_YAML.md` if the preset changes.
-3. **Update `GFG_Deployment.md`** with:
-   - The in-region model, and why `eu.` profiles aren't used.
-   - Waiting for Transaction Search to become `ACTIVE` before running verify.
-   - Reading the runtime logs after verify.
-   - The SNS email confirmation step.
-   - No real IDs, emails or secrets.
-4. **Commit the work on `n-fe-sandbox-deployment`** once it's reviewed:
-   - Don't commit `platform.yaml`, which is gitignored.
-   - Decide whether `stuats.md`, `GFG_Deployment.md` and `learning.md` belong in
-     git.
-   - Don't touch `main`.
-   - Two earlier commits (mise.toml and the EU models) are also not pushed.
+1. **Push the branch** when you're ready: `git push -u origin n-fe-sandbox-deployment`.
+   Before pushing, confirm no live account ID is in history:
+   `git log -p origin/main..HEAD | grep -c <ACCOUNT_ID>` must print `0`.
+2. **Have a colleague run `GFG_Deployment.md`** end to end, ideally in another
+   Region, and tick the Step 15 checklist.
 
 ### Should do
 
-5. **Apply the auth/tool error split to the other agent patterns** (`langgraph-agent`,
-   `agui-strands-agent`, `agui-langgraph-agent`, and the Claude SDK agents) if they
-   use the same `except ValueError` block.
-6. **Add unit tests for the new IAM statements:**
-   - `InvokeEgressInterceptor` on the gateway role.
-   - `MemoryKmsViaAgentCore` on the runtime role, including the `kms:ViaService`
-     condition.
-   - The strands-agent auth/tool error split.
-7. **Tighten the model IAM ARN.** `allowed_model_resources` builds
-   `arn:aws:bedrock:*::foundation-model/<model>*` with a wildcard region. For an
-   in-region model it could be pinned to `eu-west-1`.
-8. **Fix the model-ID parsing in `allowed_model_resources`.** A short provider
-   name followed by a version with a dot, for example `zai.glm-4.7-flash`, is
-   wrongly treated as a cross-region profile.
-9. **Evaluate `gpt-oss-120b` on real tasks.** If Claude is required, raise the SCP
-   exception with the org admin.
-10. **Monitor guardrail interventions** for prompt-attack false positives in the
-    first weeks.
-11. **Update `docs/SECURITY_CONTROLS.md`** to describe:
-    - The interceptor scanning only `tools/call`.
-    - The new KMS and interceptor grants.
+3. **Evaluate the chosen model on real tasks.** If Claude is required, use a
+   Region where the SCP allows all of its profile's Regions, or ask the admin for
+   an inference-profile exception.
+4. **Monitor guardrail interventions** for prompt-attack false positives in the
+   first weeks.
+5. **Update `docs/SECURITY_CONTROLS.md`** to describe:
+   - The interceptor scanning only `tools/call`.
+   - The new KMS and interceptor grants.
+6. **Pin the model IAM ARN to the deployment Region for in-Region models.**
+   `allowed_model_resources` uses `arn:aws:bedrock:*::foundation-model/...`. The
+   wildcard is required for cross-Region profiles, but an in-Region model could be
+   pinned.
+7. **Add a test for the auth/tool error split** in the agent patterns.
+8. **`DEFAULT_MODEL_ID` fallbacks in `agent-code/*/agent.py` are still `eu.`
+   Claude profiles.** Production never uses them, because `agents.model_id` is
+   required and deploy injects it. Workshop mode outside the EU would. Change them
+   only together with `tests/test_model_allowlist.py` and `scripts/preflight.py`,
+   which read the literal value.
 
 ### Nice to have
 
-12. **Remove the duplicate OpenTelemetry logging warning**: unset
-    `OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED`, as the warning suggests.
-13. **Confirm `Failed to export span batch code: 400` has stopped** now that
-    Transaction Search is `ACTIVE`.
-14. **Reduce guardrail calls in the interceptor** by scanning all strings of one
+9. **Remove the duplicate OpenTelemetry logging warning**: unset
+   `OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED`, as the warning suggests.
+10. **Reduce guardrail calls in the interceptor** by scanning all strings of one
     tool call in a single `ApplyGuardrail` request.
+11. **A small web chat page** on `http://localhost:3000`, so testers don't need
+    the terminal.

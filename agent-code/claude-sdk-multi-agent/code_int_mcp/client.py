@@ -4,11 +4,11 @@
 
 import json
 import logging
-import os
 import time
 
 import boto3
 from botocore.exceptions import ClientError
+from shared.region import runtime_region
 
 from .models import CodeIntExecutionResult
 
@@ -20,9 +20,7 @@ class CodeInterpreterClient:
     """Client for AgentCore Code Interpreter."""
 
     def __init__(self, region_name: str = None):
-        # RuntimeStack injects AWS_REGION_NAME from platform.yaml; the
-        # platform region is eu-west-1 (Ireland).
-        region = region_name or os.environ.get("AWS_REGION_NAME") or "eu-west-1"
+        region = region_name or runtime_region()
         self.ci_client = boto3.client("bedrock-agentcore", region_name=region)
 
     def _create_sessionid(self) -> str:

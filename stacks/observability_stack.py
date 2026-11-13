@@ -607,6 +607,11 @@ class ObservabilityStack(cdk.Stack):
                 ),
             )
             rule.add_target(targets.SnsTopic(self.alerts_topic))
+            if alarm_email:
+                # Without a subscriber these control-plane events reach nobody.
+                self.alerts_topic.add_subscription(
+                    subscriptions.EmailSubscription(alarm_email)
+                )
             cdk.CfnOutput(
                 self, "SecurityAlertsTopicArn", value=self.alerts_topic.topic_arn
             )

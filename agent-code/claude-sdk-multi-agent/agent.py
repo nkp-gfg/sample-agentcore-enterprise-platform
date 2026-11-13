@@ -29,13 +29,9 @@ logger = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
 
-# EU Opus geo profile. This pattern still uses Opus for Claude Code-style
-# agentic work. eu.anthropic.claude-opus-4-6-v1 replaces
-# us.anthropic.claude-opus-4-6-v1 so inference stays in EU regions: eu-west-1,
-# eu-central-1, eu-west-3, eu-north-1, eu-south-1, and eu-south-2. Confirmed
-# ACTIVE with list-inference-profiles in eu-west-1 on 2026-11-13. MODEL_ID
-# overrides this default (app.py / deploy.sh) and is passed to
-# ClaudeAgentOptions.model, which takes precedence over ANTHROPIC_MODEL.
+# Fallback only when MODEL_ID is unset. Deploy injects platform.yaml
+# agents.model_id as MODEL_ID (production requires it), so the deployed model
+# can be any Bedrock model available in the deployment region.
 DEFAULT_MODEL_ID = "eu.anthropic.claude-opus-4-6-v1"
 MODEL_ID = os.environ.get("MODEL_ID", DEFAULT_MODEL_ID)
 
@@ -107,7 +103,14 @@ async def main(payload, context: RequestContext):
     claude_session_id = _session_map.get(runtime_session_id)
 
     # Extract user ID securely from validated JWT token
-    user_id = extract_user_id_from_context(context)
+    try:
+        user_id = extract_user_id_from_context(context)
+    except ValueError as e:
+        # Token missing, malformed, or failed verification. Log the reason,
+        # return a generic rejection so the response leaks no auth detail.
+        logger.warning("Rejected unverified caller: %s", e)
+        yield {"status": "error", "error": "Unauthorized"}
+        return
     logger.info("[AGENT] User: %s, Session: %s", user_id, runtime_session_id)
 
     # Get Gateway URL and access token
