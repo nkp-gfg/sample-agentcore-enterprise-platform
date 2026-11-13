@@ -506,6 +506,29 @@
       "Leave submitted");
   }
 
+  function renderRecordLeaveDecision(result) {
+    // The manager clicked Approve or Reject on the review card. The runtime
+    // called hr-ops___record_leave_decision; OPA gates on
+    // requester_manager_id == caller, and Cedar bound this tool to the
+    // review-node agent_id. Reflect the outcome back on the card.
+    if (!result) return;
+    hide("managerReviewCard");
+    state.pendingInterrupt = null;
+    if (result.authorized === true && result.data) {
+      appendMessage("system",
+        `Request ${result.data.request_id || ""} is now ${result.data.status || "updated"}.`,
+        "Decision recorded");
+    } else if (result.reason_code === "NOT_REVIEWER") {
+      // The employee tried to approve their own request; OPA said
+      // NOT_REVIEWER and the pending row is unchanged.
+      appendMessage("system",
+        "You are not the reviewer for that request. The row stays pending.",
+        "Policy decision");
+    } else {
+      appendMessage("system", reasonLabel(result), "Policy decision");
+    }
+  }
+
   function showProbation(endDate) {
     const card = $("probationCard");
     const text = $("probationText");
@@ -632,6 +655,47 @@
     });
   }
 
+  /* --------------------------------------------- manager review card */
+
+  function showManagerReview(payload) {
+    $("mrRequestId").textContent = String(payload.request_id || "—");
+    $("mrEmployee").textContent = String(payload.employee_id || "—");
+    $("mrLeaveType").textContent = String(payload.leave_type || "—");
+    $("mrStart").textContent = String(payload.start_date || "—");
+    $("mrEnd").textContent = String(payload.end_date || "—");
+    $("mrDays").textContent = payload.days != null
+      ? String(payload.days)
+      : derivedDays(payload.start_date, payload.end_date);
+    // The leave reason is drawn as plain text and never put into a model
+    // message. See custom-app-plan/human-review.md and the R-04 red-team.
+    $("mrReason").textContent = payload.reason != null ? String(payload.reason) : "";
+    $("mrError").hidden = true;
+    show("managerReviewCard");
+  }
+
+  async function approveReview() {
+    const interrupt = state.pendingInterrupt;
+    if (!interrupt || interrupt.kind !== "manager_review") return;
+    // NOTE: a chat message that says "approve" never gets here. Only this
+    // click sends the decision. The runtime still checks the reviewer's
+    // token against reviewer_employee_id before applying Command(resume=).
+    await sendResume({
+      decision: "approve",
+      kind: "manager_review",
+      request_id: interrupt.request_id,
+    });
+  }
+
+  async function rejectReview() {
+    const interrupt = state.pendingInterrupt;
+    if (!interrupt || interrupt.kind !== "manager_review") return;
+    await sendResume({
+      decision: "reject",
+      kind: "manager_review",
+      request_id: interrupt.request_id,
+    });
+  }
+
   /* ----------------------------------------------- event dispatch */
   const toolResultRenderers = {
     get_leave_balance: renderLeaveBalance,
@@ -640,6 +704,7 @@
     get_employee_compensation: renderCompensation,
     check_leave_eligibility: renderLeaveEligibility,
     submit_leave_request: renderSubmitLeaveRequest,
+    record_leave_decision: renderRecordLeaveDecision,
   };
 
   function handleEvent(event, body, assistantNode, outstanding) {
@@ -708,6 +773,8 @@
     state.pendingInterrupt = payload;
     if (payload.kind === "employee_confirm") {
       showEmployeeConfirm(payload);
+    } else if (payload.kind === "manager_review") {
+      showManagerReview(payload);
     } else {
       appendMessage("system",
         `Review pause received for ${String(payload.kind || "unknown")}. Use the card to decide.`,
@@ -769,6 +836,8 @@
   $("ecConfirm").addEventListener("click", confirmLeave);
   $("ecReject").addEventListener("click", rejectLeave);
   $("ecEdit").addEventListener("click", editLeave);
+  $("mrApprove").addEventListener("click", approveReview);
+  $("mrReject").addEventListener("click", rejectReview);
 
   // Exported shape for the cards commit and for tests that may load this
   // module. Everything here is pure wiring; secrets are never put on this
