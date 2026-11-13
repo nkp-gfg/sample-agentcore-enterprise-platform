@@ -395,9 +395,252 @@
     }
   }
 
+  /* ------------------------------------------------- card rendering */
+
+  function renderLeaveBalance(result) {
+    const card = $("leaveBalanceCard");
+    const tag = $("leaveBalanceStatus");
+    if (!result || result.authorized !== true || !result.data) {
+      tag.textContent = reasonLabel(result);
+      tag.className = "hr-card-tag hr-card-tag--err";
+      $("leaveAnnual").textContent = "—";
+      $("leaveSick").textContent = "—";
+      $("leaveProbation").textContent = "—";
+      card.hidden = false;
+      return;
+    }
+    tag.textContent = "OK";
+    tag.className = "hr-card-tag hr-card-tag--ok";
+    const d = result.data;
+    $("leaveAnnual").textContent = formatDays(d.annual);
+    $("leaveSick").textContent = formatDays(d.sick);
+    $("leaveProbation").textContent = d.on_probation
+      ? `Until ${d.probation_end_date || "—"}`
+      : "Not on probation";
+    card.hidden = false;
+    if (d.on_probation) showProbation(d.probation_end_date);
+  }
+
+  function renderAllowance(result) {
+    const card = $("allowanceCard");
+    const tag = $("allowanceStatus");
+    if (!result || result.authorized !== true || !result.data) {
+      tag.textContent = reasonLabel(result);
+      tag.className = "hr-card-tag hr-card-tag--err";
+      $("allowanceItem").textContent = "—";
+      $("allowancePeriod").textContent = "—";
+      $("allowanceAmount").textContent = "—";
+      card.hidden = false;
+      return;
+    }
+    const d = result.data;
+    tag.textContent = d.amount == null ? "No entry" : "OK";
+    tag.className = d.amount == null
+      ? "hr-card-tag hr-card-tag--blocked"
+      : "hr-card-tag hr-card-tag--ok";
+    $("allowanceItem").textContent = String(d.item_type || "—");
+    $("allowancePeriod").textContent = String(d.period || "—");
+    $("allowanceAmount").textContent = d.amount == null
+      ? "No entry for this period"
+      : `${formatAmount(d.amount)} ${d.currency || ""}`.trim();
+    card.hidden = false;
+  }
+
+  function renderDirectReports(result) {
+    const card = $("reportsCard");
+    const tag = $("reportsStatus");
+    const list = $("reportsList");
+    const note = $("reportsNote");
+    list.replaceChildren();
+    note.hidden = true;
+    if (!result || result.authorized !== true || !result.data) {
+      tag.textContent = reasonLabel(result);
+      tag.className = "hr-card-tag hr-card-tag--err";
+      card.hidden = false;
+      return;
+    }
+    const reports = Array.isArray(result.data.reports) ? result.data.reports : [];
+    tag.textContent = `${reports.length} direct`;
+    tag.className = "hr-card-tag hr-card-tag--ok";
+    if (reports.length === 0) {
+      note.textContent = "No direct reports.";
+      note.hidden = false;
+    } else {
+      for (const r of reports) {
+        const li = document.createElement("li");
+        li.append(el("span", "mono", String(r.employee_id || "—")));
+        li.append(el("span", "", String(r.full_name || r.employee_id || "—")));
+        li.append(el("span", "hr-card-tag", "direct"));
+        list.append(li);
+      }
+    }
+    card.hidden = false;
+  }
+
+  function renderCompensation(result) {
+    // Salary isn't a dedicated card in this UI; the assistant text explains
+    // the number. A refusal still surfaces on the chat trace. P1 and
+    // skip-level attempts are therefore not advertised in a visible card.
+    if (!result) return;
+    if (result.authorized !== true) {
+      appendMessage("system",
+        "You are not allowed to see this salary.",
+        "Policy decision");
+    }
+  }
+
+  function renderLeaveEligibility(result) {
+    // check_leave_eligibility is a pre-flight. PROBATION_PERIOD surfaces as
+    // the probation notice; the leave form is never shown in that branch.
+    if (!result) return;
+    if (result.authorized === false && result.reason_code === "PROBATION_PERIOD") {
+      showProbation();
+    }
+  }
+
+  function renderSubmitLeaveRequest(result) {
+    if (!result || result.authorized !== true || !result.data) return;
+    hide("employeeConfirmCard");
+    appendMessage("system",
+      `Request ${result.data.request_id || ""} is pending your manager's review.`,
+      "Leave submitted");
+  }
+
+  function showProbation(endDate) {
+    const card = $("probationCard");
+    const text = $("probationText");
+    text.textContent = endDate
+      ? `Leave can be booked after ${endDate}. Every leave type is blocked while probation is still active, on eligibility and on submit.`
+      : "Every leave type is blocked while probation is still active, on eligibility and on submit.";
+    card.hidden = false;
+    hide("employeeConfirmCard");
+  }
+
+  function reasonLabel(result) {
+    if (!result) return "—";
+    const code = result.reason_code;
+    if (!code) return "—";
+    if (code === "NOT_AUTHORIZED") return "Not allowed";
+    if (code === "SERVICE_DISABLED") return "HR is paused";
+    if (code === "PROBATION_PERIOD") return "On probation";
+    if (code === "INSUFFICIENT_BALANCE") return "Over balance";
+    if (code === "INVALID_RANGE") return "Invalid range";
+    if (code === "OVERLAP") return "Overlap";
+    if (code === "IDEMPOTENCY_CONFLICT") return "Key conflict";
+    if (code === "NOT_REVIEWER") return "Not reviewer";
+    if (code === "NOT_MAPPED") return "Unmapped caller";
+    return code.replace(/_/g, " ").toLowerCase();
+  }
+
+  function formatDays(value) {
+    if (typeof value !== "number") return "—";
+    return `${value} day${value === 1 ? "" : "s"}`;
+  }
+  function formatAmount(value) {
+    if (typeof value === "number") return value.toFixed(2);
+    return String(value);
+  }
+
+  function derivedDays(start, end) {
+    if (!start || !end) return "—";
+    const a = Date.parse(`${start}T00:00:00Z`);
+    const b = Date.parse(`${end}T00:00:00Z`);
+    if (Number.isNaN(a) || Number.isNaN(b) || b < a) return "—";
+    return String(Math.round((b - a) / 86_400_000) + 1);
+  }
+
+  function validateDateRange(start, end) {
+    // Form-side defence: an end date before the start date is rejected
+    // without a round-trip. The gateway Lambda still re-evaluates OPA for a
+    // forged submit from the dev console, which is the other half of the
+    // probation and range checks.
+    if (!start || !end) return "Start and end dates are required.";
+    const a = Date.parse(`${start}T00:00:00Z`);
+    const b = Date.parse(`${end}T00:00:00Z`);
+    if (Number.isNaN(a) || Number.isNaN(b)) return "Dates must be ISO calendar dates.";
+    if (b < a) return "End date must be on or after the start date.";
+    return null;
+  }
+
+  /* --------------------------------------------- employee confirm card */
+
+  function showEmployeeConfirm(payload) {
+    const proposed = payload.arguments || payload.proposed || payload;
+    $("ecLeaveType").textContent = String(proposed.leave_type || "—");
+    $("ecStart").textContent = String(proposed.start_date || "—");
+    $("ecEnd").textContent = String(proposed.end_date || "—");
+    $("ecDays").textContent = proposed.days != null
+      ? String(proposed.days)
+      : derivedDays(proposed.start_date, proposed.end_date);
+    $("ecReason").textContent = proposed.reason || "—";
+    $("ecError").hidden = true;
+    show("employeeConfirmCard");
+  }
+
+  async function confirmLeave() {
+    const interrupt = state.pendingInterrupt;
+    if (!interrupt || interrupt.kind !== "employee_confirm") return;
+    const proposed = interrupt.arguments || interrupt.proposed || interrupt;
+    const err = validateDateRange(proposed.start_date, proposed.end_date);
+    if (err) {
+      const errNode = $("ecError");
+      errNode.textContent = err;
+      errNode.hidden = false;
+      return;
+    }
+    $("ecError").hidden = true;
+    state.pendingInterrupt = null;
+    hide("employeeConfirmCard");
+    // The Confirm button is the ONLY path that calls submit_leave_request.
+    // A chat message that says "approve" never reaches this code.
+    await sendResume({
+      decision: "approve",
+      kind: "employee_confirm",
+      arguments: proposed,
+    });
+  }
+
+  async function rejectLeave() {
+    if (!state.pendingInterrupt || state.pendingInterrupt.kind !== "employee_confirm") return;
+    state.pendingInterrupt = null;
+    hide("employeeConfirmCard");
+    appendMessage("system", "You declined to submit this request.", "No request");
+    await sendResume({ decision: "reject", kind: "employee_confirm" });
+  }
+
+  async function editLeave() {
+    if (!state.pendingInterrupt || state.pendingInterrupt.kind !== "employee_confirm") return;
+    const proposed = state.pendingInterrupt.arguments || state.pendingInterrupt.proposed || state.pendingInterrupt;
+    const nextStart = prompt("New start date (YYYY-MM-DD)", proposed.start_date || "");
+    if (nextStart == null) return;
+    const nextEnd = prompt("New end date (YYYY-MM-DD)", proposed.end_date || "");
+    if (nextEnd == null) return;
+    const err = validateDateRange(nextStart, nextEnd);
+    if (err) {
+      const errNode = $("ecError");
+      errNode.textContent = err;
+      errNode.hidden = false;
+      return;
+    }
+    const edited = { ...proposed, start_date: nextStart, end_date: nextEnd };
+    state.pendingInterrupt = null;
+    hide("employeeConfirmCard");
+    await sendResume({
+      decision: "edit",
+      kind: "employee_confirm",
+      arguments: edited,
+    });
+  }
+
   /* ----------------------------------------------- event dispatch */
-  // Fallback for later commits: card rendering plugs into these two hooks.
-  const toolResultRenderers = {};
+  const toolResultRenderers = {
+    get_leave_balance: renderLeaveBalance,
+    get_allowance: renderAllowance,
+    list_direct_reports: renderDirectReports,
+    get_employee_compensation: renderCompensation,
+    check_leave_eligibility: renderLeaveEligibility,
+    submit_leave_request: renderSubmitLeaveRequest,
+  };
 
   function handleEvent(event, body, assistantNode, outstanding) {
     if (!event || typeof event !== "object") return;
@@ -451,8 +694,26 @@
     catch { return null; }
   }
 
-  // Placeholder; interrupt handling is added in the cards commit.
-  function handleRunFinished(_event, _node) { /* no-op for now */ }
+  function handleRunFinished(event, _node) {
+    // @ag-ui/langgraph emits RUN_FINISHED with outcome.type === "interrupt"
+    // when emitInterruptOutcome is true. The outcome's value is the JSON
+    // payload the runtime's interrupt() call passed, which carries kind,
+    // request_id, employee_id, reviewer_employee_id, and so on
+    // (custom-app-plan/human-review.md). The manager-review branch wires
+    // onto the same hook in the next commit.
+    const outcome = event && event.outcome;
+    if (!outcome || outcome.type !== "interrupt") return;
+    const payload = outcome.value || outcome.payload || outcome.data;
+    if (!payload || typeof payload !== "object") return;
+    state.pendingInterrupt = payload;
+    if (payload.kind === "employee_confirm") {
+      showEmployeeConfirm(payload);
+    } else {
+      appendMessage("system",
+        `Review pause received for ${String(payload.kind || "unknown")}. Use the card to decide.`,
+        "Interrupt");
+    }
+  }
 
   /* ------------------------------------------------------------- init */
 
@@ -505,6 +766,10 @@
     }
   });
 
+  $("ecConfirm").addEventListener("click", confirmLeave);
+  $("ecReject").addEventListener("click", rejectLeave);
+  $("ecEdit").addEventListener("click", editLeave);
+
   // Exported shape for the cards commit and for tests that may load this
   // module. Everything here is pure wiring; secrets are never put on this
   // namespace.
@@ -513,6 +778,8 @@
     toolResultRenderers,
     sendMessage,
     sendResume,
+    validateDateRange,
+    reasonLabel,
   });
 
   start();
