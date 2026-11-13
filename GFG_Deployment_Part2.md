@@ -219,6 +219,19 @@ After step 5, delete the `use_cases` block from `platform.yaml`. Then run Part 1
 
 Do not destroy `auth`, `security`, or `networking` to remove Part 2.
 
+## Turn HR off in an emergency
+
+This stops every HR tool in about 30 seconds. It does not redeploy anything.
+
+```bash
+aws ssm put-parameter --overwrite --type String \
+  --name "$SSM/use-cases/hr-tools/enabled" --value false --region "$REGION"
+```
+
+The agent then says the assistant is paused. Set the value back to `true` to resume. If the tools must be unreachable even to the gateway, remove the HR Cedar permits with the next `hr-tools` deploy. Cedar then denies every HR call.
+
+To go back to the previous agent version without removing the agent, point the `live` runtime endpoint at the previous version. See the release section in `custom-app-plan/phases.md`.
+
 ## When something fails
 
 | What you see | Why | What to do |
@@ -229,4 +242,6 @@ Do not destroy `auth`, `security`, or `networking` to remove Part 2.
 | `verify.py` tries to connect to the database from the laptop | H1's check was written against the private endpoint | It should check SSM only. A SQL proof belongs to phase 4 |
 | Seed exits because another employee id exists | This database is not the empty demo | Set `seed: false` or use a database that only has the nine demo ids |
 | Destroy says an export is in use | Something still imports that stack | Destroy the stack named in the error first |
+| Every HR answer is "the assistant is paused" | `use-cases/hr-tools/enabled` is not `true` | Set it to `true` only if the person who turned it off agrees |
+| A tool call is denied with no `decision_log` row | Cedar denied it before the Lambda. Usually a missing or wrong `agent_id` claim | Check the H3 claim for that leaf. Do not widen the permit |
 | Part 1 `verify` fails after phase 5 | The runtime pattern changed, so the old code-interpreter check may not apply | Use the phase 5 CLI tests. After you remove the agent, Part 1 Step 15 applies again |

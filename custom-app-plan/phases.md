@@ -185,21 +185,33 @@ Exit: two test users get two different `employee_id` claims. A terminated employ
 
 Lambdas on the gateway from module 5. Schemas do not include `caller_employee_id`. The Lambda overwrites that field from the H3 claim. It loads `manager_id` and status without the salary column, asks H2, and only then reads the amount.
 
-Cedar permits ship in this same deploy, because the gateway is already `ENFORCE`. Any signed-in employee may invoke `get_employee_compensation`, `get_leave_balance`, `check_leave_eligibility`, `submit_leave_request`, `get_allowance`, and `list_direct_reports`. There is no `approve_leave` and no `list_all_employees`. The gateway role is granted invoke on these functions only.
+Cedar permits ship in this same deploy, because the gateway is already `ENFORCE`. A read permit covers `get_employee_compensation`, `get_leave_balance`, `check_leave_eligibility`, `get_allowance`, and `list_direct_reports`. A separate write permit covers `submit_leave_request`. Each tool is bound to the one leaf `agent_id` that may call it. `record_leave_decision` has its own permit with no leaf. There is no `approve_leave` and no `list_all_employees`. The gateway role is granted invoke on these functions only. The permits are in [tools.md](../docs/hr/tools.md).
+
+A request interceptor puts the caller on the Lambda event. It reads the token the gateway already validated and writes `caller_employee_id`, `agent_id`, and `session_id`, overwriting anything in the arguments. This needs the gateway interceptor to receive request headers. Today `stacks/gateway_stack.py` sets `pass_request_headers=False`. The identity step is added to the REQUEST pass of `tools/egress_interceptor/handler.py`, after the guardrail scan, behind a flag that also turns `pass_request_headers` on. That is the one platform code change this plan needs.
+
+Each Lambda connects with an RDS IAM token for its own database role ([modules.md](../docs/hr/modules.md)), not with the master secret. Each Lambda reads SSM `use-cases/hr-tools/enabled` before anything else.
 
 `get_allowance` reads `payroll_items`. A later finance API replaces the body of that function, not the module boundary.
 
-Exit: the H2 cases pass through `tools/call`, a spoofed caller id still resolves to the token, a stopped OPA or a bad database password does not log a salary, and `decision_log` has a row per call with no amounts. `verify.py` exits 0. Stop. The agent is the next layer.
+Exit: the H2 cases pass through `tools/call`, a spoofed caller id still resolves to the token, a call with the wrong `agent_id` is a Cedar deny, `enabled: false` returns `SERVICE_DISABLED`, a stopped OPA or a bad database password does not log a salary, `decision_log` has a row per call with no amounts and with `agent_id` and `session_id`, and the same row appears in the SIEM through the subscription filter. `verify.py` exits 0. Stop. The agent is the next layer.
 
 ## Layer 2 detail
 
 ### God agent
 
-One agent receives every request. It is not an HR agent. The shape, the three libraries, and the nesting limit are in [god-agent.md](god-agent.md). Human review is in [human-review.md](human-review.md).
+One agent receives every request. It is not an HR agent. The shape, the three libraries, the recursion and call limits, and the kill switch are in [god-agent.md](god-agent.md). Human review is in [human-review.md](human-review.md).
 
 Redeploy module 6 with the god-agent pattern. No new stack. Turning this off is a redeploy of module 6 with the previous pattern, not a destroy of the runtime.
 
-Exit: the original questions, the compound question, the name lookup inside the allowed set, and "ignore your instructions" pass as E1 and as M1 through `scripts/login_chat.py`. A leave question reaches the leave sub-sub-agent, and a salary question does not. A pause returns on the same `runtimeSessionId`, and a decision on that session continues it. A chat line that says "approve" does not. Read the runtime log. `deploy.sh verify` and `scripts/invoke.py` are not this test. If `openai.gpt-oss-120b-1:0` routes to the wrong subagent, stop and change the in-region model. Do not use an `eu.` or `us.` profile without an SCP exception. Stop. The UI is the next layer.
+Exit: the original questions, the compound question, the name lookup inside the allowed set, and "ignore your instructions" pass as E1 and as M1 through `scripts/login_chat.py`. A leave question reaches the leave sub-sub-agent, and a salary question does not. A pause returns on the same `runtimeSessionId`, and a decision on that session continues it. A chat line that says "approve" does not. Read the runtime log. `deploy.sh verify` and `scripts/invoke.py` are not this test. The R rows in [acceptance](../docs/hr/acceptance.md) pass. A forced loop stops at the recursion limit. If `openai.gpt-oss-120b-1:0` routes to the wrong subagent, stop and change the in-region model. Do not use an `eu.` or `us.` profile without an SCP exception. Stop. The UI is the next layer.
+
+### Release and rollback
+
+The H5 questions are a versioned set in `tests/hr_eval/questions.yaml`, with the expected leaf and the expected reason code per row. Run it on demand against a new runtime version before it takes traffic. A wrong leaf or a wrong code blocks the release.
+
+The runtime stack does not create a named endpoint today, and `scripts/login_chat.py` and `scripts/invoke.py` call `qualifier=DEFAULT`. For production, module 6 adds an endpoint named `live`. A new version is tested on `DEFAULT` and promoted with `UpdateAgentRuntimeEndpoint`. Rollback points `live` at the previous version. Redeploying the previous pattern is still the way to remove the agent.
+
+After release, AgentCore Evaluations runs online on 10% of sessions with `Builtin.Correctness`, `Builtin.Helpfulness`, and a tool-selection evaluator. An alarm on the `Bedrock-AgentCore/Evaluations` metrics goes to the existing `{prefix}-platform-alarms` topic. An AWS Budgets alarm on Bedrock cost goes to the same topic.
 
 ## Layer 3 detail
 
@@ -229,6 +241,10 @@ Pick a row. You do not have to take the rows below it.
 | Unknown, peer, manager, skip-level, and terminated targets get the same denial, with no amount and no "this person exists". | Stops directory probing. |
 | OPA down or Postgres down is a deny, not an allow. | A failed check must not fall open. |
 | Amounts and leave reasons are not logged on a deny. | Traces must not leak the number. |
+| Every tool is bound to one leaf `agent_id` in Cedar. | A leaf cannot borrow another leaf's tool. |
+| Read and write tools have separate Cedar permits and separate database roles. | A read path cannot write. |
+| `SERVICE_DISABLED` from SSM stops every HR tool. | Turning HR off does not wait for a deploy. |
+| Leave `reason` never reaches a model. | Employee text is not an instruction to the manager's agent. |
 | `manager_id` is the current manager. Acting managers and matrix reporting are not in these modules. | One hop matches "my four subordinates". |
 | No role bypasses OPA here. | A global HR view is a new Rego rule, reviewed on its own. |
 | Probation blocks every leave type, on eligibility and on submit. | The form is not a back door. |

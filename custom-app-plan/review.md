@@ -90,6 +90,8 @@ One permit per new tool, action `AgentCore::Action::"<target>___<tool>"`, resour
 
 Ship the permits in the same deploy as the targets. Confirm the gateway role can invoke the new Lambdas.
 
+Superseded on 2026-11-13 by [production-principles.md](production-principles.md): the permits are split into read and write, each tool is bound to one leaf `agent_id`, and `record_leave_decision` is permitted only for the review node. The permits are in [`docs/hr/tools.md`](../docs/hr/tools.md).
+
 Exit: `tools/list` as an employee does not show `approve_leave`. A salary call for the manager still returns `not_authorized` from the tool, not from the model.
 
 ### 5. Supervisor and three specialists, one runtime

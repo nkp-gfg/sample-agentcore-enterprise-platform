@@ -55,6 +55,41 @@ Filesystem writes are denied for `/**` with `FilesystemPermission(operations=["w
 
 Department agents and leaves do not inherit a host directory. Gateway tools live only on the leaf named for that tool.
 
+## Agent identity
+
+The ten agents share the runtime's workload identity. That identity is the agent of record in v1. The gateway still has to know which leaf made a call, so each leaf asks for its own gateway token and sets `clientMetadata.calling_agent` to its fixed name from code: `leave-balance`, `leave-eligibility`, `leave-submit`, `compensation`, `direct-reports`, or `allowance`. The model cannot set it. The pre-token Lambda turns it into the `agent_id` claim ([modules.md](../docs/hr/modules.md)). Cedar binds each tool to one `agent_id` ([tools.md](../docs/hr/tools.md)). The manager review node uses `review-node`, with the reviewer's token, and only for `record_leave_decision`. The god agent and the department agents never ask for a gateway token.
+
+Each leaf keeps its token in memory for that turn only. It is not written to the checkpoint, the scratch state, or a log.
+
+## Guardrail on every model
+
+Every agent, including the god agent and the department agents, gets its `ChatBedrock` from one factory that passes `guardrails={"guardrailIdentifier": GUARDRAIL_ID, "guardrailVersion": GUARDRAIL_VERSION}`, the same block `agent-code/agui-langgraph-agent/agent.py` uses. With `require_guardrails: true`, IAM denies any model call without it. A unit test builds all ten agents and fails if one model lacks the guardrail.
+
+## Untrusted data
+
+A tool result is data. The leaf prompt says so, and it reads only the structured fields in [tools.md](../docs/hr/tools.md). The guardrail's prompt-attack filter does not read tool results, so the defence here is the shape of the data, not the filter.
+
+- A `task` description carries the user's question and the ids the parent resolved. It never copies text from a tool result.
+- Leave `reason` is never put into a model message. It travels only in the interrupt payload and is drawn as plain text on the card.
+- `full_name` is matched against the allowed set. It is never followed as an instruction.
+
+## Limits
+
+LangGraph's default recursion limit is 10,007 super-steps. That is not a limit for this agent.
+
+| Where | Limit | When it trips |
+|---|---|---|
+| God agent stream config | `recursion_limit=40` | `GraphRecursionError`. The runtime answers "I could not finish that. Please ask again." and logs `LIMIT_RECURSION` |
+| Each department `CompiledSubAgent` | `.with_config(recursion_limit=25)` | Same |
+| Each leaf `create_agent` | `ModelCallLimitMiddleware(run_limit=4, exit_behavior="end")` and `ToolCallLimitMiddleware(run_limit=2)` | The leaf stops and reports that it did not finish |
+| Runtime entry point | 20 turns per employee per 10 minutes, counted on the verified `sub` | Answers without calling the model |
+
+Departments and leaves get these through the Deep Agents customization API, not by editing the library.
+
+## Kill switch
+
+Every HR Lambda reads SSM `use-cases/hr-tools/enabled`. Anything other than `true` returns `SERVICE_DISABLED`, and the leaf says the assistant is paused. The god agent does not retry. Turning the agent itself off is still a redeploy of module 6 with the previous pattern. The SSM switch is the one that takes effect in seconds.
+
 ## Checkpointer
 
 Only the god agent is compiled with a checkpointer. The department graphs are compiled without one, so a pause belongs to the parent's thread and `Command(resume=...)` on that thread continues the leaf that paused.
@@ -69,4 +104,4 @@ AgentCore Memory stays the platform memory for the verified `sub`. It is not the
 
 Layer 2 redeploys module 6. The pattern is a new entry, `god-agent`, copied from `agent-code/agui-langgraph-agent` so AgentCore still proxies AG-UI SSE. Adding that name to `AGENT_PATTERNS` is part of layer 2, not a new stack. The sample `agui-langgraph-agent` stays the workshop pattern. The entry point accepts the same `prompt` and `runtimeSessionId` body the other patterns accept, and a decision for an open pause on that session.
 
-Turning the god agent off is a redeploy of module 6 with the previous pattern.
+Turning the god agent off is a redeploy of module 6 with the previous pattern. Production traffic goes through a named runtime endpoint, not `DEFAULT`. A bad version is rolled back by pointing that endpoint at the previous version with `UpdateAgentRuntimeEndpoint`. The six production rules and where each is met are in [production-principles.md](production-principles.md).

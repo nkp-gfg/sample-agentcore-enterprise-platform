@@ -64,13 +64,15 @@ use_cases:
     retain_data: true
     seed: false
   hr-identity: {}
-  hr-tools: {}
+  hr-tools:
+    audit_stream_arn: ""
 ```
 
 | Key | Use case | Meaning |
 |---|---|---|
 | `database_name` | hr-data | Database name inside the cluster. Default `hr`. |
 | `retain_data` | hr-data | `true` keeps the cluster, the subnet group, and the secret when the stack is deleted. Default `true` when the key is omitted. `false` is only for a disposable account. The use-case `build()` reads this from its own config dict. The platform context does not pass a retain flag. |
+| `audit_stream_arn` | hr-tools | Firehose stream that delivers HR audit lines to the SIEM. Empty means no export |
 | `seed` | hr-data | `true` loads [the demo seed](schema.md). Default `false`. Never seed a database that holds real employees. |
 
 ## Deploy and destroy
@@ -115,10 +117,37 @@ The Lambda selects `employee_id` where `cognito_sub` equals that `sub`, `status`
 | `employee_id` | The business id from that row |
 | `user_id` | The same Cognito `sub` |
 | `role` | The constant `employee` |
+| `agent_id` | `clientMetadata.calling_agent`, only if it is one of `leave-balance`, `leave-eligibility`, `leave-submit`, `compensation`, `direct-reports`, `allowance`, `review-node`. Any other value adds no `agent_id`, and Cedar then denies every HR tool |
 
 There is no `role` column. `hr_admin` and `payroll_admin` are not issued, and `role` does not change what OPA allows. An active row is missing, or the row is terminated: the Lambda adds no `employee_id`. It does not invent a guest employee. The tool then returns `NOT_MAPPED` and does not call OPA.
 
+The runtime code sets `calling_agent`, one token per leaf. The model cannot set it. In v1 this is asserted by the runtime, not proved by a separate credential. One Cognito app client per leaf, matched in Cedar on `client_id`, is the stronger version when the departments become separate runtimes.
+
+The HR M2M app client issues access tokens valid for 15 minutes. Its client secret is read from Secrets Manager by exact ARN, only by the runtime role, and rotated. It is never in an environment variable, the checkpoint, or a log.
+
 Destroy removes this trigger from the user pool. Module 3 stays.
+
+## Database roles
+
+H1 creates the roles. The master secret is for H1 only. No Lambda and no runtime uses it.
+
+| Role | Database | Grants | Used by |
+|---|---|---|---|
+| `hr_reader` | `hr` | SELECT on `employees`, `salaries`, `leave_balances`, `leave_requests`, `payroll_items` | the five read tools |
+| `hr_writer` | `hr` | INSERT on `leave_requests`. UPDATE of `status`, `decided_by`, `decided_at` on `leave_requests`. SELECT as `hr_reader` | `submit_leave_request`, `record_leave_decision` |
+| `hr_audit` | `hr` | INSERT on `decision_log`. No UPDATE, DELETE, or SELECT | every HR Lambda |
+| `hr_identity` | `hr` | SELECT of `employee_id`, `cognito_sub`, `status` on `employees` | the H3 pre-token Lambda |
+| `agent_checkpoint` | `agent_state` | owner of the checkpoint tables. No access to `hr` | the god agent |
+
+Lambdas connect with RDS IAM authentication. A token is valid for 15 minutes. The `hr-payroll` and `hr-finance` roles have `rds-db:connect` for `hr_reader` and `hr_audit` only. The `hr-ops` role may also connect as `hr_writer`, and the function opens that connection only inside `submit_leave_request` and `record_leave_decision`. Moving those two tools to their own target and function is the stronger split, at the cost of a fourth Lambda.
+
+## Kill switch and audit export
+
+| Parameter | Publisher | Meaning |
+|---|---|---|
+| `use-cases/hr-tools/enabled` | hr-tools, initial value `true` | Anything other than `true` makes every HR tool return `SERVICE_DISABLED`. An operator changes it with `aws ssm put-parameter --overwrite`. No deploy |
+
+hr-tools adds a CloudWatch Logs subscription filter on its Lambda log groups to a Firehose stream named in `use_cases.hr-tools.audit_stream_arn`. When that key is empty, no filter is created and the SIEM gap is recorded in the risk register. HR log groups keep 365 days.
 
 ## SSM interface
 
@@ -131,5 +160,6 @@ Published under `/{project}/{environment}/use-cases/`. No passwords.
 | `use-cases/hr-data/database-name` | hr-data | hr-tools, hr-identity |
 | `use-cases/hr-data/checkpoint-database` | hr-data | the god agent |
 | `use-cases/hr-identity/function-arn` | hr-identity | operators, detach-on-destroy |
+| `use-cases/hr-tools/enabled` | hr-tools | every HR Lambda, operators |
 
 hr-tools and hr-identity read these with `ssm.StringParameter.value_for_string_parameter`. They do not import the hr-data stack.

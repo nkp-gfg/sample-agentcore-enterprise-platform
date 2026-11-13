@@ -8,6 +8,7 @@ Decisions that are already locked, and the module graph, stay in the planning no
 - [Modules and destroy order](../../custom-app-plan/phases.md)
 - [God agent](../../custom-app-plan/god-agent.md)
 - [Human review](../../custom-app-plan/human-review.md)
+- [Production principles](../../custom-app-plan/production-principles.md)
 
 If a planning note and a page in this folder disagree about a column, a tool field, or an error code, this folder wins. The planning notes still win on product rules: who may see a salary, probation, and pending leave.
 
@@ -19,7 +20,9 @@ If a planning note and a page in this folder disagree about a column, a tool fie
 | [Schema](schema.md) | Tables, constraints, and the demo seed |
 | [Policy](policy.md) | The OPA input document and the reason codes |
 | [Tools](tools.md) | Gateway tool names, arguments, and responses |
-| [Acceptance](acceptance.md) | The cases each module must pass |
+| [Acceptance](acceptance.md) | The cases each module must pass, and the red-team set |
+
+The six production rules, the verdict for each, and the page where each fix lives are in [production principles](../../custom-app-plan/production-principles.md).
 
 The open questions in the review are already closed by their defaults: every role uses the direct-report rule, one hop only, no leave type during probation, and telephone allowance reads Postgres. A different answer means a spec change before the code change.
 

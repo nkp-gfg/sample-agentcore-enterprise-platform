@@ -8,6 +8,7 @@ Product decisions and the module graph. The pages an implementer codes from are 
 | [phases.md](phases.md) | Layer 1 CDK, layer 2 CLI agent, layer 3 UI, and destroy order |
 | [god-agent.md](god-agent.md) | The one entry agent, its subagents, and the LangChain stack |
 | [human-review.md](human-review.md) | Employee confirmation and manager review interrupts |
+| [production-principles.md](production-principles.md) | The six production rules, the verdict for each, and where each fix lives |
 
 | Spec | Use it for |
 |---|---|

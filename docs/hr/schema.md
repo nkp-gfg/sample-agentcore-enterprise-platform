@@ -43,7 +43,7 @@ A pending request does not change `remaining_days`.
 | `reason` | text, not null | Not written to logs. |
 | `status` | text, not null | `pending`, `approved`, or `rejected`. The tool inserts `pending` only. |
 | `idempotency_key` | text, not null | Unique with `employee_id`. |
-| `decided_by` | text, nullable, references `employees` | Set when a manager review resumes. Null while pending. |
+| `decided_by` | text, nullable, references `employees` | Set by `record_leave_decision` from the reviewer's token. Null while pending. |
 | `decided_at` | timestamptz, nullable | Set in the same update as `decided_by`. |
 
 ## payroll_items
@@ -65,6 +65,15 @@ Append-only. No amounts, no leave reason, no names.
 | `target_employee_id` | text, nullable |
 | `allow` | boolean, not null |
 | `reason_code` | text, not null |
+| `agent_id` | text, not null |
+| `session_id` | text, nullable |
+| `trace_id` | text, nullable |
+| `decided_by_layer` | text, not null, `opa` or `tool` |
+| `policy_version` | text, not null |
+
+`tool` means the Lambda decided before OPA, for example `SERVICE_DISABLED` or `NOT_MAPPED`. A Cedar deny never reaches the Lambda, so Cedar decisions are in Cedar's own decision log, not in this table. H4 confirms which log group that is before the SIEM filter is written. The SIEM joins the two on `session_id` and `trace_id`.
+
+The `hr_audit` role may only INSERT into this table. No role in the HR modules may UPDATE or DELETE it.
 
 ## Demo seed
 
