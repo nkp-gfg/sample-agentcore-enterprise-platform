@@ -40,6 +40,7 @@ class GatewayStack(cdk.Stack):
         cedar_mode: str = "LOG_ONLY",
         debug_exceptions: bool = True,
         kms_key_arn: str = "",
+        pass_request_headers: bool = False,
         **kwargs,
     ):
         super().__init__(scope, id, **kwargs)
@@ -128,6 +129,23 @@ class GatewayStack(cdk.Stack):
                 )
             )
 
+            # pass_request_headers (default False) is the H4 flag from
+            # custom-app-plan/phases.md § H4: when the hr-tools use
+            # case ships, the interceptor needs the gateway-validated
+            # JWT on the REQUEST pass to overwrite caller_employee_id,
+            # agent_id, and session_id on the tool arguments. The
+            # interceptor's identity-promotion block is further gated
+            # by the HR_IDENTITY_PROMOTION environment variable, so
+            # unrelated gateway targets are unaffected even with the
+            # header pass-through on. Any other use of this flag needs
+            # its own review — do not generalise.
+            interceptor_env = {
+                "GUARDRAIL_ID": guardrail.attr_guardrail_id,
+                "GUARDRAIL_VERSION": guardrail.attr_version,
+            }
+            if pass_request_headers:
+                interceptor_env["HR_IDENTITY_PROMOTION"] = "1"
+
             self._interceptor_fn = _lambda.Function(
                 self,
                 "EgressInterceptor",
@@ -138,10 +156,7 @@ class GatewayStack(cdk.Stack):
                 architecture=_lambda.Architecture.ARM_64,
                 timeout=cdk.Duration.seconds(30),
                 role=interceptor_role,
-                environment={
-                    "GUARDRAIL_ID": guardrail.attr_guardrail_id,
-                    "GUARDRAIL_VERSION": guardrail.attr_version,
-                },
+                environment=interceptor_env,
             )
             # The gateway invokes interceptors with its service role, not only via
             # the function's resource policy. Without this every request returns 500.
@@ -162,7 +177,7 @@ class GatewayStack(cdk.Stack):
                         ),
                     ),
                     input_configuration=agentcore.CfnGateway.InterceptorInputConfigurationProperty(
-                        pass_request_headers=False,
+                        pass_request_headers=pass_request_headers,
                     ),
                 ),
             ]
@@ -374,13 +389,33 @@ class GatewayStack(cdk.Stack):
                 for target in targets:
                     policy.node.add_dependency(target)
 
-        # SSM
+        # SSM — the gateway's public interface
+        # (docs/PLATFORM_INTERFACE.md). Use cases discover these under
+        # {ssm_prefix}/gateway/ rather than importing the stack.
         ssm.StringParameter(
             self,
             "SSMGatewayUrl",
             parameter_name=f"/{project_name}/{environment}/gateway/url",
             string_value=self._gateway.attr_gateway_url,
         )
+        # The ARN is published so a use case can add a Lambda resource
+        # policy keyed to the gateway without importing the stack; H4
+        # (hr-tools) reads it to deploy its Cedar permits.
+        ssm.StringParameter(
+            self,
+            "SSMGatewayArn",
+            parameter_name=f"/{project_name}/{environment}/gateway/arn",
+            string_value=self._gateway.attr_gateway_arn,
+        )
+        # Published only when Cedar is on. hr-tools asserts its three
+        # permits land in this policy engine.
+        if enable_cedar:
+            ssm.StringParameter(
+                self,
+                "SSMGatewayPolicyEngineId",
+                parameter_name=f"/{project_name}/{environment}/gateway/policy-engine-id",
+                string_value=policy_engine.attr_policy_engine_id,
+            )
 
         cdk.CfnOutput(self, "GatewayUrl", value=self._gateway.attr_gateway_url)
         cdk.CfnOutput(self, "GatewayArn", value=self._gateway.attr_gateway_arn)
