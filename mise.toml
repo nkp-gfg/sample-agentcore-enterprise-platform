@@ -1,6 +1,10 @@
 [tools]
 node = "24"
 python = "3.13"
+# H2 (tests/test_hr_authz.py) and H4 (hr-tools Lambdas) evaluate
+# use-cases/hr-tools/policy/authz.rego with the OPA CLI. The version here
+# matches the pin in .gitlab-ci.yml; bump both together.
+"ubi:open-policy-agent/opa" = { version = "1.22.4", exe = "opa" }
 
 [env]
 _.python.venv = { path = ".venv", create = true }
