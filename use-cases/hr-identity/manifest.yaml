@@ -1,0 +1,16 @@
+# The manifest is the only file the platform reads about this use case.
+# Validated by UseCaseManifest in infra_utils/platform_config.py.
+name: hr-identity
+owner: hr-platform
+summary: >-
+  Pre-token-generation Lambda on the module 3 Cognito user pool. Looks up
+  the signed-in employee in the hr-data Aurora cluster and adds the
+  employee_id, role, and agent_id claims used by Cedar and the HR tool
+  Lambdas.
+# The manifest contract only names core stacks here. hr-identity also
+# depends on the hr-data use case at runtime (it reads the HR database
+# through the SSM parameters hr-data publishes), but `requires:` cannot
+# name another use case — deploy hr-data first.
+requires: [auth]
+stacks: [uc-hr-identity]
+entry: stack.py
