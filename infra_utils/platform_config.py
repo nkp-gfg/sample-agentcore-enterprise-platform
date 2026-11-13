@@ -352,6 +352,10 @@ AGENT_PATTERNS = (
     "claude-sdk-multi-agent",
     "agui-strands-agent",
     "agui-langgraph-agent",
+    # Layer-2 HR assistant god-agent pattern. Same runtime slot as the other
+    # AG-UI patterns; selected with `agents.pattern: god-agent` in
+    # platform.yaml. Shape: custom-app-plan/god-agent.md.
+    "god-agent",
 )
 
 
