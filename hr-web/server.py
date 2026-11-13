@@ -115,7 +115,7 @@ def _project_and_env(
     if (not project or not environment) and manifest.exists():
         try:
             from infra_utils.platform_config import load_platform_config
-        except Exception as exc:  # noqa: BLE001 — turn any import issue into guidance
+        except Exception as exc:
             raise ConfigError(
                 "Could not load platform.yaml to resolve project/environment. "
                 "Set PROJECT_NAME and ENVIRONMENT, or run from a repo checkout "
@@ -160,7 +160,7 @@ def load_config(
     if ssm_reader is None:
         try:
             from scripts.utils import resolve_region
-        except Exception as exc:  # noqa: BLE001 — turn into friendly guidance
+        except Exception as exc:
             raise ConfigError(
                 "Could not import scripts/utils for region resolution. Run from "
                 f"a checkout with scripts/ importable. ({exc})"
@@ -232,16 +232,16 @@ class HrWebHandler(SimpleHTTPRequestHandler):
 
     # Every write verb is refused. The server reads SSM once at boot and never
     # changes state afterwards, so GET + HEAD are the full surface.
-    def do_POST(self) -> None:  # noqa: N802 — http.server API
+    def do_POST(self) -> None:
         self._reject_mutation("POST")
 
-    def do_PUT(self) -> None:  # noqa: N802
+    def do_PUT(self) -> None:
         self._reject_mutation("PUT")
 
-    def do_DELETE(self) -> None:  # noqa: N802
+    def do_DELETE(self) -> None:
         self._reject_mutation("DELETE")
 
-    def do_PATCH(self) -> None:  # noqa: N802
+    def do_PATCH(self) -> None:
         self._reject_mutation("PATCH")
 
     def _reject_mutation(self, method: str) -> None:
@@ -293,7 +293,7 @@ class HrWebHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self) -> None:  # noqa: N802 — http.server API
+    def do_GET(self) -> None:
         try:
             self._require_loopback_host()
             path_only = self.path.split("?", 1)[0]
