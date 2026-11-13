@@ -332,6 +332,8 @@ first.
 | Sign-in and chat as a real user | `scripts/login_chat.py` |
 | `stuats.md` (live identifiers) removed from the branch, including its history | git |
 | Both SNS subscriptions confirmed | AWS |
+| Security doc covers interceptor scope, its IAM grant, and the KMS grants | `docs/SECURITY_CONTROLS.md` |
+| Test that the token check stays isolated in every agent pattern | `tests/test_agent_auth_isolation.py` |
 
 ### Must do
 
@@ -348,15 +350,11 @@ first.
    an inference-profile exception.
 4. **Monitor guardrail interventions** for prompt-attack false positives in the
    first weeks.
-5. **Update `docs/SECURITY_CONTROLS.md`** to describe:
-   - The interceptor scanning only `tools/call`.
-   - The new KMS and interceptor grants.
-6. **Pin the model IAM ARN to the deployment Region for in-Region models.**
+5. **Pin the model IAM ARN to the deployment Region for in-Region models.**
    `allowed_model_resources` uses `arn:aws:bedrock:*::foundation-model/...`. The
    wildcard is required for cross-Region profiles, but an in-Region model could be
    pinned.
-7. **Add a test for the auth/tool error split** in the agent patterns.
-8. **`DEFAULT_MODEL_ID` fallbacks in `agent-code/*/agent.py` are still `eu.`
+6. **`DEFAULT_MODEL_ID` fallbacks in `agent-code/*/agent.py` are still `eu.`
    Claude profiles.** Production never uses them, because `agents.model_id` is
    required and deploy injects it. Workshop mode outside the EU would. Change them
    only together with `tests/test_model_allowlist.py` and `scripts/preflight.py`,
@@ -364,9 +362,9 @@ first.
 
 ### Nice to have
 
-9. **Remove the duplicate OpenTelemetry logging warning**: unset
+7. **Remove the duplicate OpenTelemetry logging warning**: unset
    `OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED`, as the warning suggests.
-10. **Reduce guardrail calls in the interceptor** by scanning all strings of one
-    tool call in a single `ApplyGuardrail` request.
-11. **A small web chat page** on `http://localhost:3000`, so testers don't need
-    the terminal.
+8. **Reduce guardrail calls in the interceptor** by scanning all strings of one
+   tool call in a single `ApplyGuardrail` request.
+9. **A small web chat page** on `http://localhost:3000`, so testers don't need
+   the terminal.

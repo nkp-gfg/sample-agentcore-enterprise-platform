@@ -105,13 +105,26 @@ accelerator never uses.
   Guardrails (`ApplyGuardrail`), config sourced from `control-library/guardrails/`. It performs
   **no authorization** — Cedar (item 3) is a separate control behind a separate flag, and
   `enable_egress_filter` alone gives you none of it.
-- **Masking, not blocking:** the handler raises only when an assessment comes back
-  `action == "BLOCKED"`; otherwise it substitutes anonymized text and the request proceeds.
-- **Caveats:** the `gatewayRequest`/`gatewayResponse` shape is unvalidated, so the handler
-  scans every string leaf generically and passes payload shapes it does not recognise through
-  **unchanged**. There is no try/except around `ApplyGuardrail`, so a Bedrock throttle surfaces
-  as a Lambda failure rather than a defined fail-open/fail-closed decision. Validate against
-  live Gateway traces before relying on it in production.
+- **Masking, not blocking:** anonymized text is substituted and the call proceeds. Only an
+  assessment with `action == "BLOCKED"` stops it: the interceptor then answers the caller
+  with a JSON-RPC tool error (`isError: true`, "Blocked by egress guardrail") and the target
+  is never called.
+- **What is scanned:** only `tools/call` traffic, which is where data crosses to and from a
+  target. The request pass scans `params.arguments` as guardrail `INPUT`; the response pass
+  scans `result` as `OUTPUT`. Protocol traffic (`initialize`, `tools/list`) passes through
+  unchanged: the tool definitions come from this stack's own Lambda targets, and scanning
+  them would rewrite JSON-RPC fields.
+- **Contract:** the output follows the
+  [AgentCore interceptor format](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-interceptors-types.html)
+  (`transformedGatewayRequest.body` / `transformedGatewayResponse`). Anything else makes the
+  gateway return `InterceptorException` for every call. Pinned by
+  `tests/test_egress_interceptor.py`.
+- **Permissions:** the gateway invokes the interceptor with its own service role, so the role
+  carries `lambda:InvokeFunction` on the interceptor ARN only (`InvokeEgressInterceptor`). The
+  Lambda resource policy alone is not enough.
+- **Caveats:** each string in the scanned tool data is one `ApplyGuardrail` call, which adds
+  latency and cost. There is no try/except around `ApplyGuardrail`, so a Bedrock throttle
+  surfaces as a Lambda failure rather than a defined fail-open/fail-closed decision.
 - **Toggle:** `enable_egress_filter`, deployed by `gateway_stack.py` like every other flag.
 
 ## Cedar authorization (item 3)
@@ -228,6 +241,25 @@ repo uses today.
 - SCPs are additive-deny; attach to a sandbox OU first.
 - Guardrail resolves to the `DRAFT` version (via `guardrail.attr_version`, not a hardcoded
   string); pin a published version for production.
-- Subscribe an endpoint to the item-7 SNS topic to actually receive alerts. The topic is not
-  KMS-encrypted — add a CMK if alert contents are sensitive in your environment.
+- `observability.alarm_email` is subscribed to the item-7 SNS topic as well as the alarm
+  topic. SNS sends one confirmation email per topic; alerts arrive only after both are
+  confirmed. With `enable_security`, both topics are encrypted with the platform CMK, whose
+  key policy lets `cloudwatch.amazonaws.com` and `events.amazonaws.com` publish (scoped by
+  `aws:SourceAccount`).
+
+## KMS grants for CMK-encrypted resources
+
+A resource encrypted with the platform CMK is only usable if every caller can use the key.
+AgentCore uses the key with the *caller's* identity, so the grant goes on the caller's role:
+
+| Caller | Grant | Scope |
+|---|---|---|
+| Runtime role → Memory | `kms:Decrypt`, `kms:GenerateDataKey`, `kms:DescribeKey` (`MemoryKmsViaAgentCore`) | The platform key only, and only when `kms:ViaService` is `bedrock-agentcore.<region>.amazonaws.com` |
+| Gateway role → Gateway | `kms:Decrypt`, `kms:GenerateDataKey`, `kms:DescribeKey` | The platform key only |
+| CloudWatch alarms, EventBridge → SNS | `kms:Decrypt`, `kms:GenerateDataKey*` (key policy) | Same account only (`aws:SourceAccount`) |
+
+Without the runtime grant, Memory writes fail with `Unable to perform KMS operations`. A
+`verify` run as an administrator still passes, so read the runtime logs as well. CloudWatch
+log groups use the default AWS encryption on purpose, so readers and SIEM shipping need no
+key access.
 - Item 7 needs CloudTrail management events, so enable it together with `enable_security`.
