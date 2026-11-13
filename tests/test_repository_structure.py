@@ -21,6 +21,24 @@ def test_unregistered_top_level_directory_fails():
     assert errors == ["unregistered top-level directory: new-component"]
 
 
+def test_hr_web_is_a_registered_top_level_directory():
+    """Layer 3 of the HR plan lives at hr-web/ by design.
+
+    The directory is a static frontend plus a loopback-only Python server,
+    following the dashboard/ precedent. It is not a CloudFormation stack and
+    is not a new agent-code pattern, so the structure check must accept it
+    the same way it accepts dashboard/.
+    """
+    errors = check_top_level_directories(
+        [
+            PurePosixPath("hr-web/server.py"),
+            PurePosixPath("hr-web/public/index.html"),
+            PurePosixPath("hr-web/tests/test_server_boundary.py"),
+        ]
+    )
+    assert errors == []
+
+
 def test_legacy_capability_root_fails_with_migration_guidance():
     errors = check_top_level_directories(
         [PurePosixPath("migration-adapter/adapter.py")]

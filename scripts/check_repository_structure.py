@@ -18,6 +18,7 @@ ALLOWED_TOP_LEVEL_DIRECTORIES = {
     "dashboard",
     "docker",
     "docs",
+    "hr-web",
     "infra_utils",
     "migration",
     "presets",
