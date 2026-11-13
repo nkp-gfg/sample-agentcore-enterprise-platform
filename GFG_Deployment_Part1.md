@@ -1,4 +1,6 @@
-# GFG deployment
+# GFG deployment, part 1
+
+This is the platform. The HR assistant is [GFG_Deployment_Part2.md](GFG_Deployment_Part2.md). Do not start Part 2 until Step 15 below passes.
 
 Do the steps in order. Do not skip a step. Do not run `./scripts/deploy.sh workshop`. That command refuses production mode.
 

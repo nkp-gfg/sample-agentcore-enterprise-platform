@@ -15,6 +15,7 @@ adding a generic `src/` layer.
 ├── agent-code/              independently built runtime images
 ├── migration/               adapter, network probe, and EBA simulation
 ├── control-library/         controls and their organization deployment module
+├── custom-app-plan/         HR assistant decisions; the coding spec is docs/hr/
 ├── use-cases/               opt-in product integrations
 ├── dashboard/               loopback EBA Console
 ├── tools/                   sample Gateway tools and interceptors
@@ -39,6 +40,7 @@ AgentCore CLI configuration, and local container composition respectively.
 | Existing-agent migration behavior | `migration/<component>/` | Opt-in migration configuration and migration tests |
 | Operator command | `scripts/` | Bounded command interface and automated test |
 | Customer-facing explanation | `docs/` | Documentation integrity check and sidebar entry when navigable |
+| Product decision that is not yet a use case | `custom-app-plan/` | Pointer from `docs/` when the spec is ready to implement |
 
 Do not add a top-level directory merely because a component uses a different
 language or deployment tool. Add it to the closest capability root. A genuinely

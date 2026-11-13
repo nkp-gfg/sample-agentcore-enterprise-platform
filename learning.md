@@ -18,9 +18,9 @@ such as `<ACCOUNT_ID>` stand in for them.
 - **Region and model are free choices.** Nothing in the code is tied to
   eu-west-1. A colleague picks any Region where AgentCore runs and any Bedrock
   model with tool use, and writes both into `platform.yaml`
-  (`GFG_Deployment.md`, Step 5).
+  (`GFG_Deployment_Part1.md`, Step 5).
 - A person can sign in and chat with `scripts/login_chat.py`
-  (`GFG_Deployment.md`, Step 14).
+  (`GFG_Deployment_Part1.md`, Step 14).
 - The work is committed on `n-fe-sandbox-deployment` and not pushed.
 
 ---
@@ -298,9 +298,9 @@ first.
 
 | Risk | What would happen | How to catch it early |
 |---|---|---|
-| Model changed to an `eu.`, `us.` or `global.` ID | Random `AccessDenied` if the SCP blocks one of the profile's Regions | Check the profile's Regions (`GFG_Deployment.md`, Step 5) or get an SCP exception first |
-| Colleague picks a model without tool use | The agent answers but never calls its tools | Run the tool-use check in `GFG_Deployment.md`, Step 5 |
-| Colleague picks a Region without AgentCore | `build` fails early | Run the AgentCore check in `GFG_Deployment.md`, Step 5 |
+| Model changed to an `eu.`, `us.` or `global.` ID | Random `AccessDenied` if the SCP blocks one of the profile's Regions | Check the profile's Regions (`GFG_Deployment_Part1.md`, Step 5) or get an SCP exception first |
+| Colleague picks a model without tool use | The agent answers but never calls its tools | Run the tool-use check in `GFG_Deployment_Part1.md`, Step 5 |
+| Colleague picks a Region without AgentCore | `build` fails early | Run the AgentCore check in `GFG_Deployment_Part1.md`, Step 5 |
 | Port 3000 is busy when running `login_chat.py` | The sign-in redirect cannot be caught | Stop whatever uses port 3000 |
 | New gateway target or interceptor added | 500 errors from the gateway | Grant `lambda:InvokeFunction` on the gateway role |
 | New Cedar policy file | Gateway creation fails | Name the gateway ARN and depend on the targets |
@@ -328,7 +328,7 @@ first.
 | Gateway waits for its role policy on a fresh deploy | `stacks/gateway_stack.py` |
 | Unit tests for the interceptor grant, gateway ordering, and Memory KMS grant | `tests/test_gateway_role.py`, `tests/test_runtime_role_scoping.py` |
 | Alert email also subscribed to the security-alerts topic | `stacks/observability_stack.py` |
-| Region- and model-neutral deployment guide, sign-in step, and test checklist | `GFG_Deployment.md`, Steps 5, 14, 15 |
+| Region- and model-neutral deployment guide, sign-in step, and test checklist | `GFG_Deployment_Part1.md`, Steps 5, 14, 15 |
 | Sign-in and chat as a real user | `scripts/login_chat.py` |
 | `stuats.md` (live identifiers) removed from the branch, including its history | git |
 | Both SNS subscriptions confirmed | AWS |
@@ -338,7 +338,7 @@ first.
 
 ### Still to do
 
-1. **Have a colleague run `GFG_Deployment.md`** end to end, ideally in another
+1. **Have a colleague run `GFG_Deployment_Part1.md`** end to end, ideally in another
    Region, and tick the Step 15 checklist.
 2. **Evaluate the chosen model on real tasks** before users rely on it. If Claude
    is required, use a Region where the SCP allows all of its profile's Regions, or

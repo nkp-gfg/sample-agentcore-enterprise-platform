@@ -27,6 +27,7 @@ Build
 - [Repository structure](REPOSITORY_STRUCTURE.md)
 - [Add gateway tools](GATEWAY_TARGETS.md)
 - [Build a use case](PLATFORM_INTERFACE.md)
+- [HR assistant](hr/README.md)
 
 Migrate
 - [EBA migration runbook](MIGRATION_RUNBOOK.md)

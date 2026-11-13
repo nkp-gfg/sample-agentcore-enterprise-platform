@@ -14,6 +14,7 @@ ALLOWED_TOP_LEVEL_DIRECTORIES = {
     ".github",
     "agent-code",
     "control-library",
+    "custom-app-plan",
     "dashboard",
     "docker",
     "docs",
