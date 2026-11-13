@@ -260,7 +260,7 @@ PREFIX="${PROJECT_NAME}-${ENVIRONMENT}"
 # Selects which Dockerfile under agent-code/ the runtime builds (app.py reads
 # it as the agent_pattern context value). Validated here because a typo would
 # otherwise surface minutes later as a CodeBuild failure on a missing path.
-AGENT_PATTERNS="orchestrator strands-agent langgraph-agent claude-sdk-agent claude-sdk-multi-agent agui-strands-agent agui-langgraph-agent"
+AGENT_PATTERNS="orchestrator strands-agent langgraph-agent claude-sdk-agent claude-sdk-multi-agent agui-strands-agent agui-langgraph-agent god-agent"
 AGENT_PATTERN="${AGENT_PATTERN:-orchestrator}"
 case " $AGENT_PATTERNS " in
     *" $AGENT_PATTERN "*) ;;
