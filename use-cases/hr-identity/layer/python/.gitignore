@@ -1,0 +1,6 @@
+# Everything in this directory is installed at build time (walkthrough.md)
+# and is not committed. The directory itself has to exist so
+# `cdk.Code.from_asset(layer/)` has something to zip at synth time, even
+# when nothing has been installed yet.
+*
+!.gitignore
