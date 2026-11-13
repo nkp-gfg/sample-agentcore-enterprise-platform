@@ -49,10 +49,9 @@ from infra_utils.platform_config import (
 
 HEALTH_PROMPT = "Health check: reply with one word."
 CODE_INTERPRETER_MARKER = "CODE_INTERPRETER_OK"
-CODE_INTERPRETER_PROMPT = (
-    "Use execute_python_securely to run print('CODE_INTERPRETER_OK'). "
-    "After the tool succeeds, reply with one word."
-)
+# Plain-language on purpose: an imperative "use <tool> to run <code>" is flagged
+# by the guardrail's PROMPT_ATTACK filter at production (HIGH) strength.
+CODE_INTERPRETER_PROMPT = "Using Python, print the text CODE_INTERPRETER_OK and share the output."
 
 
 def load_config() -> PlatformConfig:

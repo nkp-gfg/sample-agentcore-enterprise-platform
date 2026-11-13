@@ -125,9 +125,10 @@ What that means in practice, before you describe this as a default-deny gateway:
 1. `enable_cedar` defaults off, so no policy engine is attached and no Cedar evaluation happens.
 2. `cedar_mode` defaults to `LOG_ONLY`, so decisions are logged, not enforced. Nothing is
    actually denied until `cedar_mode=ENFORCE`.
-3. The one shipped policy is unconstrained on principal and resource
-   (`permit(principal, action in [AgentCore::Action::"<<read_action>>"], resource);`), so any
-   authenticated caller may invoke the sample tool on any gateway. Narrow it before enforcing.
+3. The one shipped policy is unconstrained on principal and scoped to this gateway
+   (`permit(principal, action in [AgentCore::Action::"<<read_action>>"], resource == AgentCore::Gateway::"<<gateway_arn>>");`).
+   Any authenticated caller may invoke the sample tool on that gateway. A bare `resource`
+   is rejected by CreatePolicy.
 
 ## Adding a control
 

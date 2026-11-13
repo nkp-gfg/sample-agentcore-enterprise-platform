@@ -94,14 +94,23 @@ def test_cedar_catalog_has_no_blanket_forbid():
     catalog = load_catalog()
     ids = {c["id"] for c in catalog["controls"]}
     assert "cedar.gateway-default.forbid" not in ids
-    permit = load_control_text("cedar.gateway-default.permit-read")
+    permit = load_control_text(
+        "cedar.gateway-default.permit-read",
+        {
+            "gateway_arn": "arn:aws:bedrock-agentcore:eu-west-1:111122223333:gateway/gw"
+        },
+    )
     assert "forbid(" not in permit
+    assert 'AgentCore::Gateway::"arn:aws:bedrock-agentcore:eu-west-1:111122223333:gateway/gw"' in permit
 
 
 def test_cedar_permit_substitutes_read_action():
     text = load_control_text(
         "cedar.gateway-default.permit-read",
-        {"read_action": "my-target___my_read_tool"},
+        {
+            "read_action": "my-target___my_read_tool",
+            "gateway_arn": "arn:aws:bedrock-agentcore:eu-west-1:111122223333:gateway/gw",
+        },
     )
     assert 'AgentCore::Action::"my-target___my_read_tool"' in text
     assert "<<" not in text

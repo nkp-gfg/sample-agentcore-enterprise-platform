@@ -80,6 +80,12 @@ class RuntimeStack(cdk.Stack):
         allowed_models: list[str] | None = None,
         require_guardrails: bool = False,
         retain_data: bool = False,
+        # Pin the role's Gateway and Memory actions to these ARNs. Empty keeps
+        # "*" for components that use neither, or a gateway in another account.
+        gateway_arn: str = "",
+        memory_arn: str = "",
+        # CMK that encrypts Memory. AgentCore uses it with the caller's identity.
+        kms_key_arn: str = "",
         # ── Migration (image-source) mode ──
         # Set source_image (registry ref) or build_context (local dir) and the
         # stack builds the migration adapter (migration/adapter/) ON TOP of the
@@ -375,6 +381,9 @@ class RuntimeStack(cdk.Stack):
             project_name=project_name,
             allowed_models=allowed_models,
             guardrail=guardrail,
+            gateway_arn=gateway_arn,
+            memory_arn=memory_arn,
+            kms_key_arn=kms_key_arn,
         )
         if migration_secret_names:
             # The adapter resolves each declared migration secret into the
@@ -625,6 +634,9 @@ class RuntimeStack(cdk.Stack):
         project_name: str,
         allowed_models: list[str] | None = None,
         guardrail: bedrock.CfnGuardrail | None = None,
+        gateway_arn: str = "",
+        memory_arn: str = "",
+        kms_key_arn: str = "",
     ) -> None:
         """Attach the standard AgentCore Runtime permissions to a role.
 
@@ -716,38 +728,60 @@ class RuntimeStack(cdk.Stack):
                 actions=["ssm:GetParameter", "ssm:GetParameters"],
                 resources=[f"arn:aws:ssm:*:*:parameter/{project_name}/*"],
             ),
-            # AgentCore service access (Gateway, Memory, A2A, Registry, etc.).
-            # Still "*", and knowingly so: scoping these needs the gateway,
-            # memory and sibling-runtime ARNs, and the A2A targets do not exist
-            # yet when this role is built. Tracked as its own task rather than
-            # rushed here, because getting it wrong breaks every live-verified
-            # path (gateway tools, memory, A2A delegation).
+            # AgentCore service access (A2A, browser, identity tokens). Still
+            # "*": the A2A targets do not exist yet when this role is built,
+            # and the browser and workload-token actions are not scoped by the
+            # shipped patterns. Gateway and Memory are split out below so they
+            # can be pinned to this deployment's ARNs.
             iam.PolicyStatement(
                 sid="AgentCoreAccess",
                 actions=[
                     "bedrock-agentcore:InvokeAgentRuntime",
+                    "bedrock-agentcore:ListGateways",
+                    "bedrock-agentcore:StartBrowserSession",
+                    "bedrock-agentcore:StopBrowserSession",
+                    "bedrock-agentcore:ConnectBrowserAutomationStream",
+                    "bedrock-agentcore:GetResourceOauth2Token",
+                    "bedrock-agentcore:GetWorkloadAccessToken",
+                    "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+                ],
+                resources=["*"],
+            ),
+            iam.PolicyStatement(
+                sid="AgentCoreGateway",
+                actions=[
                     "bedrock-agentcore:InvokeGateway",
                     "bedrock-agentcore:GetGateway",
-                    "bedrock-agentcore:ListGateways",
-                    # Memory data plane. ListEvents/ListSessions/DeleteEvent are
-                    # required by the framework memory integrations (e.g. LangGraph's
-                    # AgentCoreMemorySaver checkpointer lists events to rehydrate a
-                    # thread); without them memory-backed patterns fail at invoke.
+                ],
+                resources=[gateway_arn] if gateway_arn else ["*"],
+            ),
+            # Memory data plane. ListEvents/ListSessions/DeleteEvent are
+            # required by the framework memory integrations (e.g. LangGraph's
+            # AgentCoreMemorySaver checkpointer lists events to rehydrate a
+            # thread); without them memory-backed patterns fail at invoke.
+            # Pinned to this deployment's memory so one agent cannot read
+            # another workload's conversation history.
+            iam.PolicyStatement(
+                sid="AgentCoreMemory",
+                actions=[
                     "bedrock-agentcore:CreateEvent",
                     "bedrock-agentcore:GetEvent",
                     "bedrock-agentcore:ListEvents",
                     "bedrock-agentcore:DeleteEvent",
                     "bedrock-agentcore:ListSessions",
                     "bedrock-agentcore:RetrieveMemoryRecords",
-                    "bedrock-agentcore:StartBrowserSession",
-                    "bedrock-agentcore:StopBrowserSession",
-                    "bedrock-agentcore:ConnectBrowserAutomationStream",
-                    "bedrock-agentcore:GetResourceOauth2Token",
-                    "bedrock-agentcore:CreateWorkloadIdentity",
-                    "bedrock-agentcore:GetWorkloadAccessToken",
-                    "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
-                    "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
                 ],
+                resources=[memory_arn] if memory_arn else ["*"],
+            ),
+            # GetWorkloadAccessTokenForUserId takes the user id as an
+            # unverified string, so whoever holds it can read any user's
+            # token-vault credentials. Runtimes behind inbound auth receive the
+            # caller's workload token with the request and never need it. The
+            # explicit deny matches scp.identity.deny-workload-token-for-userid.
+            iam.PolicyStatement(
+                sid="DenyWorkloadTokenForUserId",
+                effect=iam.Effect.DENY,
+                actions=["bedrock-agentcore:GetWorkloadAccessTokenForUserId"],
                 resources=["*"],
             ),
             # The built-in Code Interpreter is session based: the agent must
@@ -791,6 +825,25 @@ class RuntimeStack(cdk.Stack):
                 ],
             ),
         ]
+        if kms_key_arn:
+            # A CMK-encrypted Memory calls KMS through a forward access session
+            # with the caller's identity, so CreateEvent/ListEvents fail with
+            # "Unable to perform KMS operations" without this. ViaService keeps
+            # the grant usable only through AgentCore in this region.
+            statements.append(
+                iam.PolicyStatement(
+                    sid="MemoryKmsViaAgentCore",
+                    actions=["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
+                    resources=[kms_key_arn],
+                    conditions={
+                        "StringEquals": {
+                            "kms:ViaService": (
+                                f"bedrock-agentcore.{cdk.Stack.of(role).region}.amazonaws.com"
+                            )
+                        }
+                    },
+                )
+            )
         if guardrail is not None:
             statements += [
                 # Using a guardrail during inference requires ApplyGuardrail on

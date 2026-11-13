@@ -2,6 +2,7 @@
 
 import aws_cdk as cdk
 from aws_cdk import aws_cloudtrail as cloudtrail
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_kms as kms
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
@@ -40,6 +41,26 @@ class SecurityStack(cdk.Stack):
             if enable_kms
             else None
         )
+
+        if self.kms_key:
+            # The observability stack encrypts its SNS topics with this key.
+            # CloudWatch alarms and EventBridge rules publish to them, and SNS
+            # needs the publisher to be able to use the key. Limited to this
+            # account's resources.
+            self.kms_key.add_to_resource_policy(
+                iam.PolicyStatement(
+                    sid="AllowAlarmAndEventPublishersToEncryptedTopics",
+                    principals=[
+                        iam.ServicePrincipal("cloudwatch.amazonaws.com"),
+                        iam.ServicePrincipal("events.amazonaws.com"),
+                    ],
+                    actions=["kms:Decrypt", "kms:GenerateDataKey*"],
+                    resources=["*"],
+                    conditions={
+                        "StringEquals": {"aws:SourceAccount": self.account}
+                    },
+                )
+            )
 
         # CloudTrail for AgentCore API auditing
         if enable_cloudtrail:

@@ -151,6 +151,23 @@ def test_code_interpreter_session_actions_are_complete_and_scoped():
     assert 'resource_name="aws.codeinterpreter.v1"' in source
 
 
+def test_workload_token_for_user_id_is_denied_never_allowed():
+    """The userId variant mints any user's vault token from an unverified string."""
+    action = "bedrock-agentcore:GetWorkloadAccessTokenForUserId"
+    effects = [s["effect"] for s in _policy_statements() if action in s["actions"]]
+    assert effects == ["DENY"], f"{action} must appear only in a Deny, got {effects}"
+
+
+def test_memory_and_gateway_actions_are_pinned_when_arns_are_passed():
+    statements = {statement["sid"]: statement for statement in _policy_statements()}
+    broad_actions = statements["AgentCoreAccess"]["actions"]
+    for action in ("InvokeGateway", "GetGateway", "CreateEvent", "ListEvents"):
+        assert f"bedrock-agentcore:{action}" not in broad_actions
+    source = RUNTIME_STACK.read_text()
+    assert 'resources=[gateway_arn] if gateway_arn else ["*"]' in source
+    assert 'resources=[memory_arn] if memory_arn else ["*"]' in source
+
+
 def test_ssm_reads_are_scoped_to_the_project_path():
     source = RUNTIME_STACK.read_text()
     assert "arn:aws:ssm:*:*:parameter/{project_name}/*" in source, (

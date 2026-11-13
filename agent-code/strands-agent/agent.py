@@ -6,6 +6,7 @@ import os
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from shared.auth import extract_user_id_from_context
+from shared.region import runtime_region
 from strands import Agent
 from strands.models import BedrockModel
 from tools.code_interpreter import StrandsCodeInterpreterTools
@@ -57,7 +58,7 @@ def _create_agent(user_id: str, session_id: str) -> Agent:
         )
 
     # Code Interpreter
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    region = runtime_region()
     code_tools = StrandsCodeInterpreterTools(region)
     tools.append(code_tools.execute_python_securely)
 
@@ -115,17 +116,20 @@ async def invocations(payload, context: RequestContext):
         # the Memory actor_id below, so an unverified fallback would let every
         # caller share one actor's conversation history.
         user_id = extract_user_id_from_context(context)
-
-        agent = _create_agent(user_id, session_id)
-
-        async for event in agent.stream_async(user_query):
-            yield json.loads(json.dumps(dict(event), default=str))
-
     except ValueError as e:
         # Token missing, malformed, or failed verification. Log the reason,
         # return a generic rejection so the response leaks no auth detail.
         logger.warning("Rejected unverified caller: %s", e)
         yield {"status": "error", "error": "Unauthorized"}
+        return
+
+    # Kept apart from the auth check: Strands raises ValueError for tool-load
+    # failures too, which must not be reported as an auth rejection.
+    try:
+        agent = _create_agent(user_id, session_id)
+
+        async for event in agent.stream_async(user_query):
+            yield json.loads(json.dumps(dict(event), default=str))
 
     except Exception as e:
         logger.exception("Agent run failed")

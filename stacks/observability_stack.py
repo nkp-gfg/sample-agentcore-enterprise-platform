@@ -27,6 +27,9 @@ from aws_cdk import (
     aws_iam as iam,
 )
 from aws_cdk import (
+    aws_kms as kms,
+)
+from aws_cdk import (
     aws_logs as logs,
 )
 from aws_cdk import (
@@ -63,11 +66,20 @@ class ObservabilityStack(cdk.Stack):
         alarm_email: str = "",
         log_retention_days: int = 30,
         retain_data: bool = False,
+        # Encrypts the SNS topics. The security stack's key policy grants
+        # CloudWatch alarms and EventBridge. Log groups keep CloudWatch's
+        # default encryption so readers and log shippers need no key grant.
+        kms_key: kms.IKey | None = None,
         **kwargs,
     ):
         super().__init__(scope, id, **kwargs)
 
         prefix = f"{project_name}-{environment}"
+        # Referenced by ARN so CDK cannot append its own unconditioned service
+        # grants (the EventBridge SNS target adds one) to the key policy. The
+        # security stack owns the key policy and scopes those grants.
+        if kms_key is not None:
+            kms_key = kms.Key.from_key_arn(self, "PlatformKey", kms_key.key_arn)
         retention_by_days = {
             30: logs.RetentionDays.ONE_MONTH,
             90: logs.RetentionDays.THREE_MONTHS,
@@ -212,6 +224,7 @@ class ObservabilityStack(cdk.Stack):
                 "PlatformAlarms",
                 topic_name=f"{prefix}-platform-alarms",
                 display_name="Platform CloudWatch alarms",
+                master_key=kms_key,
             )
             if alarm_email:
                 # SNS mails a confirmation link; nothing flows until clicked.
@@ -568,6 +581,7 @@ class ObservabilityStack(cdk.Stack):
                 "SecurityAlerts",
                 topic_name=f"{prefix}-agentcore-security-alerts",
                 display_name="AgentCore security alerts",
+                master_key=kms_key,
             )
             rule = events.Rule(
                 self,

@@ -44,7 +44,13 @@ class NetworkingStack(cdk.Stack):
             nat_gateways=1,
             subnet_configuration=[
                 ec2.SubnetConfiguration(
-                    name="Public", subnet_type=ec2.SubnetType.PUBLIC, cidr_mask=24
+                    name="Public",
+                    subnet_type=ec2.SubnetType.PUBLIC,
+                    cidr_mask=24,
+                    # Control Tower CT.EC2.PR.11 rejects a public subnet that
+                    # auto-assigns public IPs. The NAT gateway still has its own
+                    # Elastic IP. Agent runtimes stay in the private subnets.
+                    map_public_ip_on_launch=False,
                 ),
                 ec2.SubnetConfiguration(
                     name="Private",
@@ -123,6 +129,19 @@ class NetworkingStack(cdk.Stack):
                 agentcore_endpoint.node.default_child.add_property_override(
                     "PolicyDocument", endpoint_policy
                 )
+
+            # AgentCore data plane (Memory events, Identity token vault, Code
+            # Interpreter sessions). Keeps the runtime's SigV4 calls off the NAT
+            # path. The org endpoint policy above is not reused here: it allows
+            # only the invoke action set and would block Memory and Identity.
+            # Access stays governed by the runtime role.
+            self.vpc.add_interface_endpoint(
+                "AgentCoreDataPlaneEndpoint",
+                service=ec2.InterfaceVpcEndpointService(
+                    f"com.amazonaws.{self.region}.bedrock-agentcore", 443
+                ),
+                private_dns_enabled=True,
+            )
 
         # Private subnets are the only valid placement for AgentCore ENIs: a
         # public subnet gives them no internet route (AWS docs), so the runtimes

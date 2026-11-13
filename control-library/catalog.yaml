@@ -87,6 +87,11 @@ controls:
         description: >-
           AgentCore action name (<TargetName>___<tool_name>) for the read-only tool to permit.
           Matches the sample gateway target 'sample-tool' and tool 'text_analysis_tool'.
+      gateway_arn:
+        required: true
+        description: >-
+          ARN of the AgentCore gateway this permit applies to. CreatePolicy rejects a
+          bare resource wildcard when the action list names a specific tool.
     validate: [cedar]
 
   # ── Item 2: fine-grained VPC endpoint policy (account scope, CDK) ──

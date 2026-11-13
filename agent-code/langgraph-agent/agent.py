@@ -9,6 +9,7 @@ from langchain.agents import create_agent
 from langchain_aws import ChatBedrock
 from langgraph_checkpoint_aws import AgentCoreMemorySaver
 from shared.auth import extract_user_id_from_context
+from shared.region import runtime_region
 from tools.code_interpreter import LangGraphCodeInterpreterTools
 from tools.gateway import create_gateway_mcp_client
 
@@ -61,7 +62,7 @@ def _create_checkpointer() -> AgentCoreMemorySaver:
         raise ValueError("MEMORY_ID environment variable is required")
     return AgentCoreMemorySaver(
         memory_id=memory_id,
-        region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+        region_name=runtime_region(),
     )
 
 
@@ -77,7 +78,7 @@ async def create_langgraph_agent():
             "[AGENT] Gateway not available, continuing without gateway tools: %s", e
         )
 
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    region = runtime_region()
     code_tools = LangGraphCodeInterpreterTools(region)
     tools.append(code_tools.execute_python_securely)
 

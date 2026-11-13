@@ -8,20 +8,19 @@ Applies a Bedrock Guardrail to Gateway traffic for defense-in-depth egress contr
   - RESPONSE interception point: guardrail runs with source=OUTPUT before the response returns
     to the caller (masks PII coming back from the target).
 
-Interceptor contract (per AgentCore Gateway docs / CDK LambdaInterceptor):
-  event  = {"mcp": {"gatewayRequest": {...}}}   for REQUEST
-           {"mcp": {"gatewayResponse": {...}}}  for RESPONSE
-  return = {"interceptorOutputVersion": "1.0",
-            "mcp": {"transformedGatewayRequest": {...}}}   for REQUEST
-           {"interceptorOutputVersion": "1.0",
-            "mcp": {"transformedGatewayResponse": {...}}}  for RESPONSE
+Interceptor contract (AgentCore Gateway, MCP targets):
+  REQUEST  event: {"mcp": {"gatewayRequest": {"path", "httpMethod", "body"}, "gatewayResponse": null}}
+  RESPONSE event: the same, plus "gatewayResponse": {"statusCode", "headers", "body"}
+  REQUEST  output: {"mcp": {"transformedGatewayRequest": {"body": ...}}}
+  RESPONSE output: {"mcp": {"transformedGatewayResponse": {"statusCode", "headers", "body"}}}
+  Either point may return transformedGatewayResponse to answer the caller immediately.
 
-NOTE: the exact nested shape of gatewayRequest/gatewayResponse depends on the target type and
-is treated generically here (all string leaves are scanned). Validate against live Gateway
-traces before relying on it in production; the guardrail logic itself is target-agnostic.
+Only tools/call is scanned: its arguments are what leaves toward a target and its
+result is what a target sends back. Protocol traffic (initialize, tools/list) passes
+through untouched; scanning it would rewrite JSON-RPC fields and cost one guardrail
+call per schema string.
 """
 
-import json
 import logging
 import os
 
@@ -89,42 +88,60 @@ def _mask_tree(node, source: str):
     return node
 
 
-def _blocked_response(point: str, reason: str):
-    """Return a safe, guardrail-blocked payload instead of the real request/response."""
+def _output(**mcp):
+    return {"interceptorOutputVersion": _OUTPUT_VERSION, "mcp": mcp}
+
+
+def _blocked_response(point: str, reason: str, request_body: dict):
+    """Answer the caller with a JSON-RPC tool error instead of the real request/response."""
     logger.warning("egress guardrail blocked (%s): %s", point, reason)
-    key = (
-        "transformedGatewayRequest"
-        if point == "REQUEST"
-        else "transformedGatewayResponse"
+    return _output(
+        transformedGatewayResponse={
+            "statusCode": 200,
+            "body": {
+                "jsonrpc": "2.0",
+                "id": request_body.get("id"),
+                "result": {
+                    "content": [{"type": "text", "text": "Blocked by egress guardrail."}],
+                    "isError": True,
+                },
+            },
+        }
     )
-    blocked = {"content": [{"type": "text", "text": "Blocked by egress guardrail."}]}
-    return {"interceptorOutputVersion": _OUTPUT_VERSION, "mcp": {key: blocked}}
+
+
+def _on_request(request_body: dict):
+    body = dict(request_body)
+    if body.get("method") == "tools/call":
+        params = dict(body.get("params") or {})
+        if "arguments" in params:
+            params["arguments"] = _mask_tree(params["arguments"], "INPUT")
+        body["params"] = params
+    return _output(transformedGatewayRequest={"body": body})
+
+
+def _on_response(request_body: dict, response: dict):
+    body = response.get("body")
+    if request_body.get("method") == "tools/call" and isinstance(body, dict) and "result" in body:
+        body = {**body, "result": _mask_tree(body["result"], "OUTPUT")}
+    transformed = {"body": body}
+    # Streaming follow-up events carry only a body; status and headers are already sent.
+    for key in ("statusCode", "headers"):
+        if key in response:
+            transformed[key] = response[key]
+    return _output(transformedGatewayResponse=transformed)
 
 
 def handler(event, context):
-    logger.info("interceptor event: %s", json.dumps(event)[:2000])
-    mcp = event.get("mcp", {}) or {}
+    mcp = event.get("mcp") or {}
+    request_body = (mcp.get("gatewayRequest") or {}).get("body") or {}
+    response = mcp.get("gatewayResponse")
+    point = "REQUEST" if response is None else "RESPONSE"
+    logger.info("interceptor %s method=%s", point, request_body.get("method"))
 
-    if "gatewayRequest" in mcp:
-        try:
-            transformed = _mask_tree(mcp["gatewayRequest"], "INPUT")
-        except GuardrailBlocked as exc:
-            return _blocked_response("REQUEST", str(exc))
-        return {
-            "interceptorOutputVersion": _OUTPUT_VERSION,
-            "mcp": {"transformedGatewayRequest": transformed},
-        }
-
-    if "gatewayResponse" in mcp:
-        try:
-            transformed = _mask_tree(mcp["gatewayResponse"], "OUTPUT")
-        except GuardrailBlocked as exc:
-            return _blocked_response("RESPONSE", str(exc))
-        return {
-            "interceptorOutputVersion": _OUTPUT_VERSION,
-            "mcp": {"transformedGatewayResponse": transformed},
-        }
-
-    # Unknown interception payload — pass through unchanged.
-    logger.info("no gatewayRequest/gatewayResponse in event; passing through")
-    return {"interceptorOutputVersion": _OUTPUT_VERSION, "mcp": mcp}
+    try:
+        if response is None:
+            return _on_request(request_body)
+        return _on_response(request_body, response)
+    except GuardrailBlocked as exc:
+        return _blocked_response(point, str(exc), request_body)

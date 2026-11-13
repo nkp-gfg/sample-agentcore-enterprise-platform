@@ -16,6 +16,7 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
 )
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from shared.auth import extract_user_id_from_context
+from shared.region import runtime_region
 from strands import Agent
 from strands.models import BedrockModel
 from tools.code_interpreter import StrandsCodeInterpreterTools
@@ -67,7 +68,7 @@ def _create_session_manager(
     )
     return AgentCoreMemorySessionManager(
         agentcore_memory_config=config,
-        region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+        region_name=runtime_region(),
     )
 
 
@@ -83,7 +84,7 @@ def _create_agent(user_id: str, session_id: str) -> Agent:
             "[AGENT] Gateway not available, continuing without gateway tools: %s", e
         )
 
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    region = runtime_region()
     code_tools = StrandsCodeInterpreterTools(region)
     tools.append(code_tools.execute_python_securely)
 

@@ -470,9 +470,16 @@ identity:
 
 agents:
   pattern: strands-agent
-  model_id: us.anthropic.claude-sonnet-4-6
+  # EU geo profile. Deploy injects model_id as MODEL_ID, which overrides the
+  # container DEFAULT_MODEL_ID. Leaving the old us.anthropic.claude-sonnet-4-6
+  # value here would send production inference to US regions even after the
+  # agent code defaults changed. eu.anthropic.claude-sonnet-4-6 was ACTIVE in
+  # eu-west-1 on 2026-11-13 and routes only to eu-west-1, eu-central-1,
+  # eu-west-3, eu-north-1, eu-south-1, and eu-south-2. allowed_models must
+  # contain model_id or production validation rejects the file.
+  model_id: eu.anthropic.claude-sonnet-4-6
   allowed_models:
-    - us.anthropic.claude-sonnet-4-6
+    - eu.anthropic.claude-sonnet-4-6
   memory:
     event_expiry_days: 30
 

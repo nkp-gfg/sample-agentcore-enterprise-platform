@@ -682,6 +682,13 @@ if not is_fed_platform:
         allowed_audience=allowed_audience,
         require_guardrails=require_guardrails,
         retain_data=production_mode,
+        gateway_arn=gateway_stack.gateway_arn if gateway_stack else "",
+        memory_arn=memory_stack.memory_arn,
+        kms_key_arn=(
+            security_stack.kms_key.key_arn
+            if (security_stack and security_stack.kms_key)
+            else ""
+        ),
         extra_env_vars={
             "GATEWAY_URL": gateway_url_for_runtimes,
             "GATEWAY_CREDENTIAL_PROVIDER_NAME": identity_stack.gateway_credential_provider_name,
@@ -763,6 +770,7 @@ if enable_a2a and not is_fed_platform:
         allowed_audience=allowed_audience,
         require_guardrails=require_guardrails,
         retain_data=production_mode,
+        gateway_arn=gateway_stack.gateway_arn if gateway_stack else "",
         extra_env_vars={
             "GATEWAY_URL": gateway_url_for_runtimes,
             "GATEWAY_CREDENTIAL_PROVIDER_NAME": identity_stack.gateway_credential_provider_name,
@@ -820,6 +828,7 @@ obs_stack = ObservabilityStack(
     alarm_email=alarm_email,
     log_retention_days=log_retention_days,
     retain_data=production_mode,
+    kms_key=security_stack.kms_key if security_stack else None,
     env=cdk_env,
 )
 for _dep in (
