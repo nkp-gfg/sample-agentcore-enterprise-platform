@@ -585,6 +585,15 @@ if not is_fed_platform:
         memory_stack.add_dependency(security_stack)
 
 # ── Gateway (MCP gateway with Lambda tool targets) — platform side only ──
+# H4 (hr-tools) needs the egress interceptor to see the gateway-validated JWT
+# on the REQUEST pass so it can overwrite caller_employee_id, agent_id, and
+# session_id on the tool arguments. The pass_request_headers flag flips on
+# only when hr-tools is in use_cases; every other deployment keeps the
+# current default-False header behaviour. See
+# custom-app-plan/phases.md § H4 and docs/hr/tools.md § Identity on the call.
+_hr_tools_enabled = bool(
+    platform_config and "hr-tools" in platform_config.use_cases
+)
 gateway_stack = None
 if not is_fed_workload:
     gateway_stack = GatewayStack(
@@ -629,6 +638,7 @@ if not is_fed_workload:
         kms_key_arn=security_stack.kms_key.key_arn
         if (security_stack and security_stack.kms_key)
         else "",
+        pass_request_headers=_hr_tools_enabled,
         env=cdk_env,
     )
     gateway_stack.add_dependency(auth_stack)
