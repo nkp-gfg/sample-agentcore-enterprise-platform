@@ -334,37 +334,12 @@ first.
 | Both SNS subscriptions confirmed | AWS |
 | Security doc covers interceptor scope, its IAM grant, and the KMS grants | `docs/SECURITY_CONTROLS.md` |
 | Test that the token check stays isolated in every agent pattern | `tests/test_agent_auth_isolation.py` |
+| Branch pushed, with no live identifiers in its history | `origin/n-fe-sandbox-deployment` |
 
-### Must do
+### Still to do
 
-1. **Push the branch** when you're ready: `git push -u origin n-fe-sandbox-deployment`.
-   Before pushing, confirm no live account ID is in history:
-   `git log -p origin/main..HEAD | grep -c <ACCOUNT_ID>` must print `0`.
-2. **Have a colleague run `GFG_Deployment.md`** end to end, ideally in another
+1. **Have a colleague run `GFG_Deployment.md`** end to end, ideally in another
    Region, and tick the Step 15 checklist.
-
-### Should do
-
-3. **Evaluate the chosen model on real tasks.** If Claude is required, use a
-   Region where the SCP allows all of its profile's Regions, or ask the admin for
-   an inference-profile exception.
-4. **Monitor guardrail interventions** for prompt-attack false positives in the
-   first weeks.
-5. **Pin the model IAM ARN to the deployment Region for in-Region models.**
-   `allowed_model_resources` uses `arn:aws:bedrock:*::foundation-model/...`. The
-   wildcard is required for cross-Region profiles, but an in-Region model could be
-   pinned.
-6. **`DEFAULT_MODEL_ID` fallbacks in `agent-code/*/agent.py` are still `eu.`
-   Claude profiles.** Production never uses them, because `agents.model_id` is
-   required and deploy injects it. Workshop mode outside the EU would. Change them
-   only together with `tests/test_model_allowlist.py` and `scripts/preflight.py`,
-   which read the literal value.
-
-### Nice to have
-
-7. **Remove the duplicate OpenTelemetry logging warning**: unset
-   `OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED`, as the warning suggests.
-8. **Reduce guardrail calls in the interceptor** by scanning all strings of one
-   tool call in a single `ApplyGuardrail` request.
-9. **A small web chat page** on `http://localhost:3000`, so testers don't need
-   the terminal.
+2. **Evaluate the chosen model on real tasks** before users rely on it. If Claude
+   is required, use a Region where the SCP allows all of its profile's Regions, or
+   ask the admin for an inference-profile exception.
