@@ -28,11 +28,14 @@ logger = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
 
-# Current Opus cross-region inference profile (this pattern intentionally uses
-# Opus for Claude Code-style agentic work). Override per deployment via the
-# MODEL_ID environment variable (see app.py / deploy.sh); the value flows into
+# EU Opus geo profile. This pattern still uses Opus for Claude Code-style
+# agentic work. eu.anthropic.claude-opus-4-6-v1 replaces
+# us.anthropic.claude-opus-4-6-v1 so inference stays in EU regions: eu-west-1,
+# eu-central-1, eu-west-3, eu-north-1, eu-south-1, and eu-south-2. Confirmed
+# ACTIVE with list-inference-profiles in eu-west-1 on 2026-11-13. MODEL_ID
+# overrides this default (app.py / deploy.sh) and is passed to
 # ClaudeAgentOptions.model, which takes precedence over ANTHROPIC_MODEL.
-DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
+DEFAULT_MODEL_ID = "eu.anthropic.claude-opus-4-6-v1"
 MODEL_ID = os.environ.get("MODEL_ID", DEFAULT_MODEL_ID)
 
 # Maps runtimeSessionId -> claude_session_id for conversation resumption.

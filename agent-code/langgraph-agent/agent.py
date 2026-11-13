@@ -16,9 +16,14 @@ logger = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
 
-# Cross-region inference profile — current (not Legacy-flagged). Override per
-# deployment via the MODEL_ID environment variable (see app.py / deploy.sh).
-DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+# EU geo inference profile, not Legacy-flagged. eu.anthropic.claude-sonnet-4-6
+# replaces us.anthropic.claude-sonnet-4-6 so a runtime in eu-west-1 does not
+# send inference to US regions. Bedrock routes this profile only to eu-west-1,
+# eu-central-1, eu-west-3, eu-north-1, eu-south-1, and eu-south-2. Confirmed
+# ACTIVE with list-inference-profiles in eu-west-1 on 2026-11-13. MODEL_ID
+# still overrides this default (app.py / deploy.sh). A platform.yaml model_id
+# is injected as MODEL_ID and this constant is then unused.
+DEFAULT_MODEL_ID = "eu.anthropic.claude-sonnet-4-6"
 MODEL_ID = os.environ.get("MODEL_ID", DEFAULT_MODEL_ID)
 
 # When the platform enforces guardrailed-only Bedrock (security.require_guardrails),
