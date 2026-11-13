@@ -76,8 +76,7 @@ def _config() -> dict[str, str]:
     missing = [name for name in required if not os.environ.get(name)]
     if missing:
         raise RuntimeError(
-            "hr-identity Lambda is missing required env var(s): "
-            + ", ".join(missing)
+            "hr-identity Lambda is missing required env var(s): " + ", ".join(missing)
         )
     return {name: os.environ[name] for name in required}
 
@@ -206,13 +205,14 @@ def _apply_claims(event: dict, claims: dict[str, str]) -> dict:
     return event
 
 
-def handler(event: dict, context) -> dict:  # noqa: ARG001 — Lambda signature
+def handler(event: dict, context) -> dict:
     """Pre-token-generation trigger entry point.
 
     Returns the event with claimsAndScopeOverrideDetails populated when a
     mapping is found, unchanged otherwise. Any unhandled trigger source is
     returned as-is — a safety net for new trigger types Cognito may add.
     """
+    del context  # Lambda runtime passes it; the handler does not use it.
     trigger = event.get("triggerSource")
     if trigger not in HANDLED_TRIGGERS:
         logger.info("hr-identity skipping trigger %r", trigger)
@@ -225,11 +225,9 @@ def handler(event: dict, context) -> dict:  # noqa: ARG001 — Lambda signature
 
     try:
         employee_id = _lookup_employee_id(cognito_sub)
-    except Exception as exc:  # noqa: BLE001 — never raise from a pre-token trigger
+    except Exception:
         logger.exception(
-            "hr-identity: unexpected failure resolving sub %s: %s",
-            cognito_sub,
-            exc,
+            "hr-identity: unexpected failure resolving sub %s", cognito_sub
         )
         return event
 
