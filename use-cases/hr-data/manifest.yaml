@@ -1,0 +1,15 @@
+# The manifest is the only file the platform reads about this use case.
+# Validated by UseCaseManifest in infra_utils/platform_config.py.
+name: hr-data
+owner: hr-platform
+summary: >-
+  Aurora PostgreSQL Serverless v2 in the networking VPC, encrypted with the
+  platform CMK, with the hr tables, roles, and an empty agent_state database
+  for the god agent's LangGraph checkpointer.
+# H1 reads the networking SSM outputs (vpc-id, private-subnet-ids, runtime
+# security group) and the security CMK alias. Neither is in the footprint
+# unless security.networking: true and security.cloudtrail_alerting: true,
+# which is the production preset's default.
+requires: [networking, security]
+stacks: [uc-hr-data]
+entry: stack.py
