@@ -22,8 +22,3 @@ END
 $$;
 
 GRANT USAGE, CREATE ON SCHEMA public TO agent_checkpoint;
-
-ALTER DEFAULT PRIVILEGES FOR ROLE agent_checkpoint IN SCHEMA public
-    GRANT ALL ON TABLES TO agent_checkpoint;
-ALTER DEFAULT PRIVILEGES FOR ROLE agent_checkpoint IN SCHEMA public
-    GRANT ALL ON SEQUENCES TO agent_checkpoint;

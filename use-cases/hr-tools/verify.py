@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import sys
 import urllib.parse
 import urllib.request
@@ -139,10 +138,9 @@ def main() -> int:
     from test_gateway import mcp_request
     from utils import get_m2m_token
 
-    from infra_utils.platform_config import resolve_region
+    from infra_utils.platform_config import resolve_project_and_env, resolve_region
 
-    project = os.environ.get("PROJECT_NAME", "agentcore-workshop")
-    env = os.environ.get("ENVIRONMENT", "dev")
+    project, env = resolve_project_and_env()
     region = resolve_region()
     stack_prefix = f"{project}-{env}"
 

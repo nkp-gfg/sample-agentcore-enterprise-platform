@@ -62,10 +62,9 @@ def _hr_data_manifest_settings() -> tuple[bool, bool]:
 def main() -> int:
     import boto3
 
-    from infra_utils.platform_config import resolve_region
+    from infra_utils.platform_config import resolve_project_and_env, resolve_region
 
-    project = os.environ.get("PROJECT_NAME", "agentcore-workshop")
-    env = os.environ.get("ENVIRONMENT", "dev")
+    project, env = resolve_project_and_env()
     region = resolve_region()
     expect_retain, expect_seed = _hr_data_manifest_settings()
 

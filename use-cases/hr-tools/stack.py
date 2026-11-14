@@ -151,7 +151,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "InputSchema": {
             "Type": "object",
             "Properties": {
-                "leave_type": {"Type": "string", "Enum": ["annual", "sick"]},
+                "leave_type": {
+                    "Type": "string",
+                    "Description": "Leave category ('annual' or 'sick')",
+                },
                 "start_date": {"Type": "string", "Description": "YYYY-MM-DD"},
                 "end_date": {"Type": "string", "Description": "YYYY-MM-DD"},
             },
@@ -167,7 +170,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "InputSchema": {
             "Type": "object",
             "Properties": {
-                "leave_type": {"Type": "string", "Enum": ["annual", "sick"]},
+                "leave_type": {
+                    "Type": "string",
+                    "Description": "Leave category ('annual' or 'sick')",
+                },
                 "start_date": {"Type": "string", "Description": "YYYY-MM-DD"},
                 "end_date": {"Type": "string", "Description": "YYYY-MM-DD"},
                 "reason": {"Type": "string"},
@@ -191,7 +197,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "InputSchema": {
             "Type": "object",
             "Properties": {
-                "item_type": {"Type": "string", "Enum": ["telephone"]},
+                "item_type": {
+                    "Type": "string",
+                    "Description": "Allowance category ('telephone')",
+                },
                 "period": {"Type": "string", "Description": "YYYY-MM"},
             },
             "Required": ["item_type"],
@@ -207,7 +216,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "Type": "object",
             "Properties": {
                 "request_id": {"Type": "string"},
-                "decision": {"Type": "string", "Enum": ["approve", "reject"]},
+                "decision": {
+                    "Type": "string",
+                    "Description": "Reviewer decision ('approve' or 'reject')",
+                },
             },
             "Required": ["request_id", "decision"],
         },

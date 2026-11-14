@@ -20,10 +20,10 @@ Part 1, Step 15, passed on this checkout. The virtualenv is active (`.venv/bin/p
 
 ### Deployer-local prerequisites
 
-- Python 3.13 with `pip` (the repo's `.venv` set up in Part 1).
-- Outbound HTTPS to `pypi.org` so CDK synth can vendor `pg8000==1.31.5` into `use-cases/hr-identity/layer/python/` and `manylinux2014_aarch64` wheels for `psycopg[binary]` into the H4 Lambda assets (both cached locally after the first synth). Behind a corporate proxy, export `HTTPS_PROXY` before running `deploy.sh`.
+- Python 3.13 with `pip` (the repo's `.venv` set up in Part 1), Node.js 20/22/24 with `npm` and global `aws-cdk` (`npm install -g aws-cdk` inside the active Node prefix), AWS CLI v2, and Bash 4+. If you use `mise`, `mise.toml` pins Node 24, Python 3.13, and `.venv` automatically (run `npm install -g aws-cdk` once under that `mise` Node 24 environment so `npx --no-install cdk` resolves).
+- Outbound HTTPS to `pypi.org` and `files.pythonhosted.org` so CDK synth can vendor `pg8000==1.31.5`, `scramp==1.4.9`, and `python-dateutil<3.0.0` into `use-cases/hr-identity/layer/python/` and `manylinux2014_aarch64` wheels for `psycopg[binary]` into the H4 Lambda assets (both cached locally after the first synth). Behind a corporate proxy, export `HTTPS_PROXY` before running `deploy.sh`.
 - **No external policy binary is required.** Row- and attribute-level HR authorization runs natively in Python (`use-cases/hr-tools/lambdas/shared/authz.py`) with zero external binaries or subprocesses.
-- **No Azure Entra portal changes are needed.** Entra still redirects to Cognito's `/oauth2/idpresponse` URL from Part 1; Cognito's own SPA WebClient gets the local `hr-web` `:8899` callback URLs when `$PREFIX-auth` updates in Phase 5.
+- **No Azure Entra portal changes are needed.** Entra still redirects to Cognito's `/oauth2/idpresponse` URL from Part 1; Cognito's own SPA WebClient gets the local `hr-web` `:8899` callback URLs when `$PREFIX-auth` updates.
 
 ### Read the stack prefix from `platform.yaml`
 
@@ -52,7 +52,7 @@ E1 Cognito sub:
 M1 Cognito sub:
 ```
 
-When a deploy asks which agent pattern to use, press Enter and keep the pattern Part 1 is already running. When it asks about the IdP, keep Entra. The only phase that changes `agents.pattern` is Phase 5.
+When an interactive deploy asks for Region, agent pattern, or IdP, press Enter to keep the values from `platform.yaml` (the only phase that changes `agents.pattern` is Phase 5). Because `platform.yaml` already defines every setting authoritatively, you can also prefix `deploy.sh deploy` with `NON_INTERACTIVE=1` (as shown below) to skip interactive prompts completely.
 
 ### Same `design` / `doctor` / `verify` commands in Part 2
 
@@ -87,13 +87,13 @@ use_cases:
 
 `seed: true` loads the nine demo employees (`M1`, `E1`, `E2`, `P1`, `R1`–`R4`, `X1`), their salaries, their leave balances, and E1's `2026-10` telephone allowance row (`docs/hr/schema.md` § Demo seed). Use it only on this demo database; the seed refuses to run if any `employee_id` outside the nine-id demo set is already present. `retain_data: true` keeps the cluster, master secret, and backups when you later delete the stack.
 
-Validate, deploy, and verify:
+Validate, deploy (~8–12 minutes on first create while Aurora Serverless v2 provisions its writer instance), and verify:
 
 ```bash
 ./scripts/deploy.sh design
 ./scripts/deploy.sh doctor
-./scripts/deploy.sh deploy --stack "$PREFIX-uc-hr-data"
-python use-cases/hr-data/verify.py
+NON_INTERACTIVE=1 ./scripts/deploy.sh deploy --stack "$PREFIX-uc-hr-data"
+.venv/bin/python use-cases/hr-data/verify.py
 ```
 
 What happens during deploy:
@@ -119,7 +119,7 @@ Then delete the `hr-data` block from `platform.yaml`. With `retain_data: true`, 
 No stack and no AWS calls. Run this before deploying tools:
 
 ```bash
-pytest tests/test_hr_authz.py
+.venv/bin/python -m pytest tests/test_hr_authz.py -q
 ```
 
 Forty-two unit tests exercise `use-cases/hr-tools/lambdas/shared/authz.py` directly in Python across every row of `docs/hr/acceptance.md` § H2, including one-hop direct-report salary rules, live manager transfer, probation/range/balance/overlap precedence, reviewer-only leave decisions, and closed failure on malformed inputs.
@@ -142,13 +142,13 @@ Validate, deploy, and verify:
 ```bash
 ./scripts/deploy.sh design
 ./scripts/deploy.sh doctor
-./scripts/deploy.sh deploy --stack "$PREFIX-uc-hr-identity"
-python use-cases/hr-identity/verify.py
+NON_INTERACTIVE=1 ./scripts/deploy.sh deploy --stack "$PREFIX-uc-hr-identity"
+.venv/bin/python use-cases/hr-identity/verify.py
 ```
 
 What happens during deploy:
 
-- CDK synth automatically installs `pg8000==1.31.5` into `use-cases/hr-identity/layer/python/`.
+- CDK synth automatically installs `pg8000==1.31.5`, `scramp==1.4.9`, and `python-dateutil<3.0.0` into `use-cases/hr-identity/layer/python/`.
 - The pre-token Lambda deploys into the private subnets with `rds-db:connect` scoped to `hr_identity` only.
 - `TriggerManagerFunction` performs a safe read-modify-write `DescribeUserPool` → `UpdateUserPool`, preserving `DeletionProtection`, `AdminCreateUserConfig`, `Policies`, and any existing triggers while ensuring `UserPoolTier` is at least `ESSENTIALS` and attaching `PreTokenGenerationConfig` with `LambdaVersion: V3_0` (required for M2M `TokenGeneration_ClientCredentials` + `aws_client_metadata` enrichment as well as federated human sign-ins).
 
@@ -166,7 +166,9 @@ aws cognito-idp list-users --region "$REGION" --user-pool-id "$POOL" \
   --output table
 ```
 
-Copy the `sub` UUIDs (not `EntraID_...` `Username`) into `gfg-deploy-notes.txt`, then map them onto `E1` and `M1` over RDS Data API:
+> **Note on Entra `email` vs UPN:** In Microsoft Entra ID (especially `*.onmicrosoft.com` tenants), Cognito's `email` attribute reflects the user's **Contact Information → Email (`mail`)** field in Entra rather than their sign-in UPN (`preferred_username`). That display email has zero effect on authorization — `hr-identity` resolves users strictly by the immutable Cognito `sub` UUID (`Attributes[?Name=='sub']`).
+
+Copy the `sub` UUIDs (not `EntraID_...` `Username`) into `gfg-deploy-notes.txt`, then map them onto `E1` and `M1` over RDS Data API (if you only have one Entra user signed in so far, set `E1_SUB` now to unblock Phase 4–5 and leave `M1_SUB=""` until `M1` signs in):
 
 ```bash
 CLUSTER_ARN=$(aws rds describe-db-clusters --region "$REGION" \
@@ -182,11 +184,20 @@ M1_SUB="paste-M1-sub-uuid-from-notepad"
 
 for row in "E1:$E1_SUB" "M1:$M1_SUB"; do
   ID="${row%%:*}"; SUB="${row##*:}"
+  if [[ -z "$SUB" || "$SUB" == paste-* ]]; then
+    echo "Skipping $ID (sub not set yet)"
+    continue
+  fi
   aws rds-data execute-statement --region "$REGION" \
     --resource-arn "$CLUSTER_ARN" --secret-arn "$SECRET_ARN" --database hr \
     --sql "UPDATE employees SET cognito_sub = :sub WHERE employee_id = :id" \
     --parameters "[{\"name\":\"sub\",\"value\":{\"stringValue\":\"$SUB\"}},{\"name\":\"id\",\"value\":{\"stringValue\":\"$ID\"}}]"
 done
+
+# Confirm mapped employee rows:
+aws rds-data execute-statement --region "$REGION" \
+  --resource-arn "$CLUSTER_ARN" --secret-arn "$SECRET_ARN" --database hr \
+  --sql "SELECT employee_id, cognito_sub, manager_id, status FROM employees WHERE cognito_sub IS NOT NULL ORDER BY employee_id"
 ```
 
 ### Remove only identity
@@ -211,14 +222,14 @@ use_cases:
   hr-tools: {}
 ```
 
-Enabling `hr-tools` turns on `PassRequestHeaders: true` and `HR_IDENTITY_PROMOTION=1` on the platform Gateway's REQUEST interceptor so validated JWT claims (`employee_id`, `agent_id`) are promoted onto HR tool arguments and cannot be spoofed by the model. **Deploy `$PREFIX-gateway` first so that flag is live, then deploy `$PREFIX-uc-hr-tools`:**
+Enabling `hr-tools` turns on `PassRequestHeaders: true` and `HR_IDENTITY_PROMOTION=1` on the platform Gateway's REQUEST interceptor so validated JWT claims (`employee_id`, `agent_id`) are promoted onto HR tool arguments and cannot be spoofed by the model. **Deploy `$PREFIX-gateway` first** (CDK also checks its `$PREFIX-security` and `$PREFIX-auth` dependencies, registering the `:8899` SPA callbacks on `WebClient` while preserving `hr-identity`'s `V3_0` trigger), **then deploy `$PREFIX-uc-hr-tools`:**
 
 ```bash
 ./scripts/deploy.sh design
 ./scripts/deploy.sh doctor
-./scripts/deploy.sh deploy --stack "$PREFIX-gateway"
-./scripts/deploy.sh deploy --stack "$PREFIX-uc-hr-tools"
-python use-cases/hr-tools/verify.py
+NON_INTERACTIVE=1 ./scripts/deploy.sh deploy --stack "$PREFIX-gateway"
+NON_INTERACTIVE=1 ./scripts/deploy.sh deploy --stack "$PREFIX-uc-hr-tools"
+.venv/bin/python use-cases/hr-tools/verify.py
 ```
 
 What `verify.py` proves:
@@ -251,16 +262,17 @@ agents:
   pattern: god-agent
 ```
 
-Validate with `design` and `doctor`, then update `$PREFIX-auth` (registers `http://127.0.0.1:8899/` and `http://localhost:8899/` on the Cognito SPA web client for Phase 6 while leaving `login_chat.py`'s app client untouched) and `$PREFIX-runtime-orchestrator` (deploys the `god-agent` container on the `AGUI` protocol with `rds-db:connect` for `agent_checkpoint`, M2M secret read for `aws_client_metadata` exchanges, and web-client JWT acceptance):
+Validate with `design` and `doctor`, then ensure `$PREFIX-auth` is up to date (`http://127.0.0.1:8899/` and `http://localhost:8899/` on the Cognito SPA web client for Phase 6 while leaving `login_chat.py`'s app client untouched) and deploy `$PREFIX-runtime-orchestrator` (CodeBuild builds the `god-agent` container remotely in ~3–5 minutes and updates the runtime in-place to the `AGUI` protocol with `rds-db:connect` for `agent_checkpoint`, M2M secret read for `aws_client_metadata` exchanges, and web-client JWT acceptance):
 
 ```bash
 ./scripts/deploy.sh design
 ./scripts/deploy.sh doctor
-./scripts/deploy.sh deploy --stack "$PREFIX-auth"
-./scripts/deploy.sh deploy --stack "$PREFIX-runtime-orchestrator"
+NON_INTERACTIVE=1 ./scripts/deploy.sh deploy --stack "$PREFIX-auth"
+NON_INTERACTIVE=1 ./scripts/deploy.sh deploy --stack "$PREFIX-runtime-orchestrator"
+NON_INTERACTIVE=1 ./scripts/deploy.sh verify
 ```
 
-At the interactive prompt (if shown), choose `god-agent` and keep Entra. On its first turn, `god-agent` connects to `agent_state` as `agent_checkpoint` via RDS IAM auth and runs `AsyncPostgresSaver.setup()` to create its checkpoint tables.
+If you run without `NON_INTERACTIVE=1`, press Enter at the prompts to keep `god-agent` (loaded from `platform.yaml`) and Entra. On its first invocation (`deploy.sh verify` runs `invoke.py --agui` automatically), `god-agent` connects to `agent_state` as `agent_checkpoint` via RDS IAM auth and runs `AsyncPostgresSaver.setup()` to create its checkpoint tables.
 
 Test from the terminal as `E1` and as `M1`:
 
@@ -337,8 +349,8 @@ Run the full-footprint health check and tick every row after deploying Phases 1�
 | 1 | Preflight clean | `./scripts/deploy.sh doctor` | `0 failed`, `[PASS] HR Part 2: hr-data, hr-identity, hr-tools, pattern=god-agent ready` |
 | 2 | All 11 stacks green | `aws cloudformation describe-stacks --region "$REGION" --query "Stacks[?starts_with(StackName,'${PREFIX}-')].[StackName,StackStatus]" --output table` | 11 stacks, each `CREATE_COMPLETE` or `UPDATE_COMPLETE` |
 | 3 | Full automated verify | `./scripts/deploy.sh verify` | `OK: all 11 checks passed for this footprint` |
-| 4 | Runtime log clean | Part 1 Step 13 log filter command | No `AccessDenied` or unhandled `God agent run failed` |
-| 5 | Audit log free of amounts | `aws rds-data execute-statement --region "$REGION" --resource-arn "$CLUSTER_ARN" --secret-arn "$SECRET_ARN" --database hr --sql "SELECT action, caller_employee_id, allow, reason_code, decided_by_layer FROM decision_log ORDER BY id DESC LIMIT 10"` | Rows present with `decided_by_layer` in `('policy','tool')`, zero salaries or leave reasons |
+| 4 | Runtime log clean | `LG=$(aws logs describe-log-groups --region "$REGION" --log-group-name-prefix "/aws/bedrock-agentcore/runtimes/${PREFIX//-/_}_orchestrator" --query 'logGroups[0].logGroupName' --output text) && aws logs filter-log-events --region "$REGION" --log-group-name "$LG" --start-time $(( ($(date +%s) - 900) * 1000 )) --query 'events[].message' --output text \| grep -E 'AccessDenied\|Agent run failed\|God agent run failed\|Memory init failed\|Rejected\|guardrail_intervened'` | No output (exit code `1` from `grep`) |
+| 5 | Audit log free of amounts | `CLUSTER_ARN=$(aws rds describe-db-clusters --region "$REGION" --db-cluster-identifier "$PREFIX-uc-hr-data" --query 'DBClusters[0].DBClusterArn' --output text) && SECRET_NAME=$(aws ssm get-parameter --region "$REGION" --name "$SSM/use-cases/hr-data/secret-name" --query Parameter.Value --output text) && SECRET_ARN=$(aws secretsmanager describe-secret --region "$REGION" --secret-id "$SECRET_NAME" --query ARN --output text) && aws rds-data execute-statement --region "$REGION" --resource-arn "$CLUSTER_ARN" --secret-arn "$SECRET_ARN" --database hr --sql "SELECT action, caller_employee_id, allow, reason_code, decided_by_layer FROM decision_log ORDER BY id DESC LIMIT 10"` | Rows present with `decided_by_layer` in `('policy','tool')`, zero salaries or leave reasons |
 | 6 | Salary & probation rules | `login_chat.py` / `hr-web` as `E1` and `M1` (`docs/hr/acceptance.md` § H5) | `E1` sees `R1`–`R4` and not `M1`; `M1` sees `E1`/`E2`/`P1` and not `R1`–`R4` |
 | 7 | Two-stage human review | Submit leave in `hr-web` as `E1`, confirm card, sign in as `M1`, approve card (`docs/hr/acceptance.md` § H6) | Typed `"approve"` in chat does nothing; `M1` card button transitions row to `approved` |
 | 8 | EBA Console inventory | Open `http://127.0.0.1:8888/` | `11/11` stacks green, HR X-Ray band + 6 HR SSM parameters visible |
@@ -405,4 +417,4 @@ Part 2 is designed so a failed deploy can be fixed and re-run without wedging in
 | Sign-in succeeds, but every HR question answers not allowed / `NOT_MAPPED` | That user's Cognito `sub` UUID is not mapped in `employees.cognito_sub` | Run the "Map Cognito users to employees" block in Phase 3 using `Attributes[?Name=='sub']` (not `EntraID_...` `Username`) |
 | Seed exits because another employee id exists | The database already holds non-demo rows | Set `seed: false` |
 | Every HR answer is `"The HR assistant is paused"` | `$SSM/use-cases/hr-tools/enabled` is not `true` | Set it back to `true` when ready |
-| A tool call is denied with no `decision_log` row | Cedar denied the call at the Gateway before the Lambda ran | Check `$SSM/use-cases/hr-identity/function-arn` and `PreTokenGenerationConfig` (`V3_0`) via `python use-cases/hr-identity/verify.py` |
+| A tool call is denied with no `decision_log` row | Cedar denied the call at the Gateway before the Lambda ran | Check `$SSM/use-cases/hr-identity/function-arn` and `PreTokenGenerationConfig` (`V3_0`) via `.venv/bin/python use-cases/hr-identity/verify.py` |

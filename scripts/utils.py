@@ -22,7 +22,7 @@ from colorama import Fore, Style, init
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from infra_utils.platform_config import resolve_region
+from infra_utils.platform_config import resolve_project_and_env, resolve_region
 
 init(autoreset=True)
 
@@ -32,8 +32,9 @@ DEFAULT_ENV = "dev"
 
 def get_ssm_prefix(project: str | None = None, env: str | None = None) -> str:
     """Return SSM prefix /{project}/{env}."""
-    project = project or os.environ.get("PROJECT_NAME", DEFAULT_PROJECT)
-    env = env or os.environ.get("ENVIRONMENT", DEFAULT_ENV)
+    default_project, default_env = resolve_project_and_env()
+    project = project or default_project
+    env = env or default_env
     return f"/{project}/{env}"
 
 
@@ -61,8 +62,9 @@ def get_workshop_config(project: str | None = None, env: str | None = None) -> d
 
     Returns dict with project, env, region, and a helper to fetch SSM params.
     """
-    project = project or os.environ.get("PROJECT_NAME", DEFAULT_PROJECT)
-    env = env or os.environ.get("ENVIRONMENT", DEFAULT_ENV)
+    default_project, default_env = resolve_project_and_env()
+    project = project or default_project
+    env = env or default_env
     region = resolve_region()
 
     return {
@@ -85,8 +87,9 @@ def get_m2m_token(
     Deployments created before the secret reference existed fall back to
     DescribeUserPoolClient for compatibility.
     """
-    project = project or os.environ.get("PROJECT_NAME", DEFAULT_PROJECT)
-    env = env or os.environ.get("ENVIRONMENT", DEFAULT_ENV)
+    default_project, default_env = resolve_project_and_env()
+    project = project or default_project
+    env = env or default_env
     region = region or resolve_region()
 
     if auth_mode(project, env) == "direct":

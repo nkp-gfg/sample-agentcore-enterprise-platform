@@ -85,6 +85,10 @@ def test_sql_files_have_valid_dynamic_database_grants_and_no_opa():
         assert "DATABASE CURRENT_DATABASE()" not in content.upper()
         assert "current_database()" in content
         assert "opa" not in content.lower()
+        # On Aurora PostgreSQL 16+/17+, rds_superuser (hr_master) gets ADMIN
+        # OPTION with SET FALSE on newly created roles, so ALTER DEFAULT
+        # PRIVILEGES FOR ROLE <other_role> fails with SQLState 42501.
+        assert "ALTER DEFAULT PRIVILEGES FOR ROLE" not in content.upper()
 
     assert "CHECK (decided_by_layer IN ('policy', 'tool'))" in schema_sql
 
@@ -100,7 +104,8 @@ def test_hr_identity_v3_client_credentials_and_federated_sub_resolution():
         "_lookup_employee_id",
         side_effect=lambda sub: {"sub-e1-uuid": "E1"}.get(sub),
     ):
-        # 1. M2M client_credentials with aws_client_metadata: accessTokenGeneration ONLY!
+        # 1. M2M client_credentials with aws_client_metadata and real Cognito V3_0
+        #    explicit null `"claimsAndScopeOverrideDetails": None`: accessTokenGeneration ONLY!
         m2m_event = {
             "triggerSource": "TokenGeneration_ClientCredentials",
             "userName": "m2m-client-id",
@@ -110,6 +115,7 @@ def test_hr_identity_v3_client_credentials_and_federated_sub_resolution():
                     "calling_agent": "leave-balance",
                 }
             },
+            "response": {"claimsAndScopeOverrideDetails": None},
         }
         out = mod.handler(m2m_event, None)
         details = out["response"]["claimsAndScopeOverrideDetails"]
@@ -550,3 +556,33 @@ def test_part2_stacks_use_retain_except_on_create_and_deferred_deletion_protecti
                 assert res["DeletionPolicy"] == "RetainExceptOnCreate", (
                     f"{tpl_name}:{lid} uses {res['DeletionPolicy']} instead of RetainExceptOnCreate"
                 )
+
+    # 3. Every AWS::BedrockAgentCore::GatewayTarget InlinePayload SchemaDefinition
+    #    uses ONLY CloudFormation SchemaDefinitionProperty keys (no `Enum`).
+    allowed_schema_keys = {"Type", "Description", "Items", "Properties", "Required"}
+
+    def _assert_cfn_schema(node: dict, path: str) -> None:
+        extra = set(node) - allowed_schema_keys
+        assert not extra, f"{path} has unsupported SchemaDefinition keys: {extra}"
+        for prop_name, prop_schema in (node.get("Properties") or {}).items():
+            _assert_cfn_schema(prop_schema, f"{path}.Properties.{prop_name}")
+        if isinstance(node.get("Items"), dict):
+            _assert_cfn_schema(node["Items"], f"{path}.Items")
+
+    for lid, res in tools_tpl["Resources"].items():
+        if res["Type"] == "AWS::BedrockAgentCore::GatewayTarget":
+            payload = res["Properties"]["TargetConfiguration"]["Mcp"]["Lambda"][
+                "ToolSchema"
+            ]["InlinePayload"]
+            for tool_def in payload:
+                _assert_cfn_schema(
+                    tool_def["InputSchema"], f"{lid}:{tool_def['Name']}"
+                )
+
+    # 4. hr-identity layer pins scramp<1.5 so scramp.make_channel_binding exists
+    #    for pg8000 1.31.5 TLS channel-binding handshakes.
+    layer_python = REPO / "use-cases" / "hr-identity" / "layer" / "python"
+    scramp_init = (layer_python / "scramp" / "__init__.py").read_text()
+    assert "make_channel_binding" in scramp_init, (
+        "hr-identity layer installed scramp>=1.5 without make_channel_binding"
+    )

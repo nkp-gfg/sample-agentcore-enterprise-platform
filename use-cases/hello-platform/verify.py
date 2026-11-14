@@ -14,7 +14,6 @@ Respects PROJECT_NAME / ENVIRONMENT / AWS_REGION; `deploy.sh verify` runs it
 automatically when the use case is enabled in platform.yaml.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -25,12 +24,11 @@ import boto3
 from test_gateway import mcp_request
 from utils import get_m2m_token
 
-from infra_utils.platform_config import resolve_region
+from infra_utils.platform_config import resolve_project_and_env, resolve_region
 
 
 def main() -> int:
-    project = os.environ.get("PROJECT_NAME", "agentcore-workshop")
-    env = os.environ.get("ENVIRONMENT", "dev")
+    project, env = resolve_project_and_env()
     name = f"/{project}/{env}/use-cases/hello-platform/gateway-seen"
 
     ssm = boto3.client("ssm", region_name=resolve_region())

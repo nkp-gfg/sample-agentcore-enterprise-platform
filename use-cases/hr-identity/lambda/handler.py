@@ -197,16 +197,30 @@ def _calling_agent(event: dict) -> str | None:
 def _apply_claims(
     event: dict, claims: dict[str, str], *, include_id_token: bool
 ) -> dict:
-    response = event.setdefault("response", {})
-    details = response.setdefault("claimsAndScopeOverrideDetails", {})
+    # Real Cognito V3_0 events pass `"response": {"claimsAndScopeOverrideDetails": None}`
+    # (explicit JSON nulls), where `dict.setdefault(...)` would return `None`.
+    response = event.get("response")
+    if not isinstance(response, dict):
+        response = {}
+        event["response"] = response
+    details = response.get("claimsAndScopeOverrideDetails")
+    if not isinstance(details, dict):
+        details = {}
+        response["claimsAndScopeOverrideDetails"] = details
     sections = (
         ("accessTokenGeneration", "idTokenGeneration")
         if include_id_token
         else ("accessTokenGeneration",)
     )
     for section in sections:
-        target = details.setdefault(section, {})
-        existing = target.setdefault("claimsToAddOrOverride", {})
+        target = details.get(section)
+        if not isinstance(target, dict):
+            target = {}
+            details[section] = target
+        existing = target.get("claimsToAddOrOverride")
+        if not isinstance(existing, dict):
+            existing = {}
+            target["claimsToAddOrOverride"] = existing
         existing.update(claims)
     return event
 

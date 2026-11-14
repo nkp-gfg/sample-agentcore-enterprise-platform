@@ -17,7 +17,11 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 from verify import HEALTH_PROMPT, checks_for
 
-from infra_utils.platform_config import PlatformConfig, discover_use_cases
+from infra_utils.platform_config import (
+    PlatformConfig,
+    discover_use_cases,
+    resolve_project_and_env,
+)
 
 USE_CASES = sorted(discover_use_cases())
 
@@ -200,3 +204,22 @@ def test_the_unfailable_health_check_stays_dead():
         "scripts/test.py is back — it printed success on broken deployments "
         "and had no non-zero exit path; use deploy.sh verify instead"
     )
+
+
+def test_resolve_project_and_env_reads_platform_yaml_with_env_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest = tmp_path / "platform.yaml"
+    manifest.write_text(
+        "project: custom-proj\nenvironment: stage\nregion: eu-west-1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PROJECT_NAME", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.setenv("PLATFORM_CONFIG", str(manifest))
+
+    assert resolve_project_and_env(tmp_path) == ("custom-proj", "stage")
+
+    monkeypatch.setenv("PROJECT_NAME", "env-proj")
+    assert resolve_project_and_env(tmp_path) == ("env-proj", "stage")
+

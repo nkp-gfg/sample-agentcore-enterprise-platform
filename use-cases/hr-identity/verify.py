@@ -26,22 +26,22 @@ this automatically when hr-identity is enabled in platform.yaml.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 if str(REPO / "scripts") not in sys.path:
     sys.path.insert(0, str(REPO / "scripts"))
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 
 
 def main() -> int:
     import boto3
 
-    from infra_utils.platform_config import resolve_region
+    from infra_utils.platform_config import resolve_project_and_env, resolve_region
 
-    project = os.environ.get("PROJECT_NAME", "agentcore-workshop")
-    env = os.environ.get("ENVIRONMENT", "dev")
+    project, env = resolve_project_and_env()
     region = resolve_region()
 
     ssm = boto3.client("ssm", region_name=region)

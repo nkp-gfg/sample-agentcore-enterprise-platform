@@ -361,16 +361,23 @@ class HrIdentityStack(cdk.Stack):
         cdk.CfnOutput(self, "UserPoolArn", value=user_pool_arn)
 
 
-_PG8000_PIN = "pg8000==1.31.5"
+_PG8000_LAYER_DEPS = (
+    "pg8000==1.31.5",
+    # scramp 1.5.0 removed scramp.make_channel_binding called by pg8000 1.31.5;
+    # python-dateutil>=3 conflicts with Lambda botocore (<3.0.0,>=2.1).
+    "scramp==1.4.9",
+    "python-dateutil>=2.8.2,<3.0.0",
+)
+_PG8000_PIN = " ".join(_PG8000_LAYER_DEPS)
 
 
 def _install_pg8000_into_layer(target: Path) -> None:
-    """Install the pinned pg8000 into the layer's python/ directory.
+    """Install the pinned pg8000 + transitive deps into the layer's python/ dir.
 
     Runs at CDK synth time with the deployer's own Python. pg8000 is pure
     Python, so there is no manylinux concern — any OS the deployer runs on
-    produces the same layer content. Idempotent: if the pin's dist-info is
-    already present, this is a no-op.
+    produces the same layer content. Idempotent: if the pin sentinel matches
+    `_PG8000_PIN`, this is a no-op.
     """
     target.mkdir(parents=True, exist_ok=True)
 
@@ -387,7 +394,7 @@ def _install_pg8000_into_layer(target: Path) -> None:
         else:
             child.unlink()
 
-    subprocess.run(  # nosec B603 — fixed argv, sys.executable, pinned dep
+    subprocess.run(  # nosec B603 — fixed argv, sys.executable, pinned deps
         [
             sys.executable,
             "-m",
@@ -399,7 +406,7 @@ def _install_pg8000_into_layer(target: Path) -> None:
             "--target",
             str(target),
             "--upgrade",
-            _PG8000_PIN,
+            *_PG8000_LAYER_DEPS,
         ],
         check=True,
     )
