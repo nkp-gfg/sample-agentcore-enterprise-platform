@@ -20,7 +20,7 @@ with PKCE and keeps the access token in memory.
 
 | File | Role |
 |---|---|
-| `server.py` | `http.server` on `127.0.0.1:8899`. Serves `public/` and one `/config.json` endpoint built from four non-secret SSM parameters plus the pinned A2UI protocol version. No create/update/delete routes. |
+| `server.py` | `http.server` on `127.0.0.1:8899`. Serves `public/`, one `GET /config.json` endpoint built from four non-secret SSM parameters plus the pinned A2UI protocol version, and a zero-AWS-credential same-origin `POST /invocations` SSE passthrough that forwards only the browser's Cognito Bearer JWT to the AgentCore Runtime (avoiding browser cross-origin CORS preflight blocks). No create/update/delete routes. |
 | `public/index.html` | Shell with sign-in, chat pane, and one A2UI surfaces mount point. The side cards from [`custom-app-plan/human-review.md`](../custom-app-plan/human-review.md) are rendered dynamically by the A2UI processor. |
 | `public/a2ui.js` | Minimal, no-build [A2UI v1.0](https://a2ui.org/specification/v1_0/) `MessageProcessor`: `createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`, outbound `action` + `error`. Hand-rolled instead of imported via CDN; see "A2UI design choice" below. |
 | `public/hr-catalog.json` | A2UI catalog listing the components the renderer draws. The catalog is the guardrail; a component outside this list is refused with a renderer error. |
@@ -50,11 +50,8 @@ to find the Cognito hosted-UI authorization and token endpoints.
 
 ## What it does NOT do
 
-- It does **not** proxy AWS calls. The browser talks directly to the module 6
-  runtime over AG-UI SSE with a Bearer access token the Cognito web client
-  issued.
-- It has **no** create, update, or delete route. Only `GET /`, the static
-  files, and `GET /config.json` answer.
+- It holds **zero** AWS credentials on the request path. `POST /invocations` forwards only the browser's Cognito `Authorization: Bearer <token>` and `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` headers to the AgentCore Runtime HTTPS endpoint so browser `fetch()` never hits cross-origin CORS preflight failures.
+- It has **no** create, update, or delete route. Only `GET /`, static files, `GET /config.json`, and `POST /invocations` answer.
 - It imports no CDK and no stack code. It does not import the agent package.
 - It does **not** hold any state across restarts. Chat lives in memory.
 
@@ -81,9 +78,9 @@ Open `http://127.0.0.1:8899/`, click **Sign in**, and authenticate through the
 Cognito hosted UI. The browser caches the access token in memory for the life
 of the tab. Ctrl+C the server to stop.
 
-The sign-in button and all review decisions happen in the browser. The server
-is a static file host plus `/config.json`; the agent conversation never flows
-through it.
+The sign-in button and all review decisions happen in the browser. `server.py`
+only serves static files, `/config.json`, and same-origin `/invocations` Bearer
+passthrough with zero server-side sessions or credentials.
 
 ## Tests
 

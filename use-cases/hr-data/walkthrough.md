@@ -14,8 +14,9 @@ order of the HR spec.
 
 ## What it deploys
 
-- One `rds.CfnDBCluster` + one `rds.CfnDBInstance` (Aurora PostgreSQL 15.5
-  Serverless v2, `db.serverless`, 0.5–2 ACU).
+- One `rds.CfnDBCluster` + one `rds.CfnDBInstance` (Aurora PostgreSQL
+  Serverless v2 using the region's active default engine version,
+  `db.serverless`, 0.5–2 ACU, RDS Data API + IAM auth enabled).
 - One dedicated DB `ec2.CfnSecurityGroup` with inbound 5432 from the
   module C runtime security group, and one outbound rule added to that
   runtime SG so pods can reach 5432. Neither modifies the networking stack.
@@ -67,14 +68,15 @@ python use-cases/hr-data/verify.py
 
 The script checks SSM parameters, cluster `Status == available`,
 `StorageEncrypted`, `IAMDatabaseAuthenticationEnabled`,
-`DeletionProtection`, and that the master secret is CMK-encrypted. It does
-**not** open a SQL connection — the laptop is not in the VPC, so a real SQL
-proof belongs to H4's `verify.py`.
+`HttpEndpointEnabled`, `DeletionProtection`, that the master secret is
+CMK-encrypted, and queries RDS Data API over HTTPS (no VPC access needed on
+port 5432) to verify all 6 HR tables, all 5 database roles, `agent_state`,
+and (when `seed: true`) the 9 seeded employee rows.
 
 Expected output:
 
 ```
-OK: hr-data cluster <prefix>-uc-hr-data available (hr db 'hr', checkpoint db 'agent_state', secret '<prefix>-uc-hr-data-...')
+OK: hr-data cluster <prefix>-uc-hr-data available (hr db 'hr', checkpoint db 'agent_state', 6 tables + 5 roles verified)
 ```
 
 ## Remove

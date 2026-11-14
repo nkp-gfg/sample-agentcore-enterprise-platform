@@ -1,6 +1,6 @@
 # GFG deployment, part 2
 
-Part 1 is the platform. This file adds the HR assistant on top of it, in three layers (five deploy/test phases plus the local web UI). Finish the verify command for a phase before you start the next one. You can also remove one phase and leave the rest running. The order and the reasons are in `custom-app-plan/phases.md`. If this file and that plan disagree about a command, this file is the one you run.
+Part 1 is the platform. This file adds the HR assistant on top of it, in three layers (five deploy/test phases, the local A2UI web UI + EBA Console, and a final sign-off checklist). Finish the verify command for a phase before you start the next one. You can also remove one phase and leave the rest running. The order and the reasons are in `custom-app-plan/phases.md`. If this file and that plan disagree about a command, this file is the one you run.
 
 Do not run `./scripts/deploy.sh workshop`. Do not run `./scripts/deploy.sh destroy` without `--stack` or `--team hr`. A bare `destroy` deletes the whole platform. Do not run `./scripts/deploy.sh design --profile`. That rewrites `platform.yaml` from a preset. `design` on its own only prints the plan.
 
@@ -23,20 +23,19 @@ Part 1, Step 15, passed on this checkout. The virtualenv is active (`.venv/bin/p
 - Python 3.13 with `pip` (the repo's `.venv` set up in Part 1).
 - Outbound HTTPS to `pypi.org` so CDK synth can vendor `pg8000==1.31.5` into `use-cases/hr-identity/layer/python/` and `manylinux2014_aarch64` wheels for `psycopg[binary]` into the H4 Lambda assets (both cached locally after the first synth). Behind a corporate proxy, export `HTTPS_PROXY` before running `deploy.sh`.
 - **No external policy binary is required.** Row- and attribute-level HR authorization runs natively in Python (`use-cases/hr-tools/lambdas/shared/authz.py`) with zero external binaries or subprocesses.
+- **No Azure Entra portal changes are needed.** Entra still redirects to Cognito's `/oauth2/idpresponse` URL from Part 1; Cognito's own SPA WebClient gets the local `hr-web` `:8899` callback URLs when `$PREFIX-auth` updates in Phase 5.
 
 ### Read the stack prefix from `platform.yaml`
 
+Do not export `AWS_REGION` (`platform.yaml` owns the deploy Region). Export `PREFIX`, `SSM`, and `REGION` for the CLI commands below:
+
 ```bash
-eval "$(python - <<'PY'
-from pathlib import Path
-import re
-text = Path("platform.yaml").read_text()
-project = re.search(r"^project:\s*(\S+)", text, re.M).group(1)
-environment = re.search(r"^environment:\s*(\S+)", text, re.M).group(1)
-region = re.search(r"^region:\s*(\S+)", text, re.M).group(1)
-print(f"export PREFIX={project}-{environment}")
-print(f"export SSM=/{project}/{environment}")
-print(f"export REGION={region}")
+eval "$(.venv/bin/python - <<'PY'
+from infra_utils.platform_config import load_platform_config
+cfg = load_platform_config("platform.yaml")
+print(f"export PREFIX={cfg.project}-{cfg.environment}")
+print(f"export SSM=/{cfg.project}/{cfg.environment}")
+print(f"export REGION={cfg.region}")
 PY
 )"
 echo "stacks: $PREFIX"
@@ -46,14 +45,14 @@ echo "region: $REGION"
 
 Stack names use the hyphen form, `agentcore-production-prod-uc-hr-data`. SSM names use the slash form, `/agentcore-production/prod/...`. Use what the block above prints.
 
-Add two lines to `gfg-deploy-notes.txt`. Leave them blank until the identity phase.
+Add two lines to `gfg-deploy-notes.txt`. Leave them blank until Phase 3:
 
 ```text
 E1 Cognito sub:
 M1 Cognito sub:
 ```
 
-When a deploy asks which agent pattern to use, press Enter and keep the pattern Part 1 is already running. When it asks about the IdP, keep Entra. The only phase that changes the pattern is Phase 5.
+When a deploy asks which agent pattern to use, press Enter and keep the pattern Part 1 is already running. When it asks about the IdP, keep Entra. The only phase that changes `agents.pattern` is Phase 5.
 
 ### Same `design` / `doctor` / `verify` commands in Part 2
 
@@ -72,11 +71,11 @@ The three top-level commands from Part 1 automatically expand to cover Part 2 as
 ./scripts/deploy.sh verify
 ```
 
-Run `design` and `doctor` after each `platform.yaml` edit below, run the per-phase `verify.py` right after each stack deploy, and run `./scripts/deploy.sh verify` at the end of Part 2 to prove all 11 checks pass together.
+Run `design` and `doctor` after each `platform.yaml` edit below, run the per-phase `verify.py` right after each stack deploy, and run `./scripts/deploy.sh verify` in Phase 7 to prove all 11 checks pass together.
 
 ## Phase 1. Database (`hr-data`)
 
-Enable only the database first. Leave the other two use cases out of `platform.yaml` until their phases.
+Append `use_cases` with only `hr-data` to the bottom of `platform.yaml` (leave `hr-identity` and `hr-tools` out until their phases):
 
 ```yaml
 use_cases:
@@ -88,7 +87,11 @@ use_cases:
 
 `seed: true` loads the nine demo employees (`M1`, `E1`, `E2`, `P1`, `R1`–`R4`, `X1`), their salaries, their leave balances, and E1's `2026-10` telephone allowance row (`docs/hr/schema.md` § Demo seed). Use it only on this demo database; the seed refuses to run if any `employee_id` outside the nine-id demo set is already present. `retain_data: true` keeps the cluster, master secret, and backups when you later delete the stack.
 
+Validate, deploy, and verify:
+
 ```bash
+./scripts/deploy.sh design
+./scripts/deploy.sh doctor
 ./scripts/deploy.sh deploy --stack "$PREFIX-uc-hr-data"
 python use-cases/hr-data/verify.py
 ```
@@ -99,7 +102,7 @@ What happens during deploy:
 - Aurora PostgreSQL Serverless v2 (`0.5`–`2.0` ACU) starts in the private subnets using the region's supported default Aurora PostgreSQL engine version, with IAM database authentication and RDS Data API (`EnableHttpEndpoint`) enabled.
 - The provisioner CustomResource runs over RDS Data API (HTTPS) to ensure both `hr` and `agent_state` databases exist, applies `schema.sql` (`employees`, `salaries`, `leave_balances`, `leave_requests`, `payroll_items`, `decision_log` + roles `hr_reader`, `hr_writer`, `hr_audit`, `hr_identity`), applies `agent_state_schema.sql` (`agent_checkpoint` role with `USAGE, CREATE ON SCHEMA public`), and applies `seed.sql` when `seed: true`.
 
-`verify.py` does not need VPC access on port 5432. It checks the four SSM parameters (`$SSM/use-cases/hr-data/{endpoint,secret-name,database-name,checkpoint-database}`), cluster encryption/IAM-auth/Data-API/deletion-protection flags, master secret CMK encryption, and queries RDS Data API over HTTPS to confirm all 6 tables, all 5 database roles, `agent_state`, and the 9 seeded employees are live.
+`verify.py` does not need VPC access on port 5432. It checks the four SSM parameters (`$SSM/use-cases/hr-data/{endpoint,secret-name,database-name,checkpoint-database}`), cluster encryption/IAM-auth/Data-API/deletion-protection flags, master secret CMK encryption, and queries RDS Data API over HTTPS to confirm all 6 tables, all 5 database roles, `agent_state`, and the 9 seeded employees are live (`OK: hr-data cluster ... available (... 6 tables + 5 roles verified)`).
 
 ### Remove only the database
 
@@ -123,13 +126,22 @@ Forty-two unit tests exercise `use-cases/hr-tools/lambdas/shared/authz.py` direc
 
 ## Phase 3. Identity (`hr-identity`)
 
-Add `hr-identity` under `use_cases`. Leave `hr-data` as it is. Do not add `hr-tools` yet.
+Update the `use_cases` block in `platform.yaml` to add `hr-identity` (indented two spaces under `use_cases:`):
 
 ```yaml
+use_cases:
+  hr-data:
+    database_name: hr
+    retain_data: true
+    seed: true
   hr-identity: {}
 ```
 
+Validate, deploy, and verify:
+
 ```bash
+./scripts/deploy.sh design
+./scripts/deploy.sh doctor
 ./scripts/deploy.sh deploy --stack "$PREFIX-uc-hr-identity"
 python use-cases/hr-identity/verify.py
 ```
@@ -140,11 +152,11 @@ What happens during deploy:
 - The pre-token Lambda deploys into the private subnets with `rds-db:connect` scoped to `hr_identity` only.
 - `TriggerManagerFunction` performs a safe read-modify-write `DescribeUserPool` → `UpdateUserPool`, preserving `DeletionProtection`, `AdminCreateUserConfig`, `Policies`, and any existing triggers while ensuring `UserPoolTier` is at least `ESSENTIALS` and attaching `PreTokenGenerationConfig` with `LambdaVersion: V3_0` (required for M2M `TokenGeneration_ClientCredentials` + `aws_client_metadata` enrichment as well as federated human sign-ins).
 
-`verify.py` confirms `$SSM/use-cases/hr-identity/function-arn` exists, the Lambda is `Active`, and the user pool's `PreTokenGenerationConfig` points to it at version `V3_0`.
+`verify.py` confirms `$SSM/use-cases/hr-identity/function-arn` exists, the Lambda is `Active`, and the user pool's `PreTokenGenerationConfig` points to it at `LambdaVersion=V3_0`.
 
 ### Map Cognito users to employees
 
-The demo seed leaves `cognito_sub = NULL` on every row. Sign in at least once as the two Entra users who will test as `E1` (employee / middle manager of `R1`–`R4`) and `M1` (direct manager of `E1`, `E2`, `P1`) using `scripts/login_chat.py` from Part 1, then list their Cognito `sub` UUIDs:
+The demo seed leaves `cognito_sub = NULL` on every row. Sign in at least once as the two Entra users who will test as `E1` (employee / middle manager of `R1`–`R4`) and `M1` (direct manager of `E1`, `E2`, `P1`) using `.venv/bin/python scripts/login_chat.py` from Part 1, then list their Cognito `sub` UUIDs:
 
 ```bash
 POOL=$(aws ssm get-parameter --region "$REGION" \
@@ -187,15 +199,23 @@ The `TriggerManagerFunction` Delete handler removes only `PreTokenGenerationConf
 
 ## Phase 4. Tools (`hr-tools` + Gateway header promotion)
 
-Add `hr-tools` under `use_cases` in `platform.yaml`:
+Update `use_cases` in `platform.yaml` to add `hr-tools`:
 
 ```yaml
+use_cases:
+  hr-data:
+    database_name: hr
+    retain_data: true
+    seed: true
+  hr-identity: {}
   hr-tools: {}
 ```
 
 Enabling `hr-tools` turns on `PassRequestHeaders: true` and `HR_IDENTITY_PROMOTION=1` on the platform Gateway's REQUEST interceptor so validated JWT claims (`employee_id`, `agent_id`) are promoted onto HR tool arguments and cannot be spoofed by the model. **Deploy `$PREFIX-gateway` first so that flag is live, then deploy `$PREFIX-uc-hr-tools`:**
 
 ```bash
+./scripts/deploy.sh design
+./scripts/deploy.sh doctor
 ./scripts/deploy.sh deploy --stack "$PREFIX-gateway"
 ./scripts/deploy.sh deploy --stack "$PREFIX-uc-hr-tools"
 python use-cases/hr-tools/verify.py
@@ -231,9 +251,11 @@ agents:
   pattern: god-agent
 ```
 
-Now update `$PREFIX-auth` (registers `http://127.0.0.1:8899/` and `http://localhost:8899/` on the Cognito SPA web client for Phase 6 while leaving `login_chat.py`'s app client untouched) and `$PREFIX-runtime-orchestrator` (deploys the `god-agent` container on the `AGUI` protocol with `rds-db:connect` for `agent_checkpoint`, M2M secret read for `aws_client_metadata` exchanges, and web-client JWT acceptance):
+Validate with `design` and `doctor`, then update `$PREFIX-auth` (registers `http://127.0.0.1:8899/` and `http://localhost:8899/` on the Cognito SPA web client for Phase 6 while leaving `login_chat.py`'s app client untouched) and `$PREFIX-runtime-orchestrator` (deploys the `god-agent` container on the `AGUI` protocol with `rds-db:connect` for `agent_checkpoint`, M2M secret read for `aws_client_metadata` exchanges, and web-client JWT acceptance):
 
 ```bash
+./scripts/deploy.sh design
+./scripts/deploy.sh doctor
 ./scripts/deploy.sh deploy --stack "$PREFIX-auth"
 ./scripts/deploy.sh deploy --stack "$PREFIX-runtime-orchestrator"
 ```
@@ -275,6 +297,8 @@ Do not destroy `runtime-orchestrator`.
 
 Start this only after Phase 5 passes in the terminal. There is no CloudFormation stack for the UI.
 
+### Start `hr-web` (`127.0.0.1:8899`)
+
 ```bash
 .venv/bin/python hr-web/server.py
 ```
@@ -282,15 +306,42 @@ Start this only after Phase 5 passes in the terminal. There is no CloudFormation
 `server.py` binds strictly to `127.0.0.1:8899`. Open `http://127.0.0.1:8899/` in your browser:
 
 1. Click **Sign in** — completes the Cognito + Entra PKCE flow in the browser (tokens live in browser memory only).
-2. Ask HR questions — requests stream over same-origin `/invocations` to the AgentCore Runtime (`AGUI` SSE), and tool results render `LeaveBalanceCard`, `AllowanceCard`, `DirectReportsTable`, and `ProbationNotice` dynamically through the A2UI v1.0 catalog (`hr-web/public/hr-catalog.json`).
+2. Ask HR questions — requests stream over same-origin `POST /invocations` (forwarding only your Bearer token to the AgentCore Runtime `AGUI` SSE endpoint, with zero server-side AWS credentials and no cross-origin CORS preflight issues), and tool results render `LeaveBalanceCard`, `AllowanceCard`, `DirectReportsTable`, and `ProbationNotice` dynamically through the A2UI v1.0 catalog (`hr-web/public/hr-catalog.json`).
 3. Ask to book leave as `E1` — `EmployeeConfirmForm` appears on the right. Typing `"approve"` in chat does not submit; clicking **Confirm** submits one `pending` request (`submit_leave_request`).
 4. Click **Sign out** (clears token, chat, and thread), then click **Sign in** as `M1` — `hr-web` automatically polls pending reviews for `M1` on sign-in (or click **Check reviews**) and renders `ManagerReviewCard` with **Approve** and **Reject** buttons. Clicking **Approve** invokes `record_leave_decision` as `M1` and records the approval.
 
-If you also run the EBA Console (`dashboard/monitor.py` + `dashboard/server.py`), the Overview, Parameters, Architecture X-Ray map, and Playground automatically display `uc-hr-data`, `uc-hr-identity`, `uc-hr-tools`, their published SSM parameters, and `AG-UI · OAuth` for `god-agent`.
+### Start the EBA Console alongside `hr-web` (`127.0.0.1:8888`)
+
+Because `hr-web` uses port `8899` and the EBA Console uses port `8888`, both can run simultaneously in separate terminals:
+
+```bash
+# Terminal A: status poller (updates dashboard/public/status.json every 15s)
+.venv/bin/python dashboard/monitor.py
+
+# Terminal B: loopback EBA Console on http://127.0.0.1:8888
+.venv/bin/python dashboard/server.py
+```
+
+Open `http://127.0.0.1:8888/`: **Overview** shows `11/11` deployed stacks (including `uc-hr-data`, `uc-hr-identity`, `uc-hr-tools`), **Parameters** displays the 6 published HR SSM paths, **Architecture** renders the `HR assistant (Part 2 · god-agent runtime)` X-Ray band and audit edges, and **Playground** invokes `god-agent` over `AG-UI · OAuth`.
 
 ### Remove only the UI
 
-Press `Ctrl+C` in the terminal running `hr-web/server.py`.
+Press `Ctrl+C` in the terminal(s) running `hr-web/server.py`, `dashboard/monitor.py`, and `dashboard/server.py`.
+
+## Phase 7. Final Part 2 checklist
+
+Run the full-footprint health check and tick every row after deploying Phases 1–6:
+
+| # | Check | Command / Action | Pass when |
+|---|---|---|---|
+| 1 | Preflight clean | `./scripts/deploy.sh doctor` | `0 failed`, `[PASS] HR Part 2: hr-data, hr-identity, hr-tools, pattern=god-agent ready` |
+| 2 | All 11 stacks green | `aws cloudformation describe-stacks --region "$REGION" --query "Stacks[?starts_with(StackName,'${PREFIX}-')].[StackName,StackStatus]" --output table` | 11 stacks, each `CREATE_COMPLETE` or `UPDATE_COMPLETE` |
+| 3 | Full automated verify | `./scripts/deploy.sh verify` | `OK: all 11 checks passed for this footprint` |
+| 4 | Runtime log clean | Part 1 Step 13 log filter command | No `AccessDenied` or unhandled `God agent run failed` |
+| 5 | Audit log free of amounts | `aws rds-data execute-statement --region "$REGION" --resource-arn "$CLUSTER_ARN" --secret-arn "$SECRET_ARN" --database hr --sql "SELECT action, caller_employee_id, allow, reason_code, decided_by_layer FROM decision_log ORDER BY id DESC LIMIT 10"` | Rows present with `decided_by_layer` in `('policy','tool')`, zero salaries or leave reasons |
+| 6 | Salary & probation rules | `login_chat.py` / `hr-web` as `E1` and `M1` (`docs/hr/acceptance.md` § H5) | `E1` sees `R1`–`R4` and not `M1`; `M1` sees `E1`/`E2`/`P1` and not `R1`–`R4` |
+| 7 | Two-stage human review | Submit leave in `hr-web` as `E1`, confirm card, sign in as `M1`, approve card (`docs/hr/acceptance.md` § H6) | Typed `"approve"` in chat does nothing; `M1` card button transitions row to `approved` |
+| 8 | EBA Console inventory | Open `http://127.0.0.1:8888/` | `11/11` stacks green, HR X-Ray band + 6 HR SSM parameters visible |
 
 ## Remove everything from part 2
 
@@ -313,7 +364,7 @@ After step 1 and step 2 above (switching `runtime-orchestrator` back to Part 1's
 ./scripts/deploy.sh destroy --team hr
 ```
 
-Then remove `use_cases:` from `platform.yaml` and redeploy `$PREFIX-gateway` if you want `PassRequestHeaders` reset immediately.
+Then remove `use_cases:` from `platform.yaml`, run `./scripts/deploy.sh deploy --stack "$PREFIX-gateway"` if you want `PassRequestHeaders` reset immediately, and confirm Part 1 Step 15 (`./scripts/deploy.sh verify` → `OK: all 8 checks passed`).
 
 ### Full-footprint destroy (`./scripts/deploy.sh destroy`)
 
@@ -338,6 +389,7 @@ Set back to `true` to resume.
 
 | What you see | Why | What to do |
 |---|---|---|
+| `[FAIL] HR Part 2 ...` in `./scripts/deploy.sh doctor` | `platform.yaml` turned off a prerequisite (`networking`, `egress_filter`, `cedar: ENFORCE`, `require_guardrails`, or `brokered` mode) | Restore the missing flag in `platform.yaml` and re-run `doctor` |
 | `FAIL: gateway ... has PassRequestHeaders=false` in `hr-tools/verify.py` | `$PREFIX-gateway` was not redeployed after adding `hr-tools` to `platform.yaml` | Run `./scripts/deploy.sh deploy --stack "$PREFIX-gateway"`, then re-run `verify.py` |
 | `redirect_uri_mismatch` when clicking Sign in on `http://127.0.0.1:8899/` | `$PREFIX-auth` has not been updated from `part2-without-opa-godbot-v3` yet | Run `./scripts/deploy.sh deploy --stack "$PREFIX-auth"` so `:8899` callbacks are on the web client |
 | `Runtime HTTP 401` or `403` in `hr-web` after signing in | `$PREFIX-runtime-orchestrator` has not been updated with `agents.pattern: god-agent` | Set `agents.pattern: god-agent` and run `./scripts/deploy.sh deploy --stack "$PREFIX-runtime-orchestrator"` |

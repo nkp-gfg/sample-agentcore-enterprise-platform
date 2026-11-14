@@ -28,13 +28,13 @@ the HR spec.
   - write its own CloudWatch Logs.
 - One CloudWatch `logs.LogGroup` with 365-day retention, matching the
   HR plan's log retention for every HR component.
-- Two `custom_resources.AwsCustomResource` nodes:
-  - ATTACH — on CREATE/UPDATE, calls `cognito-idp:UpdateUserPool` with
-    `LambdaConfig.PreTokenGenerationConfig.LambdaArn` pointing at this
-    Lambda. Grants `lambda:InvokeFunction` from `cognito-idp.amazonaws.com`.
-  - DETACH — on DELETE, calls `UpdateUserPool` again with
-    `LambdaConfig: {}` so the user pool is clean after
-    `destroy --stack`. Module 3's user pool stays.
+- One `TriggerManagerFunction` CustomResource (`trigger_manager/handler.py`)
+  that performs a read-modify-write `DescribeUserPool` → `UpdateUserPool`:
+  - CREATE/UPDATE — preserves `DeletionProtection`, `AdminCreateUserConfig`,
+    `Policies`, and unrelated triggers while ensuring `UserPoolTier` is at
+    least `ESSENTIALS` and attaching `PreTokenGenerationConfig` (`V3_0`).
+  - DELETE — removes only `PreTokenGenerationConfig`/`PreTokenGeneration`
+    matching this Lambda ARN so module 3's user pool stays intact.
 - One SSM `StringParameter` published under
   `/{project}/{environment}/use-cases/hr-identity/function-arn`. Consumers:
   operators and the detach-on-destroy step.
@@ -89,7 +89,7 @@ The script reads the published `function-arn` SSM parameter, calls
 output on success:
 
 ```
-OK: hr-identity pretoken <function-arn> is Active and attached to user pool <user-pool-id>
+OK: hr-identity pretoken <function-arn> is Active and attached to user pool <user-pool-id> (LambdaVersion=V3_0)
 ```
 
 The script does not mint a token. End-to-end claims — "two users get two

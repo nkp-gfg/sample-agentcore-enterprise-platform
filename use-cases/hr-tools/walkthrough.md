@@ -85,20 +85,17 @@ targets so CloudFormation surfaces the failure.
 
 ```bash
 python use-cases/hr-tools/verify.py
-# OK: six HR leaf tools listed on the gateway, kill switch is 'true'
+# OK: https://.../mcp has 3 READY HR targets, 3 ACTIVE Cedar permits, PassRequestHeaders=true, kill switch=true (...)
 ```
 
 `deploy.sh verify` runs this automatically when hr-tools is enabled.
-`verify.py` makes one real `tools/list` call with the M2M token and checks
-two things:
+`verify.py` verifies:
 
-1. The gateway lists the six leaf tools
-   (`hr-ops___get_leave_balance`, `hr-ops___check_leave_eligibility`,
-   `hr-ops___submit_leave_request`, `hr-payroll___get_employee_compensation`,
-   `hr-payroll___list_direct_reports`, `hr-finance___get_allowance`).
-   `hr-ops___record_leave_decision` is reviewer-only and is intentionally
-   not asserted — it is deployed, but no leaf is given it.
-2. SSM `use-cases/hr-tools/enabled` is `true` after the deploy.
+1. SSM `use-cases/hr-tools/enabled` is `true`.
+2. The Gateway REQUEST interceptor has `PassRequestHeaders=true` and `HR_IDENTITY_PROMOTION=1`.
+3. All 3 HR Gateway targets (`hr-ops`, `hr-payroll`, `hr-finance`) are `READY`.
+4. All 3 HR Cedar permits (`hr_tools_read_permit`, `hr_tools_submit_permit`, `hr_tools_decision_permit`) are `ACTIVE`.
+5. Live MCP `tools/list` succeeds with no `approve_leave` tool, and when any active employee has `cognito_sub` mapped, mints a contextual `leave-balance` M2M token (`aws_client_metadata`) and verifies live `tools/call` succeeds.
 
 The full H4 acceptance table is behavioural (every H2 case through
 `tools/call`, Cedar deny for a wrong `agent_id`, the kill switch flipping,
