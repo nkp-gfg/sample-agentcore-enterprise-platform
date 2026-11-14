@@ -65,6 +65,15 @@
     return String(Math.round((b - a) / 86_400_000) + 1);
   }
 
+  function _resolvedDays(days, startDate, endDate) {
+    if (typeof days === "number" && Number.isFinite(days)) return String(days);
+    if (typeof days === "string") {
+      const trimmed = days.trim();
+      if (trimmed !== "" && Number.isFinite(Number(trimmed))) return trimmed;
+    }
+    return deriveDays({ start: startDate, end: endDate });
+  }
+
   /* ------------------------------------------------- layout primitives */
 
   function Column(props, ctx) {
@@ -224,8 +233,7 @@
     dl.append(_kv("Leave type", _text(props.leaveType)));
     dl.append(_kv("Start", _text(props.startDate)));
     dl.append(_kv("End", _text(props.endDate)));
-    dl.append(_kv("Days", _text(props.days != null ? String(props.days)
-      : deriveDays({ start: props.startDate, end: props.endDate }))));
+    dl.append(_kv("Days", _text(_resolvedDays(props.days, props.startDate, props.endDate))));
     dl.append(_kv("Reason", _text(props.reason)));
     card.append(dl);
     card.append(el("p", "hr-note",
@@ -314,8 +322,7 @@
     dl.append(_kv("Leave type", _text(props.leaveType)));
     dl.append(_kv("Start", _text(props.startDate)));
     dl.append(_kv("End", _text(props.endDate)));
-    dl.append(_kv("Days", _text(props.days != null ? String(props.days)
-      : deriveDays({ start: props.startDate, end: props.endDate }))));
+    dl.append(_kv("Days", _text(_resolvedDays(props.days, props.startDate, props.endDate))));
     card.append(dl);
     const reason = el("div", "hr-reason");
     reason.append(el("span", "hr-reason-label",

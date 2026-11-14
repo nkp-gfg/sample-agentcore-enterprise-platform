@@ -157,7 +157,7 @@ Actions emitted:
 |---|---|---|
 | `employee_confirm_leave` | **Confirm** button | `{kind: "employee_confirm", leave_type, start_date, end_date, reason}` |
 | `employee_reject_leave`  | **Reject** button  | `{kind: "employee_confirm"}` |
-| `employee_edit_leave`    | **Edit** button    | `{kind: "employee_confirm", leave_type, start_date, end_date, reason}` (the shell prompts for new dates) |
+| `employee_edit_leave`    | **Edit dates** button | `{kind: "employee_confirm", leave_type, start_date, end_date, reason}` (the card expands an inline leave-type and date editor) |
 
 `employee_confirm_leave` is the ONLY path that posts a
 `forwardedProps.resume: [{decision: "approve", kind: "employee_confirm",

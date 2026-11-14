@@ -26,8 +26,9 @@ with PKCE and keeps the access token in memory.
 | `public/hr-catalog.json` | A2UI catalog listing the components the renderer draws. The catalog is the guardrail; a component outside this list is refused with a renderer error. |
 | `public/hr-primitives.js` | DOM implementations of each catalog component: `LeaveBalanceCard`, `AllowanceCard`, `DirectReportsTable`, `ProbationNotice`, `EmployeeConfirmForm`, `ManagerReviewCard`, `Notice`, plus layout primitives. |
 | `public/hr-tool-adapter.js` | Maps AG-UI `TOOL_CALL_RESULT` and `RUN_FINISHED(outcome.type === "interrupt")` events into A2UI wire messages. |
+| `public/enterprise-catalog.js` | Static catalog of God Bot roster entries, marketplace agents, prompt templates, and guide sections rendered in the workspace drawers. |
 | `public/ui-primitives.md` | Catalog documentation: fields each primitive reads, action events each one emits. |
-| `public/app.js` | Opens the AG-UI SSE stream, pipes tool-result events through the adapter into the A2UI processor, and routes A2UI `action` events into AG-UI `forwardedProps.resume` posts. Gates `submit_leave_request` behind `EmployeeConfirmForm`'s Confirm button and `record_leave_decision` behind `ManagerReviewCard`'s Approve / Reject buttons. |
+| `public/app.js` | Opens the AG-UI SSE stream, pipes tool-result events through the adapter into the A2UI processor, and routes A2UI `action` events into AG-UI `forwardedProps.resume` posts. Keeps tokens in closure memory only (revoking refresh tokens and purging storage on sign-out). Gates `submit_leave_request` behind `EmployeeConfirmForm`'s Confirm button and `record_leave_decision` behind `ManagerReviewCard`'s Approve / Reject buttons. |
 | `public/styles.css` | Minimal zinc-cards look, matched to `dashboard/public/app.css`. |
 | `tests/test_server_boundary.py` | Boots `server.py` on `127.0.0.1:0` and asserts loopback-only, no-mutation, and no-secret behaviour; also pins the A2UI protocol version field and refuses adjacent `secret`-shaped strings. SSM is mocked. |
 

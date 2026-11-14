@@ -211,7 +211,7 @@ def load_config(
 
 
 def _is_loopback_host(value: str, expected_port: int) -> bool:
-    """A browser Host header that names this loopback server by port.
+    """A browser Host header that names this loopback server by explicit port.
 
     The socket is already bound to ``127.0.0.1``, so a non-loopback peer
     cannot even reach us; we still check the Host header so a CSRF-shaped
@@ -221,12 +221,11 @@ def _is_loopback_host(value: str, expected_port: int) -> bool:
         return False
     try:
         parsed = urlsplit(f"//{value}")
-        port = parsed.port or expected_port
     except ValueError:
         return False
     return (
         parsed.hostname in LOOPBACK_HOSTS
-        and port == expected_port
+        and parsed.port == expected_port
         and not parsed.username
         and not parsed.password
         and not parsed.path
@@ -270,15 +269,15 @@ class HrWebHandler(SimpleHTTPRequestHandler):
         """
         try:
             self._require_loopback_host()
-            origin = self.headers.get("Origin", "")
+            origin = self.headers.get("Origin", "").strip()
             if origin:
                 parsed_origin = urlsplit(origin)
-                origin_port = parsed_origin.port or (
-                    443 if parsed_origin.scheme == "https" else 80
-                )
+                host_header = self.headers.get("Host", "").strip()
                 if (
-                    parsed_origin.hostname not in LOOPBACK_HOSTS
-                    or origin_port != self.server.server_port
+                    parsed_origin.scheme != "http"
+                    or parsed_origin.hostname not in LOOPBACK_HOSTS
+                    or parsed_origin.port != self.server.server_port
+                    or parsed_origin.netloc.lower() != host_header.lower()
                 ):
                     raise RequestRejected(
                         HTTPStatus.FORBIDDEN, "Same-origin loopback Origin required."
@@ -347,8 +346,9 @@ class HrWebHandler(SimpleHTTPRequestHandler):
                     )
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
+                    read_chunk = getattr(upstream, "read1", upstream.read)
                     while True:
-                        chunk = upstream.read(4096)
+                        chunk = read_chunk(4096)
                         if not chunk:
                             break
                         self.wfile.write(chunk)
@@ -501,6 +501,11 @@ def main() -> None:
         default=None,
         help="Environment name (default: ENVIRONMENT or platform.yaml)",
     )
+    parser.add_argument(
+        "--region",
+        default=None,
+        help="AWS region for SSM lookup (default: AWS_REGION or platform.yaml)",
+    )
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
@@ -508,7 +513,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     try:
-        config = load_config(project=args.project, environment=args.environment)
+        config = load_config(
+            project=args.project,
+            environment=args.environment,
+            region=args.region,
+        )
     except ConfigError as exc:
         print(f"hr-web could not start: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
