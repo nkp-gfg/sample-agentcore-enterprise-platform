@@ -6,7 +6,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 
 const appJs = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
-const src = appJs.match(/function statusClass\(stack\) \{[\s\S]*?\n\}/)?.[0];
+const src = appJs.match(/function statusClass\(stack\) \{[\s\S]*?\n\s*\}/)?.[0];
 assert.ok(src, "statusClass not found in app.js");
 const statusClass = new Function(`return ${src}`)();
 

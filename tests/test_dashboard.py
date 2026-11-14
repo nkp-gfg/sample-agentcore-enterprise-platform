@@ -589,6 +589,8 @@ def test_ui_never_offers_secret_reveal_or_copy():
 def test_dashboard_html_has_no_inline_scripts_and_zero_html_sinks():
     assert '<script src="app.js" defer></script>' in INDEX_HTML
     assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", INDEX_HTML, re.IGNORECASE)
+    assert not re.search(r"<style\b", INDEX_HTML, re.IGNORECASE)
+    assert not re.search(r"\sstyle\s*=", INDEX_HTML, re.IGNORECASE)
     for asset_name, text in (
         ("index.html", INDEX_HTML),
         ("app.js", APP_JS),

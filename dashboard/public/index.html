@@ -88,6 +88,21 @@
 
   <div id="banner" aria-live="polite"></div>
 
+  <section class="container auth-gate" id="authGate" aria-label="Console session authentication" hidden>
+    <div class="container-head">
+      <div>
+        <h2>Session token required</h2>
+        <p>Open the URL printed by <code>dashboard/server.py</code> (with <code>#token=...</code>) or paste the session token from your server terminal. Kept in page memory only.</p>
+      </div>
+    </div>
+    <form class="auth-gate-form" id="authGateForm" autocomplete="off">
+      <label class="sr-only" for="authTokenInput">Session token</label>
+      <input class="console-input auth-gate-input" id="authTokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste session token from terminal…" required>
+      <button class="console-button" id="authUnlockBtn" type="submit">Unlock</button>
+    </form>
+    <p class="auth-gate-error" id="authGateError" role="alert" hidden></p>
+  </section>
+
   <!-- ================================================================ OVERVIEW -->
   <section id="tab-overview" class="tab-content active" role="tabpanel" aria-labelledby="tabbtn-overview">
 
