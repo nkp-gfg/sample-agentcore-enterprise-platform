@@ -109,6 +109,35 @@ STACK_META = {
         "layer": "observability",
         "description": "CloudWatch vended logs + X-Ray per resource",
     },
+    # HR assistant Part 2 use-case stacks. docs/hr/README.md is the spec.
+    # Module ids match GFG_Deployment_Part2.md phase numbers. They stay out of
+    # MODULE_MAP in scripts/deploy.sh because HR is a use case, not a
+    # workshop module; test_module_labels_match_deploy_sh only checks suffixes
+    # that appear in both mappings, so these HR ids do not cross-reference.
+    "uc-hr-data": {
+        "module": "H1",
+        "team": "hr",
+        "layer": "service",
+        "description": (
+            "Aurora PostgreSQL Serverless v2 in VPC + schema + roles + "
+            "(optional) demo seed"
+        ),
+    },
+    "uc-hr-identity": {
+        "module": "H3",
+        "team": "hr",
+        "layer": "identity",
+        "description": "Cognito pre-token Lambda that adds HR claims to the JWT",
+    },
+    "uc-hr-tools": {
+        "module": "H4",
+        "team": "hr",
+        "layer": "service",
+        "description": (
+            "Three gateway Lambda targets (hr-ops / hr-payroll / hr-finance) "
+            "+ Cedar permits + kill switch"
+        ),
+    },
 }
 
 # Only these CloudFormation outputs are public dashboard data. CDK creates
@@ -152,6 +181,27 @@ SAFE_STACK_OUTPUTS = {
         {"RuntimeArn", "RuntimeId", "SourceHash", "ImageUri"}
     ),
     "observability": frozenset({"SecurityAlertsTopicArn", "MonitoredResources"}),
+    # HR assistant outputs. Every value here is non-secret by review:
+    # - ClusterArn / FunctionArn / Function-* / UserPoolArn / GatewayUrl /
+    #   KillSwitchParameter are opaque identifiers.
+    # - DatabaseName / CheckpointDatabase are config strings.
+    # The master-secret NAME is deliberately omitted: the browser-side
+    # test_browser_allowlist_covers_backend_reviewed_outputs refuses any
+    # output key that contains "secret", matching how the M2M secret name is
+    # handled by SAFE_EXPORT_STACK_OUTPUTS only. Operators look up the
+    # Secrets Manager name through the SSM parameter
+    # `use-cases/hr-data/secret-name`, which is in SAFE_SSM_PARAMETERS.
+    "uc-hr-data": frozenset({"ClusterArn", "DatabaseName", "CheckpointDatabase"}),
+    "uc-hr-identity": frozenset({"FunctionArn", "UserPoolArn"}),
+    "uc-hr-tools": frozenset(
+        {
+            "KillSwitchParameter",
+            "GatewayUrl",
+            "Function-hr-ops",
+            "Function-hr-payroll",
+            "Function-hr-finance",
+        }
+    ),
 }
 
 # Workshop handoff exports need two additional, non-secret references during
@@ -193,6 +243,17 @@ SAFE_SSM_PARAMETERS = frozenset(
         "runtimes/code-agent/id",
         "runtimes/research-agent/arn",
         "runtimes/research-agent/id",
+        # HR assistant published interface (docs/hr/modules.md § SSM interface).
+        # Everything here is non-secret: endpoint is a hostname, secret-name is
+        # the Secrets Manager NAME (not the value), database-name and
+        # checkpoint-database are config strings, function-arn is an ARN, and
+        # the kill switch is a String with the value "true" or "false".
+        "use-cases/hr-data/endpoint",
+        "use-cases/hr-data/secret-name",
+        "use-cases/hr-data/database-name",
+        "use-cases/hr-data/checkpoint-database",
+        "use-cases/hr-identity/function-arn",
+        "use-cases/hr-tools/enabled",
     }
 )
 

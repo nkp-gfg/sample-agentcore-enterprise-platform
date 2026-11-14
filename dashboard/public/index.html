@@ -320,7 +320,14 @@ const SAFE_OUTPUT_KEYS = new Set([
   'GatewayCredentialProviderName', 'GoogleProviderArn', 'GithubProviderArn',
   'NotionProviderArn', 'GatewayUrl', 'GatewayArn', 'GatewayId', 'MemoryId',
   'MemoryArn', 'RuntimeArn', 'RuntimeId', 'SourceHash', 'ImageUri',
-  'SecurityAlertsTopicArn', 'MonitoredResources'
+  'SecurityAlertsTopicArn', 'MonitoredResources',
+  // HR assistant outputs — reviewed non-secret. The master-secret NAME is
+  // not listed here (the test allow-list refuses any key containing
+  // "secret"); operators find it in the Parameters tab under
+  // `use-cases/hr-data/secret-name`.
+  'ClusterArn', 'DatabaseName', 'CheckpointDatabase',
+  'FunctionArn', 'KillSwitchParameter',
+  'Function-hr-ops', 'Function-hr-payroll', 'Function-hr-finance'
 ]);
 const SAFE_PARAMETER_KEYS = new Set([
   'auth/mode', 'auth/issuer-url', 'auth/user-pool-id', 'auth/app-client-id',
@@ -331,7 +338,11 @@ const SAFE_PARAMETER_KEYS = new Set([
   'networking/private-subnet-ids', 'networking/runtime-security-group-id',
   'runtimes/orchestrator/arn', 'runtimes/orchestrator/id',
   'runtimes/code-agent/arn', 'runtimes/code-agent/id',
-  'runtimes/research-agent/arn', 'runtimes/research-agent/id'
+  'runtimes/research-agent/arn', 'runtimes/research-agent/id',
+  // HR published interface (docs/hr/modules.md § SSM interface).
+  'use-cases/hr-data/endpoint', 'use-cases/hr-data/secret-name',
+  'use-cases/hr-data/database-name', 'use-cases/hr-data/checkpoint-database',
+  'use-cases/hr-identity/function-arn', 'use-cases/hr-tools/enabled'
 ]);
 const PAGE_META = {
   overview: ['Overview', 'Deployment status', 'The deployment contract and current CloudFormation state.'],

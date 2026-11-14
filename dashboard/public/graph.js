@@ -19,7 +19,11 @@
     'runtime-orchestrator',
     'runtime-code-agent',
     'runtime-research-agent',
-    'observability'
+    'observability',
+    // HR assistant Part 2 use-case stacks — drawn as an optional band.
+    'uc-hr-data',
+    'uc-hr-identity',
+    'uc-hr-tools'
   ];
 
   var SERVICES = {
@@ -82,6 +86,27 @@
       title: 'Private networking',
       icon: 'network',
       blurb: 'Optional VPC, private subnets, security groups, and endpoints for runtimes that require private dependencies.'
+    },
+    // ─── HR assistant (Part 2) ───
+    'hr-data': {
+      title: 'HR data (Aurora)',
+      icon: 'database',
+      blurb: 'Aurora PostgreSQL Serverless v2 in the private subnets. Five database roles (hr_reader, hr_writer, hr_audit, hr_identity, agent_checkpoint). An hr database for the application tables plus an empty agent_state database for the god agent\u2019s LangGraph checkpointer. A one-shot provisioner Lambda applies schema.sql, agent_state_schema.sql, and seed.sql via RDS Data API on stack create and on any SchemaVersion change; delete is a no-op so destroy keeps the rows.'
+    },
+    'hr-identity': {
+      title: 'HR pre-token Lambda',
+      icon: 'key',
+      blurb: 'Cognito pre-token-generation Lambda attached to the module 3 user pool. Looks up the signed-in employee in the HR database by cognito_sub and adds employee_id, role, and (when the client passed calling_agent) agent_id to the issued JWT. Pure-Python pg8000 driver layer; RDS IAM auth as the hr_identity database user; VPC in the private subnets.'
+    },
+    'hr-tools': {
+      title: 'HR gateway tools',
+      icon: 'layers',
+      blurb: 'Three Lambda targets (hr-ops, hr-payroll, hr-finance) exposing six leaf tools plus the manager-review record_leave_decision. Bundles authz.rego and a pinned OPA arm64 binary; evaluates the policy before any amount is read. Three Cedar permits bind each tool to one leaf agent_id. Kill switch: /{project}/{env}/use-cases/hr-tools/enabled.'
+    },
+    'hr-web': {
+      title: 'hr-web (A2UI)',
+      icon: 'activity',
+      blurb: 'Facilitator-operated local app. http://127.0.0.1:8899 serves a static frontend that opens an AG-UI SSE stream to the orchestrator. The agent emits A2UI wire messages; the browser renders cards from hr-catalog.json. Not a CloudFormation stack and not observed on this map, which draws only cloud services.'
     }
   };
 
@@ -285,10 +310,19 @@
     var observability = records.observability || {};
     var security = records.security || {};
     var networking = records.networking || {};
+    var hrData = records['uc-hr-data'] || {};
+    var hrIdentity = records['uc-hr-identity'] || {};
+    var hrTools = records['uc-hr-tools'] || {};
     var authState = stateOf(auth);
     var idpType = output(auth, 'IdPType');
     var idpMode = output(auth, 'IdPMode');
     var targetCount = resourceCount(gateway, 'AWS::BedrockAgentCore::GatewayTarget');
+    var hrEnabled =
+      stateOf(hrData) === 'deployed' ||
+      stateOf(hrIdentity) === 'deployed' ||
+      stateOf(hrTools) === 'deployed';
+    var godAgent =
+      String((status || {}).agent_pattern || '').toLowerCase() === 'god-agent';
     var nodes = [];
 
     nodes.push(makeNode(
@@ -364,6 +398,59 @@
       [['State', stateLabel(stateOf(networking))], ['Enable with', 'networking.enabled: true'], ['VPC', output(networking, 'VpcId')]]
     ));
 
+    // ── HR assistant (Part 2) band ──
+    nodes.push(makeNode(
+      'hr-identity', 'hr-identity', 'HR pre-token Lambda', hrIdentity, 40, 1040,
+      [['stack', 'uc-hr-identity'], ['db role', 'hr_identity']],
+      [
+        ['State', stateLabel(stateOf(hrIdentity))],
+        ['Lambda ARN', output(hrIdentity, 'FunctionArn')],
+        ['User pool', output(hrIdentity, 'UserPoolArn')],
+        ['Adds claims', 'employee_id, role, agent_id']
+      ],
+      { width: 260 }
+    ));
+    nodes.push(makeNode(
+      'hr-tools', 'hr-tools', 'HR gateway tools', hrTools, 360, 1040,
+      [
+        ['stack', 'uc-hr-tools'],
+        ['leaves', '6 + record_leave_decision'],
+        ['kill switch', hrEnabled ? 'see parameters' : 'not deployed']
+      ],
+      [
+        ['State', stateLabel(stateOf(hrTools))],
+        ['Targets', 'hr-ops, hr-payroll, hr-finance'],
+        ['Policy', 'authz.rego evaluated via vendored OPA'],
+        ['Cedar permits', 'read, submit, decision (one agent_id each)'],
+        ['Kill switch', output(hrTools, 'KillSwitchParameter')]
+      ],
+      { width: 300 }
+    ));
+    nodes.push(makeNode(
+      'hr-data', 'hr-data', 'HR data (Aurora)', hrData, 740, 1040,
+      [['stack', 'uc-hr-data'], ['engine', 'Aurora PG 15.5 SLv2']],
+      [
+        ['State', stateLabel(stateOf(hrData))],
+        ['Cluster ARN', output(hrData, 'ClusterArn')],
+        ['hr database', output(hrData, 'DatabaseName')],
+        ['Checkpoint db', output(hrData, 'CheckpointDatabase')],
+        ['Secret', 'see Parameters tab · use-cases/hr-data/secret-name'],
+        ['Roles', 'hr_reader, hr_writer, hr_audit, hr_identity, agent_checkpoint']
+      ],
+      { width: 300 }
+    ));
+    nodes.push(makeNode(
+      'hr-web', 'hr-web', 'hr-web (A2UI, local)', hrTools, 1080, 1040,
+      [['host', 'facilitator laptop'], ['port', '127.0.0.1:8899']],
+      [
+        ['State', 'not observed by this map'],
+        ['Transport', 'AG-UI SSE to the orchestrator'],
+        ['Payload', 'A2UI wire messages, rendered from hr-catalog.json'],
+        ['Decisions', 'card buttons only, not chat text']
+      ],
+      { sourceState: 'unobserved', width: 180 }
+    ));
+
     var byId = {};
     nodes.forEach(function (node) { byId[node.id] = node; });
     function edge(from, to, label, className) {
@@ -390,18 +477,36 @@
       edge('orchestrator', 'networking', 'VPC attachment')
     ];
 
+    // HR edges: drawn in the HR band with explicit labels for the audit flow.
+    edges.push(edge('auth', 'hr-identity', 'pre-token trigger'));
+    edges.push(edge('hr-identity', 'hr-data', 'rds_iam · hr_identity'));
+    edges.push(edge('gateway', 'hr-tools', 'Lambda targets'));
+    edges.push(edge('hr-tools', 'hr-data', 'rds_iam · hr_reader/hr_writer/hr_audit'));
+    edges.push(edge('orchestrator', 'hr-data', 'rds_iam · agent_checkpoint'));
+    edges.push(edge('hr-web', 'orchestrator', 'AG-UI SSE', 'a2a'));
+
     var role = deployment.role ? ' · ' + deployment.role + ' account' : '';
+    var bands = [
+      { label: 'Identity & access', x: 20, y: 40, width: 1260, height: 180 },
+      { label: 'Agent runtimes', x: 20, y: 240, width: 620, height: 520 },
+      { label: 'Tools & integrations', x: 680, y: 240, width: 600, height: 520 },
+      { label: 'Platform services', x: 20, y: 790, width: 1260, height: 190 },
+      {
+        label: godAgent
+          ? 'HR assistant (Part 2 · god-agent runtime)'
+          : 'HR assistant (Part 2)',
+        x: 20,
+        y: 1010,
+        width: 1260,
+        height: 180
+      }
+    ];
     return {
       nodes: nodes,
       edges: edges,
-      bands: [
-        { label: 'Identity & access', x: 20, y: 40, width: 1260, height: 180 },
-        { label: 'Agent runtimes', x: 20, y: 240, width: 620, height: 520 },
-        { label: 'Tools & integrations', x: 680, y: 240, width: 600, height: 520 },
-        { label: 'Platform services', x: 20, y: 790, width: 1260, height: 190 }
-      ],
+      bands: bands,
       width: 1320,
-      height: 1010,
+      height: 1220,
       context: String(deployment.strategy || 'centralized') + role
     };
   }
