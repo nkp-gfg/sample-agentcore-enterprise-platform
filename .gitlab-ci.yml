@@ -127,22 +127,9 @@ dockerfile-parse:
 pytest:
   stage: test
   <<: *pip-cache
-  variables:
-    # Pinned OPA release. The HR policy tests (tests/test_hr_authz.py) run
-    # `opa eval` against use-cases/hr-tools/policy/authz.rego; without the
-    # binary they skip, which hides regressions. Bump this together with any
-    # breaking Rego change.
-    OPA_VERSION: "1.22.4"
-    OPA_SHA256: "35e3b352e715e80624ead6c89930d8585f6f7d94cdc409eb2a9fe36620dcccba"
   before_script:
     # boto3 + colorama: imported by scripts/utils.py, which the scripts tests import
-    - apt-get update -qq && apt-get install -y -qq curl > /dev/null
     - pip install -q pyyaml pytest boto3 colorama
-    - curl -sL -o /usr/local/bin/opa
-        "https://openpolicyagent.org/downloads/v${OPA_VERSION}/opa_linux_amd64_static"
-    - echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c -
-    - chmod +x /usr/local/bin/opa
-    - opa version
   script:
     - python -m pytest tests/ -q
 

@@ -3,7 +3,7 @@
 docs/hr/schema.md § decision_log is append-only (hr_audit's grants are
 INSERT only, no UPDATE, no DELETE, no SELECT). docs/hr/policy.md § end
 locks the row: action, caller, target, allow, reason_code, agent_id,
-session_id, trace_id, decided_by_layer (`opa` or `tool`), policy_version.
+session_id, trace_id, decided_by_layer (`policy` or `tool`), policy_version.
 No amounts. No leave reason. No `full_name`.
 
 The handler writes the same row to the Lambda log as one JSON line so

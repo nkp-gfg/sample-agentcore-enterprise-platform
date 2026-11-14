@@ -3,12 +3,12 @@
 docs/hr/tools.md § Arguments: optional `employee_id` (defaults to the
 caller). docs/hr/policy.md § Rules: allowed when the target is active
 and either the caller is the target or `target_manager_id` equals the
-caller. One hop only. The tool MUST NOT read `base_salary` before OPA
-allows — the row is fetched WITHOUT the amount, OPA decides, and only
-then does the allow path select the amount.
+caller. One hop only. The tool MUST NOT read `base_salary` before the
+policy allows — the row is fetched WITHOUT the amount, the policy
+decides, and only then does the allow path select the amount.
 
 docs/hr/schema.md § salaries holds the amount on a separate row keyed
-by `employee_id`. The read-before-OPA query reads `employees` only
+by `employee_id`. The pre-policy query reads `employees` only
 (status, manager, full_name). The allow path then reads `salaries`.
 """
 
@@ -20,10 +20,10 @@ from shared import (
     DataUnavailable,
     build_response,
     connect,
+    evaluate_policy,
     get_identity,
     is_service_enabled,
     log_decision,
-    opa_evaluate,
 )
 from shared.db import connect as _connect  # noqa: F401 — kept for clarity in the module
 from shared.errors import HRToolError
@@ -54,7 +54,7 @@ def handler(event: dict, context) -> dict:
         )
         return build_response(authorized=False, reason_code="SERVICE_DISABLED")
 
-    # The tool argument `employee_id` maps to the OPA field
+    # The tool argument `employee_id` maps to the policy field
     # `requested_employee_id`. The model MAY omit it; the self-read is
     # the default (docs/hr/tools.md). `caller_employee_id` from the
     # argument is ignored — the interceptor already set it.
@@ -62,8 +62,8 @@ def handler(event: dict, context) -> dict:
     if not isinstance(requested, str) or not requested.strip():
         requested = caller
 
-    # Read the current row (no salary column) so OPA has the live
-    # `manager_id` — docs/hr/policy.md forbids a stale copy inside OPA.
+    # Read the current row (no salary column) so the policy checks the live
+    # `manager_id` from PostgreSQL.
     try:
         with connect("hr_reader") as connection, connection.cursor() as cursor:
             cursor.execute(_SELECT_TARGET_SQL, (requested,))
@@ -87,7 +87,7 @@ def handler(event: dict, context) -> dict:
     else:
         target_status, target_manager, _full_name = row
 
-    decision = opa_evaluate(
+    decision = evaluate_policy(
         {
             "action": _ACTION,
             "caller_employee_id": caller,
@@ -108,13 +108,13 @@ def handler(event: dict, context) -> dict:
         agent_id=agent_id,
         session_id=session_id,
         policy_version=decision["policy_version"],
-        decided_by_layer="opa",
+        decided_by_layer="policy",
     )
 
     if not decision["allow"]:
         return build_response(authorized=False, reason_code=reason_code)
 
-    # Only after OPA allows do we read the amount. Reading it earlier
+    # Only after the policy allows do we read the amount. Reading it earlier
     # and discarding it on deny would still leak a figure into memory
     # and, eventually, into a trace.
     try:
@@ -127,7 +127,7 @@ def handler(event: dict, context) -> dict:
         return build_response(authorized=False, reason_code="DATA_UNAVAILABLE")
 
     if amount_row is None or target_row is None:
-        # Salary row missing after OPA already allowed on the employee
+        # Salary row missing after policy already allowed on the employee
         # row: treat as data gap, never fall through as an allow with
         # null fields.
         return build_response(authorized=False, reason_code="DATA_UNAVAILABLE")

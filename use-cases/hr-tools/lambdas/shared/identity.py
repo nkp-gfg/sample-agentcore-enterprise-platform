@@ -9,7 +9,7 @@ sent in those three fields.
 
 This module centralises that read. A missing `caller_employee_id` means
 the H3 pre-token Lambda added no `employee_id` claim (no active row for
-that `sub`), which maps to `NOT_MAPPED` without calling OPA.
+that `sub`), which maps to `NOT_MAPPED` before policy evaluation.
 """
 
 from __future__ import annotations

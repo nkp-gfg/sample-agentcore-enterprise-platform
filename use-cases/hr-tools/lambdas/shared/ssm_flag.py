@@ -1,7 +1,7 @@
 """The SSM kill switch for every HR Lambda.
 
 docs/hr/policy.md § Reason codes lists `SERVICE_DISABLED` as the first
-check — before OPA, before Postgres, before anything. docs/hr/modules.md
+check — before policy evaluation, before Postgres, before anything. docs/hr/modules.md
 § Kill switch and audit export locks the behaviour: anything other than
 the literal string `true` returns `SERVICE_DISABLED`, and a missing or
 unreadable parameter is also `SERVICE_DISABLED` — a missing kill switch
@@ -48,7 +48,8 @@ def is_service_enabled() -> bool:
         logger.warning("boto3 unavailable; refusing")
         return False
     try:
-        ssm = boto3.client("ssm")
+        region = os.environ.get("AWS_REGION") or os.environ.get("HR_AWS_REGION") or None
+        ssm = boto3.client("ssm", region_name=region)
         value = ssm.get_parameter(Name=name)["Parameter"]["Value"]
     except Exception:
         logger.exception("could not read SSM kill switch %s", name)

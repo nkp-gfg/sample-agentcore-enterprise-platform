@@ -32,7 +32,7 @@ import json
 import logging
 from typing import Any
 
-from shared import DataUnavailable, HRToolError, build_response
+from shared import DataUnavailable, HRToolError, build_response, log_decision
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -90,6 +90,33 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
     except HRToolError as exc:
         logger.warning(
             "tool %s raised HRToolError reason_code=%s", tool_name, exc.reason_code
+        )
+        caller_id = (
+            event.get("caller_employee_id")
+            if isinstance(event, dict)
+            and isinstance(event.get("caller_employee_id"), str)
+            else ""
+        )
+        agent_id = (
+            event.get("agent_id")
+            if isinstance(event, dict) and isinstance(event.get("agent_id"), str)
+            else ""
+        )
+        session_id = (
+            event.get("session_id")
+            if isinstance(event, dict) and isinstance(event.get("session_id"), str)
+            else ""
+        )
+        log_decision(
+            action=tool_name,
+            caller_employee_id=caller_id.strip() or "unmapped",
+            target_employee_id=None,
+            allow=False,
+            reason_code=exc.reason_code,
+            agent_id=agent_id,
+            session_id=session_id,
+            policy_version="",
+            decided_by_layer="tool",
         )
         return _wrap(build_response(authorized=False, reason_code=exc.reason_code))
     except Exception:

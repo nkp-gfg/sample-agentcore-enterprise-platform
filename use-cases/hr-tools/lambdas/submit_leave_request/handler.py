@@ -12,7 +12,7 @@ Idempotency (docs/hr/policy.md, docs/hr/acceptance.md § H2):
   `IDEMPOTENCY_CONFLICT`, insert nothing.
 - A denied attempt is NOT stored and does NOT consume the key.
 
-The INSERT runs as `hr_writer`. The OPA eval and the idempotency
+The INSERT runs as `hr_writer`. The policy evaluation and the idempotency
 check run BEFORE the INSERT so a deny never writes. `reason` is held
 in Postgres but is NEVER written to the Lambda log or `decision_log`.
 """
@@ -26,10 +26,10 @@ from shared import (
     DataUnavailable,
     build_response,
     connect,
+    evaluate_policy,
     get_identity,
     is_service_enabled,
     log_decision,
-    opa_evaluate,
 )
 from shared.errors import HRToolError, IdempotencyConflict, InvalidLeaveType
 from shared.leave import (
@@ -185,7 +185,15 @@ def handler(event: dict, context) -> dict:
                         and stored_end.isoformat() == end_date.isoformat()
                         and (stored_reason or "") == reason_text
                     ):
-                        # Same body → return stored row.
+                        # Same body → return stored row, including the
+                        # requester's current manager_id so the runtime
+                        # review node knows who must approve.
+                        cursor.execute(
+                            "SELECT manager_id FROM employees WHERE employee_id = %s",
+                            (caller,),
+                        )
+                        mgr_row = cursor.fetchone()
+                        reviewer_id = mgr_row[0] if mgr_row else None
                         _audit(
                             caller=caller,
                             agent_id=agent_id,
@@ -202,6 +210,8 @@ def handler(event: dict, context) -> dict:
                                 "request_id": stored_request_id,
                                 "status": stored_status,
                                 "days": inclusive_days(stored_start, stored_end),
+                                "employee_id": caller,
+                                "reviewer_employee_id": reviewer_id,
                             },
                         )
                     try:
@@ -222,7 +232,7 @@ def handler(event: dict, context) -> dict:
                             authorized=False, reason_code=exc.reason_code
                         )
 
-                # Step 3: build the OPA input exactly like
+                # Step 3: build the policy input exactly like
                 # check_leave_eligibility does.
                 leave_ctx = load_leave_context(
                     cursor,
@@ -232,7 +242,7 @@ def handler(event: dict, context) -> dict:
                     end_date=end_date,
                 )
 
-                decision = opa_evaluate(
+                decision = evaluate_policy(
                     {
                         "action": _ACTION,
                         "caller_employee_id": caller,
@@ -255,7 +265,7 @@ def handler(event: dict, context) -> dict:
                         allow=False,
                         reason_code=reason_code,
                         policy_version=decision["policy_version"],
-                        decided_by_layer="opa",
+                        decided_by_layer="policy",
                     )
                     # Deny: do NOT insert. Do NOT consume the key.
                     return build_response(authorized=False, reason_code=reason_code)
@@ -313,10 +323,16 @@ def handler(event: dict, context) -> dict:
         allow=True,
         reason_code="ALLOW",
         policy_version=decision["policy_version"],
-        decided_by_layer="opa",
+        decided_by_layer="policy",
     )
     return build_response(
         authorized=True,
         reason_code="ALLOW",
-        data={"request_id": request_id, "status": "pending", "days": days},
+        data={
+            "request_id": request_id,
+            "status": "pending",
+            "days": days,
+            "employee_id": caller,
+            "reviewer_employee_id": leave_ctx.get("manager_id"),
+        },
     )

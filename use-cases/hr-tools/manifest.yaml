@@ -1,25 +1,13 @@
 # The manifest is the only file the platform reads about hr-tools.
 # Everything here is validated at load time (infra_utils/platform_config.py).
-name: hr-tools                  # must match this directory's name
-owner: hr-platform              # docs/hr/modules.md — HR platform team reviews this folder
+name: hr-tools
+owner: hr-platform
 summary: >-
   HR assistant tool layer (phase H4 of the HR plan). Three AgentCore Gateway
   Lambda targets (hr-ops, hr-payroll, hr-finance), the seven per-tool handlers
-  behind them, three Cedar permits from docs/hr/tools.md, and the SSM kill
-  switch that turns every HR tool into SERVICE_DISABLED without a redeploy.
-
-# Core stack suffixes that MUST exist in the deployment's footprint. The
-# contract check in infra_utils/platform_config.py validates these per
-# federation role, so hr-tools can never be enabled on an account that lacks
-# its prerequisites. Soft prerequisites on the hr-data and hr-identity use
-# cases are enforced through SSM (docs/hr/modules.md § SSM interface): deploy
-# the publisher first, destroy the dependent first.
-requires: [gateway, identity]
-
-# Stacks this use case adds (full name = <project>-<env>-<suffix>). The uc-
-# namespace is enforced, so a contribution can never masquerade as a core
-# stack.
+  behind them with deterministic Python authorization, three Cedar permits from
+  docs/hr/tools.md, and the SSM kill switch that turns every HR tool into
+  SERVICE_DISABLED without a redeploy.
+requires: [gateway, identity, networking]
 stacks: [uc-hr-tools]
-
-# Module exposing build(app, platform_ctx, config). Default: stack.py
 entry: stack.py

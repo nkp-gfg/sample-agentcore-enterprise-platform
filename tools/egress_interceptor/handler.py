@@ -123,7 +123,9 @@ def _blocked_response(point: str, reason: str, request_body: dict):
                 "jsonrpc": "2.0",
                 "id": request_body.get("id"),
                 "result": {
-                    "content": [{"type": "text", "text": "Blocked by egress guardrail."}],
+                    "content": [
+                        {"type": "text", "text": "Blocked by egress guardrail."}
+                    ],
                     "isError": True,
                 },
             },
@@ -231,7 +233,11 @@ def _on_request(request_body: dict, event_headers=None):
 
 def _on_response(request_body: dict, response: dict):
     body = response.get("body")
-    if request_body.get("method") == "tools/call" and isinstance(body, dict) and "result" in body:
+    if (
+        request_body.get("method") == "tools/call"
+        and isinstance(body, dict)
+        and "result" in body
+    ):
         body = {**body, "result": _mask_tree(body["result"], "OUTPUT")}
     transformed = {"body": body}
     # Streaming follow-up events carry only a body; status and headers are already sent.

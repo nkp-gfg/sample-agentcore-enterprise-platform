@@ -2,7 +2,7 @@
 
 docs/hr/tools.md: no arguments; always reads the caller.
 docs/hr/policy.md: allowed only when `caller == requested`. The tool
-sets `requested_employee_id = caller` before calling OPA, as the spec
+sets `requested_employee_id = caller` before evaluating the policy, as the spec
 pins for self-only tools.
 
 The response carries `on_probation` and `probation_end_date` so the
@@ -21,10 +21,10 @@ from shared import (
     DataUnavailable,
     build_response,
     connect,
+    evaluate_policy,
     get_identity,
     is_service_enabled,
     log_decision,
-    opa_evaluate,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,7 @@ def handler(event: dict, context) -> dict:
         )
         return build_response(authorized=False, reason_code="DATA_UNAVAILABLE")
 
-    decision = opa_evaluate(
+    decision = evaluate_policy(
         {
             "action": _ACTION,
             "caller_employee_id": caller,
@@ -100,7 +100,7 @@ def handler(event: dict, context) -> dict:
         agent_id=agent_id,
         session_id=session_id,
         policy_version=decision["policy_version"],
-        decided_by_layer="opa",
+        decided_by_layer="policy",
     )
 
     if not decision["allow"]:

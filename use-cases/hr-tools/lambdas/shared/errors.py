@@ -1,9 +1,9 @@
-"""Reason codes the Lambda assigns BEFORE OPA evaluates.
+"""Reason codes the Lambda assigns before authorization policy evaluation.
 
-docs/hr/policy.md § Reason codes lists the first-match order. The Rego
-layer owns `ALLOW`, `NOT_AUTHORIZED`, `PROBATION_PERIOD`, `INVALID_RANGE`,
-`INSUFFICIENT_BALANCE`, `OVERLAP`, and `NOT_REVIEWER`. Everything in this
-file is a tool-side code the Rego policy never sees.
+docs/hr/policy.md § Reason codes lists the first-match order. The policy
+evaluator (`shared/authz.py`) owns `ALLOW`, `NOT_AUTHORIZED`,
+`PROBATION_PERIOD`, `INVALID_RANGE`, `INSUFFICIENT_BALANCE`, `OVERLAP`, and
+`NOT_REVIEWER`. Everything in this file is a pre-policy tool-layer error.
 
 Each exception carries its reason code as a class attribute so the handler
 can map a raise straight into `build_response(authorized=False, reason_code=...)`
@@ -20,10 +20,6 @@ class HRToolError(Exception):
 
 class ServiceDisabled(HRToolError):
     reason_code = "SERVICE_DISABLED"
-
-
-class PolicyUnavailable(HRToolError):
-    reason_code = "POLICY_UNAVAILABLE"
 
 
 class DataUnavailable(HRToolError):

@@ -2,16 +2,16 @@
 
 docs/hr/README.md is the authoritative spec; docs/hr/tools.md pins the
 tool names, Cedar permits and interceptor rules; docs/hr/policy.md
-pins the OPA input and reason codes; docs/hr/modules.md pins the
-database roles and the SSM interface.
+pins the authorization input and reason codes; docs/hr/modules.md pins
+the database roles and the SSM interface.
 
 This stack deploys:
 
 - Three CDK Lambda functions, one per gateway target (`hr-ops`,
   `hr-payroll`, `hr-finance`). Each Lambda bundles the per-tool
-  handler packages under `lambdas/<tool>/` plus the shared library,
-  the bundled OPA binary, and `authz.rego` so the tool can evaluate
-  the policy in-process without hitting a remote OPA server.
+  handler packages under `lambdas/<tool>/` plus the shared library
+  (`lambdas/shared/`, including `authz.py` for deterministic in-process
+  authorization evaluation).
 - Three IAM roles, one per Lambda, each with the minimum
   `rds-db:connect` set docs/hr/modules.md § Database roles lists.
 - Three AgentCore Gateway Lambda targets, one per Lambda. The tool
@@ -44,12 +44,10 @@ HR module keeps) that this file locks:
 from __future__ import annotations
 
 import hashlib
-import os
 import shutil
 import subprocess  # nosec B404 — pip-install into the Lambda asset at synth time
 import sys
 import tempfile
-import urllib.request
 from pathlib import Path
 
 import aws_cdk as cdk
@@ -302,11 +300,6 @@ class HrToolsStack(cdk.Stack):
             "HR_KILL_SWITCH_PARAMETER": kill_switch_name,
             "HR_DB_ENDPOINT": hr_db_endpoint,
             "HR_DB_NAME": hr_db_name,
-            # docs/hr/policy.md expects authz.rego next to the handler.
-            # The bundler copies the file to /var/task/authz.rego.
-            "HR_POLICY_FILE": "/var/task/authz.rego",
-            # The bundled opa binary ships inside the zip too.
-            "OPA_BINARY": "/var/task/opa",
         }
 
         for target_name, tool_names in TARGET_TOOLS.items():
@@ -360,13 +353,14 @@ class HrToolsStack(cdk.Stack):
             )
 
             # The gateway invokes the Lambda with the AgentCore service
-            # principal. Scope the resource policy to this account so
-            # no other account can forge an invoke (defence-in-depth
-            # against the gateway IAM role).
+            # principal. Scope the resource policy to this account AND this
+            # exact gateway ARN (matching stacks/gateway_stack.py) so no
+            # other gateway in the account can invoke HR Lambdas.
             function.add_permission(
                 "AgentCoreInvoke",
                 principal=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
                 source_account=self.account,
+                source_arn=gateway_arn,
             )
 
             # Audit export (docs/hr/modules.md § Kill switch and audit
@@ -579,7 +573,7 @@ def _build_lambda_role(
                 ],
             )
         )
-    # The kill-switch SSM read is a pre-OPA check; every Lambda gets
+    # The kill-switch SSM read is a pre-policy check; every Lambda gets
     # exactly that parameter and nothing else.
     role.add_to_policy(
         iam.PolicyStatement(
@@ -656,20 +650,27 @@ def _build_lambda_asset(target_name: str, tool_names: list[str]) -> str:
     """Prepare the Lambda zip asset on disk.
 
     CDK's `_lambda.Code.from_asset` wants a directory tree to zip. The
-    repo keeps per-tool handlers under `lambdas/<tool>/` and the OPA
-    policy file under `policy/authz.rego`; neither of those paths is
-    the one Lambda sees at runtime (/var/task is flat), so stack.py
-    assembles the layout under a tempdir and points `from_asset` at
-    it.
+    repo keeps per-tool handlers under `lambdas/<tool>/` and shared
+    helpers (including `shared/authz.py`) under `lambdas/shared/`;
+    stack.py assembles the flat `/var/task` layout under a tempdir and
+    points `from_asset` at it.
 
     The tempdir path is NOT in the asset hash — only the content is —
     so a stable tree produces a stable hash.
     """
     bundle = Path(tempfile.mkdtemp(prefix=f"hr-tools-{target_name}-"))
 
+    # psycopg[binary] driver. Lambda runtime is linux/aarch64 (`ARM_64`), so
+    # manylinux2014_aarch64 wheels are cached once and copied into each target
+    # bundle before overlaying our own packages.
+    requirements = HERE / "lambdas" / "requirements.txt"
+    if requirements.exists():
+        _copy_cached_manylinux_deps(requirements, bundle)
+        shutil.copy(requirements, bundle / "requirements.txt")
+
     # shared library — bundled into every target Lambda so the
     # per-tool handlers can `from shared import ...`.
-    shutil.copytree(HERE / "lambdas" / "shared", bundle / "shared")
+    shutil.copytree(HERE / "lambdas" / "shared", bundle / "shared", dirs_exist_ok=True)
 
     # dispatcher → /var/task/handler.py. The CDK function sets
     # `handler="handler.handler"` so Lambda imports this one file.
@@ -677,133 +678,54 @@ def _build_lambda_asset(target_name: str, tool_names: list[str]) -> str:
 
     # per-tool handler packages — one per tool_name.
     for tool in tool_names:
-        shutil.copytree(HERE / "lambdas" / tool, bundle / tool)
-
-    # OPA policy. The handler reads it from /var/task/authz.rego via
-    # the HR_POLICY_FILE environment variable (set in stack.py above).
-    shutil.copy(HERE / "policy" / "authz.rego", bundle / "authz.rego")
-
-    # psycopg[binary] driver. Lambda runtime is linux/x86_64 and the manylinux
-    # wheels are installed at synth time into the bundle so cold-starts do
-    # not fail with ModuleNotFoundError. The deployer's own Python runs pip;
-    # the --platform/--only-binary flags force a manylinux wheel regardless of
-    # the host OS, so a macOS deployer still produces a Linux-compatible zip.
-    requirements = HERE / "lambdas" / "requirements.txt"
-    if requirements.exists():
-        shutil.copy(requirements, bundle / "requirements.txt")
-        _pip_install_manylinux(requirements, bundle)
-
-    # OPA binary. The deployer's local `opa` is the wrong architecture on a
-    # macOS laptop, so H4 downloads a pinned linux/x86_64 static release here
-    # with a sha256 check. The URL and the digest match .gitlab-ci.yml;
-    # bumping one bumps the other. Fail synth loudly if the download fails:
-    # a missing opa makes every HR tool answer POLICY_UNAVAILABLE at runtime.
-    _vendor_opa_linux_binary(bundle)
+        shutil.copytree(HERE / "lambdas" / tool, bundle / tool, dirs_exist_ok=True)
 
     return str(bundle)
 
 
-# ---------------------------------------------------------------------------
-# Deterministic asset vendoring
-#
-# The two helpers below run at synth time, not deploy time, so the Lambda zip
-# CDK uploads already contains psycopg and opa. Both are idempotent: the
-# deployer can re-run synth without re-downloading.
-# ---------------------------------------------------------------------------
+def _copy_cached_manylinux_deps(requirements: Path, bundle: Path) -> None:
+    """Install linux/aarch64 wheels once per requirements hash and copy into `bundle`."""
+    req_hash = hashlib.sha256(requirements.read_bytes()).hexdigest()[:16]
+    cache_dir = Path(tempfile.gettempdir()) / f"hr-tools-aarch64-deps-{req_hash}"
+    sentinel = cache_dir / ".installed"
+    if not sentinel.exists():
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(  # nosec B603 — fixed argv, sys.executable, fixed requirements
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--quiet",
+                "--no-color",
+                "--disable-pip-version-check",
+                "--target",
+                str(cache_dir),
+                "--platform",
+                "manylinux2014_aarch64",
+                "--implementation",
+                "cp",
+                "--python-version",
+                "3.13",
+                "--only-binary=:all:",
+                "--upgrade",
+                "-r",
+                str(requirements),
+            ],
+            check=True,
+        )
+        sentinel.write_text(req_hash + "\n")
 
-
-# Pinned to match .gitlab-ci.yml (H2 OPA_VERSION). The CI pipeline runs x86_64;
-# the Lambda runtime is ARM_64 per aws_lambda.Architecture.ARM_64 above, so H4
-# downloads the arm64 static binary for the deployment asset and the CI
-# pipeline downloads the x86_64 static binary for pytest. Bump version + both
-# digests together on any OPA upgrade.
-_OPA_VERSION = "1.22.4"
-_OPA_SHA256_ARM64 = (
-    "9e9afee01319a5044790e59b1a2ece39a943f9b6059b97bd86c7aab88830d833"
-)
-_OPA_URL = (
-    f"https://openpolicyagent.org/downloads/v{_OPA_VERSION}/opa_linux_arm64_static"
-)
-
-
-def _vendor_opa_linux_binary(bundle: Path) -> None:
-    """Download the pinned linux/x86_64 opa binary into `bundle/opa`.
-
-    A deployer-local opa override (`OPA_BINARY` env var) is still honoured for
-    tests, but ONLY when the file matches the pinned sha256 — a mismatched
-    binary is rejected rather than silently shipped.
-    """
-    destination = bundle / "opa"
-
-    override = os.environ.get("OPA_BINARY")
-    if override and Path(override).is_file():
-        digest = _sha256(Path(override))
-        if digest == _OPA_SHA256_ARM64:
-            shutil.copy(override, destination)
-            destination.chmod(0o755)
-            return
-        # Fall through to the trusted download; a stale override must not
-        # produce an unverified Lambda asset.
-
-    cache_dir = Path(tempfile.gettempdir()) / "hr-tools-opa-cache"
-    cache_dir.mkdir(exist_ok=True)
-    cached = cache_dir / f"opa_linux_arm64_static-{_OPA_VERSION}"
-    if not cached.exists() or _sha256(cached) != _OPA_SHA256_ARM64:
-        urllib.request.urlretrieve(_OPA_URL, cached)  # nosec B310 — pinned HTTPS
-        actual = _sha256(cached)
-        if actual != _OPA_SHA256_ARM64:
-            cached.unlink(missing_ok=True)
-            raise RuntimeError(
-                f"opa download sha256 mismatch: expected {_OPA_SHA256_ARM64}, got "
-                f"{actual}. If OPA was bumped, update _OPA_VERSION and "
-                "_OPA_SHA256_ARM64 in stack.py and .gitlab-ci.yml together."
-            )
-    shutil.copy(cached, destination)
-    destination.chmod(0o755)
-
-
-def _pip_install_manylinux(requirements: Path, bundle: Path) -> None:
-    """pip-install requirements into the Lambda asset for linux/x86_64.
-
-    --platform + --only-binary forces a manylinux wheel even when the deployer
-    runs CDK on macOS/arm64; without that psycopg-binary resolves to the
-    host wheel and crashes at Lambda cold-start.
-    """
-    subprocess.run(  # nosec B603 — fixed argv, sys.executable, fixed requirements
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "--no-color",
-            "--disable-pip-version-check",
-            "--target",
-            str(bundle),
-            # H4 Lambdas run on ARM_64 (see HrToolsStack above). Force the
-            # aarch64 manylinux wheel so a macOS/arm64 deployer and a
-            # Linux/x86_64 deployer both produce a Lambda-compatible asset.
-            "--platform",
-            "manylinux2014_aarch64",
-            "--implementation",
-            "cp",
-            "--python-version",
-            "3.13",
-            "--only-binary=:all:",
-            "--upgrade",
-            "-r",
-            str(requirements),
-        ],
-        check=True,
-    )
-
-
-def _sha256(path: Path) -> str:
-    hasher = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
+    for item in cache_dir.iterdir():
+        if item.name == ".installed":
+            continue
+        dest = bundle / item.name
+        if item.is_dir():
+            shutil.copytree(item, dest, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, dest)
 
 
 # ---------------------------------------------------------------------------

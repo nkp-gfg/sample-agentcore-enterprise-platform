@@ -12,7 +12,9 @@ from unittest import mock
 
 import pytest
 
-HANDLER = Path(__file__).resolve().parents[1] / "tools" / "egress_interceptor" / "handler.py"
+HANDLER = (
+    Path(__file__).resolve().parents[1] / "tools" / "egress_interceptor" / "handler.py"
+)
 
 
 def _load_interceptor(monkeypatch, env=None):
@@ -50,7 +52,13 @@ def _event(request_body, response=None):
     return {
         "interceptorInputVersion": "1.0",
         "mcp": {
-            "gatewayRequest": {"path": "/mcp", "httpMethod": "POST", "headers": {}, "body": request_body, "context": None},
+            "gatewayRequest": {
+                "path": "/mcp",
+                "httpMethod": "POST",
+                "headers": {},
+                "body": request_body,
+                "context": None,
+            },
             "gatewayResponse": response,
             "rawGatewayRequest": {"body": "{}"},
         },
@@ -76,12 +84,18 @@ def test_request_returns_only_the_body(interceptor):
 
 def test_protocol_traffic_is_not_sent_to_the_guardrail(interceptor):
     interceptor.handler(_event(TOOLS_LIST), None)
-    interceptor.handler(_event(TOOLS_LIST, {"statusCode": 200, "body": {"result": {"tools": []}}}), None)
+    interceptor.handler(
+        _event(TOOLS_LIST, {"statusCode": 200, "body": {"result": {"tools": []}}}), None
+    )
     interceptor._bedrock.apply_guardrail.assert_not_called()
 
 
 def test_response_point_is_detected_even_though_gateway_request_is_present(interceptor):
-    response = {"statusCode": 200, "headers": {"Mcp-Session-Id": "s"}, "body": {"jsonrpc": "2.0", "id": 7, "result": {"content": []}}}
+    response = {
+        "statusCode": 200,
+        "headers": {"Mcp-Session-Id": "s"},
+        "body": {"jsonrpc": "2.0", "id": 7, "result": {"content": []}},
+    }
     out = interceptor.handler(_event(TOOLS_CALL, response), None)
     assert list(out["mcp"]) == ["transformedGatewayResponse"]
     assert out["mcp"]["transformedGatewayResponse"] == response
@@ -101,7 +115,14 @@ def test_tool_result_is_masked_as_output(interceptor):
         "assessments": [],
         "outputs": [{"text": "{EMAIL}"}],
     }
-    response = {"statusCode": 200, "body": {"jsonrpc": "2.0", "id": 7, "result": {"content": [{"type": "text", "text": "a@b.com"}]}}}
+    response = {
+        "statusCode": 200,
+        "body": {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {"content": [{"type": "text", "text": "a@b.com"}]},
+        },
+    }
     out = interceptor.handler(_event(TOOLS_CALL, response), None)
     assert interceptor._bedrock.apply_guardrail.call_args.kwargs["source"] == "OUTPUT"
     body = out["mcp"]["transformedGatewayResponse"]["body"]
@@ -112,7 +133,13 @@ def test_tool_result_is_masked_as_output(interceptor):
 def test_blocked_request_short_circuits_with_a_jsonrpc_error(interceptor):
     interceptor._bedrock.apply_guardrail.return_value = {
         "action": "GUARDRAIL_INTERVENED",
-        "assessments": [{"contentPolicy": {"filters": [{"type": "PROMPT_ATTACK", "action": "BLOCKED"}]}}],
+        "assessments": [
+            {
+                "contentPolicy": {
+                    "filters": [{"type": "PROMPT_ATTACK", "action": "BLOCKED"}]
+                }
+            }
+        ],
     }
     out = interceptor.handler(_event(TOOLS_CALL), None)
     blocked = out["mcp"]["transformedGatewayResponse"]
@@ -123,7 +150,10 @@ def test_blocked_request_short_circuits_with_a_jsonrpc_error(interceptor):
 
 
 def test_streaming_follow_up_keeps_body_only(interceptor):
-    response = {"isStreamingResponse": True, "body": {"jsonrpc": "2.0", "id": 7, "result": {"content": []}}}
+    response = {
+        "isStreamingResponse": True,
+        "body": {"jsonrpc": "2.0", "id": 7, "result": {"content": []}},
+    }
     out = interceptor.handler(_event(TOOLS_CALL, response), None)
     assert out["mcp"]["transformedGatewayResponse"] == {"body": response["body"]}
 
@@ -149,8 +179,14 @@ def _jwt(claims: dict) -> str:
     signature with a static signature segment, just to keep the dotted
     shape valid.
     """
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).rstrip(b"=").decode()
-    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    payload = (
+        base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    )
     return f"{header}.{payload}.sig"
 
 
@@ -188,7 +224,9 @@ def test_identity_promotion_off_default_leaves_hr_arguments_alone(interceptor):
     out = interceptor.handler(
         _hr_event(
             arguments={"caller_employee_id": "SPOOFED", "agent_id": "SPOOFED"},
-            headers={"Authorization": f"Bearer {_jwt({'employee_id': 'E1', 'agent_id': 'leave-balance'})}"},
+            headers={
+                "Authorization": f"Bearer {_jwt({'employee_id': 'E1', 'agent_id': 'leave-balance'})}"
+            },
         ),
         None,
     )
@@ -244,7 +282,9 @@ def test_identity_promotion_on_non_hr_tool_is_untouched(hr_interceptor):
     }
 
 
-def test_identity_promotion_without_employee_id_claim_writes_empty_string(hr_interceptor):
+def test_identity_promotion_without_employee_id_claim_writes_empty_string(
+    hr_interceptor,
+):
     """docs/hr/modules.md § H3 claims: a terminated row or a sub with no
     row gets no employee_id claim. The interceptor still overwrites the
     model-sent value — the Lambda layer refuses with NOT_MAPPED when
@@ -265,7 +305,9 @@ def test_identity_promotion_without_employee_id_claim_writes_empty_string(hr_int
     assert arguments["session_id"] == "s"
 
 
-def test_identity_promotion_without_authorization_header_clears_all_three(hr_interceptor):
+def test_identity_promotion_without_authorization_header_clears_all_three(
+    hr_interceptor,
+):
     """Defence in depth: no Authorization header means no identity.
     The interceptor must still overwrite the three fields so the model
     cannot smuggle a value in through the arguments."""

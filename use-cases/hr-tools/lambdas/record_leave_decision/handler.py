@@ -21,10 +21,10 @@ from shared import (
     DataUnavailable,
     build_response,
     connect,
+    evaluate_policy,
     get_identity,
     is_service_enabled,
     log_decision,
-    opa_evaluate,
 )
 from shared.errors import HRToolError
 
@@ -117,7 +117,7 @@ def handler(event: dict, context) -> dict:
                 else:
                     requester, request_status, requester_manager = row
 
-                decision = opa_evaluate(
+                decision = evaluate_policy(
                     {
                         "action": _ACTION,
                         "caller_employee_id": caller,
@@ -138,7 +138,7 @@ def handler(event: dict, context) -> dict:
                         agent_id=agent_id,
                         session_id=session_id,
                         policy_version=decision["policy_version"],
-                        decided_by_layer="opa",
+                        decided_by_layer="policy",
                     )
                     return build_response(authorized=False, reason_code=reason_code)
 
@@ -191,7 +191,7 @@ def handler(event: dict, context) -> dict:
         agent_id=agent_id,
         session_id=session_id,
         policy_version=decision["policy_version"],
-        decided_by_layer="opa",
+        decided_by_layer="policy",
     )
     return build_response(
         authorized=True,

@@ -1,8 +1,8 @@
 """list_direct_reports — reports of the caller, one hop only.
 
 docs/hr/tools.md: no arguments. The query itself is the rule — see
-docs/hr/policy.md: `list_direct_reports` is not an OPA decision, the
-query is `manager_id = caller` and `status = active`, and the result
+docs/hr/policy.md: `list_direct_reports` is enforced directly by the SQL
+filter `manager_id = caller` and `status = active`, and the result
 lists ids and names only. There is no `requested_employee_id` field
 for this tool; the audit row records the caller as both.
 """
@@ -67,9 +67,9 @@ def handler(event: dict, context) -> dict:
 
     reports = [{"employee_id": r[0], "full_name": r[1]} for r in rows]
 
-    # docs/hr/policy.md pins this: not an OPA decision, so decided_by_layer
-    # is `tool`. The audit row still carries agent_id and session_id so
-    # the SIEM join to the gateway log works the same way.
+    # docs/hr/policy.md pins this: enforced by the query itself, so
+    # decided_by_layer is `tool`. The audit row still carries agent_id and
+    # session_id so the SIEM join to the gateway log works the same way.
     log_decision(
         action=_ACTION,
         caller_employee_id=caller,
