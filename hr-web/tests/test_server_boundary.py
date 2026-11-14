@@ -130,6 +130,8 @@ def test_rejects_non_loopback_host_header_on_root(running_server):
 
 
 def test_accepts_loopback_host_header(running_server):
+    from urllib.parse import urlsplit
+
     status, headers, _ = _request(
         running_server.server_port,
         "GET",
@@ -139,13 +141,17 @@ def test_accepts_loopback_host_header(running_server):
     assert headers.get("x-frame-options") == "DENY"
     csp = headers.get("content-security-policy", "")
     assert "frame-ancestors 'none'" in csp
+    assert "style-src 'self'" in csp
+    assert "'unsafe-inline'" not in csp
     # W3C CSP forbids mid-hostname wildcards like `https://cognito-idp.*.amazonaws.com`
     # (which Chrome/Safari reject, blocking OIDC discovery on Sign in).
     assert ".*." not in csp
-    assert "https://cognito-idp.eu-west-1.amazonaws.com" in csp
-    assert "https://bedrock-agentcore.eu-west-1.amazonaws.com" in csp
-    assert "https://*.amazoncognito.com" in csp
-    assert "https://login.microsoftonline.com" in csp
+    issuer_origin = f"https://{urlsplit(VALID_ISSUER).netloc}"
+    cfg = _public_config()
+    assert issuer_origin in csp
+    assert f"https://*.auth.{cfg.region}.amazoncognito.com" in csp
+    assert "https://*.amazoncognito.com" not in csp
+    assert "https://login.microsoftonline.com" not in csp
 
 
 # ---------------------------------------------------- 2. No mutation surface
@@ -714,10 +720,13 @@ def test_main_accepts_region_cli_flag(monkeypatch):
 
 
 def test_app_js_client_security_invariants():
-    """app.js keeps tokens out of localStorage/window and enforces OIDC nonce/iss/aud."""
+    """app.js keeps tokens/history out of persistent storage, drops inline styles, and enforces OIDC nonce/iss/aud."""
     app_text = (HR_WEB / "public" / "app.js").read_text(encoding="utf-8")
     assert "localStorage.setItem" not in app_text
     assert "window.HrWeb" not in app_text
+    assert "injectFallbackStyles" not in app_text
+    assert "historyByUser" in app_text
+    assert "sessionStorage.setItem(key" not in app_text
     assert "revocation_endpoint" in app_text
     assert "nonce: oidcNonce" in app_text
     assert "ID token nonce mismatch" in app_text
@@ -730,6 +739,241 @@ def test_app_js_client_security_invariants():
         "document.write",
     ):
         assert dangerous_sink not in app_text
+
+
+def test_csp_connect_src_scopes_to_direct_entra_issuer():
+    """Direct Entra issuer gets login.microsoftonline.com without Cognito wildcards."""
+    entra_cfg = server.PublicConfig(
+        runtime_arn=VALID_RUNTIME_ARN,
+        region=_public_config().region,
+        web_client_id=VALID_WEB_CLIENT_ID,
+        issuer_url="https://login.microsoftonline.com/tenant-123/v2.0",
+        gateway_url=VALID_GATEWAY,
+        a2ui_protocol_version=server.A2UI_PROTOCOL_VERSION,
+    )
+    srv = server.make_server(entra_cfg, host="127.0.0.1", port=0)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    for _ in range(50):
+        if srv.server_port:
+            break
+        time.sleep(0.01)
+    try:
+        status, headers, _ = _request(srv.server_port, "GET", "/")
+        assert status == HTTPStatus.OK
+        csp = headers.get("content-security-policy", "")
+        assert "https://login.microsoftonline.com" in csp
+        assert "amazoncognito.com" not in csp
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=2)
+
+
+def test_invocations_validates_content_type_and_json_object(running_server):
+    """POST /invocations requires Content-Type: application/json and a JSON object body."""
+    port = running_server.server_port
+    auth_headers = {
+        "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+    }
+
+    # Wrong Content-Type -> 415
+    status, _, body = _request(
+        port,
+        "POST",
+        "/invocations",
+        body=b"{}",
+        extra_headers={**auth_headers, "Content-Type": "text/plain"},
+    )
+    assert status == HTTPStatus.UNSUPPORTED_MEDIA_TYPE
+    assert "application/json" in json.loads(body)["error"]
+
+    # Invalid JSON -> 400
+    status, _, body = _request(
+        port,
+        "POST",
+        "/invocations",
+        body=b"{not-json",
+        extra_headers={**auth_headers, "Content-Type": "application/json"},
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert "valid json" in json.loads(body)["error"].lower()
+
+    # Non-object JSON -> 400
+    status, _, body = _request(
+        port,
+        "POST",
+        "/invocations",
+        body=b'["array"]',
+        extra_headers={**auth_headers, "Content-Type": "application/json"},
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert "json object" in json.loads(body)["error"].lower()
+
+
+def test_invocation_gate_rate_limit_and_concurrency(monkeypatch):
+    """InvocationGate bounds concurrent streams and per-minute rate with 429."""
+    gate = server.InvocationGate(concurrent=1, per_minute=2)
+    srv = server.make_server(
+        _public_config(), host="127.0.0.1", port=0, invocation_gate=gate
+    )
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    for _ in range(50):
+        if srv.server_port:
+            break
+        time.sleep(0.01)
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingUpstream:
+        def __init__(self):
+            self.headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            entered.set()
+            assert release.wait(timeout=3)
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def read1(self, _n: int) -> bytes:
+            return b""
+
+    monkeypatch.setattr(server, "urlopen", lambda *_a, **_kw: BlockingUpstream())
+    req_headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+    }
+
+    first_result: list[int] = []
+
+    def _run_first():
+        st, _, _ = _request(
+            srv.server_port,
+            "POST",
+            "/invocations",
+            body=b'{"threadId":"t1"}',
+            extra_headers=req_headers,
+        )
+        first_result.append(st)
+
+    try:
+        t1 = threading.Thread(target=_run_first, daemon=True)
+        t1.start()
+        assert entered.wait(timeout=2)
+
+        # Second concurrent request hits concurrency limit -> 429.
+        st2, _, body2 = _request(
+            srv.server_port,
+            "POST",
+            "/invocations",
+            body=b'{"threadId":"t2"}',
+            extra_headers=req_headers,
+        )
+        assert st2 == HTTPStatus.TOO_MANY_REQUESTS
+        assert "too many" in json.loads(body2)["error"].lower()
+
+        release.set()
+        t1.join(timeout=3)
+        assert first_result == [HTTPStatus.OK]
+
+        # Second sequential request succeeds (per_minute=2).
+        st3, _, _ = _request(
+            srv.server_port,
+            "POST",
+            "/invocations",
+            body=b'{"threadId":"t3"}',
+            extra_headers=req_headers,
+        )
+        assert st3 == HTTPStatus.OK
+
+        # Third request in same minute hits per_minute=2 -> 429.
+        st4, _, _ = _request(
+            srv.server_port,
+            "POST",
+            "/invocations",
+            body=b'{"threadId":"t4"}',
+            extra_headers=req_headers,
+        )
+        assert st4 == HTTPStatus.TOO_MANY_REQUESTS
+    finally:
+        release.set()
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=2)
+
+
+def test_urlopen_blocks_http_redirects():
+    """server.urlopen disables 3xx redirects so Bearer tokens never leave origin."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.error import HTTPError
+    from urllib.request import Request
+
+    saw_target = False
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            nonlocal saw_target
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "/secret-target")
+                self.end_headers()
+            else:
+                saw_target = True
+                self.send_response(200)
+                self.end_headers()
+
+        def log_message(self, *_a):
+            pass
+
+    target_srv = HTTPServer(("127.0.0.1", 0), RedirectHandler)
+    t = threading.Thread(target=target_srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        req = Request(
+            f"http://127.0.0.1:{target_srv.server_port}/redirect",
+            data=b"{}",
+            headers={"Authorization": "Bearer secret-token"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as exc_info:
+            server.urlopen(req, timeout=2)
+        assert exc_info.value.code == 302
+        assert saw_target is False
+    finally:
+        target_srv.shutdown()
+        target_srv.server_close()
+        t.join(timeout=2)
+
+
+def test_invocations_hides_raw_urlerror_reason(running_server, monkeypatch):
+    """URLError returns generic 502 error without exposing internal exc.reason."""
+    from urllib.error import URLError
+
+    def fail_urlopen(*_a, **_kw):
+        raise URLError("SENSITIVE_INTERNAL_DNS_ERROR")
+
+    monkeypatch.setattr(server, "urlopen", fail_urlopen)
+    status, _, body = _request(
+        running_server.server_port,
+        "POST",
+        "/invocations",
+        body=b"{}",
+        extra_headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+        },
+    )
+    assert status == HTTPStatus.BAD_GATEWAY
+    payload = json.loads(body)
+    assert payload == {"error": "Could not reach AgentCore runtime."}
+    assert "SENSITIVE_INTERNAL_DNS_ERROR" not in body.decode("utf-8")
 
 
 def test_hr_adapter_and_primitives_days_and_multi_review_surfaces():

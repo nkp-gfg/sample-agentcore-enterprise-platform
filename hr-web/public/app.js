@@ -275,6 +275,7 @@
     busy: false,
     pendingEmployeeConfirm: null,
     pendingManagerReviews: new Map(),
+    historyByUser: new Map(),
     sseController: null,
     processor: null,
     outboundErrors: [],
@@ -375,117 +376,7 @@
     return new Uint8Array(buf);
   }
 
-  function injectFallbackStyles() {
-    if (!document.head || $("hrAppDynamicStyles")) return;
-    const style = document.createElement("style");
-    style.id = "hrAppDynamicStyles";
-    style.textContent = `
-      :where(.hr-md) { white-space: normal; line-height: 1.5; font-size: 13px; color: inherit; }
-      :where(.hr-md > :first-child) { margin-top: 0; }
-      :where(.hr-md > :last-child) { margin-bottom: 0; }
-      :where(.hr-md p) { margin: 0 0 8px; }
-      :where(.hr-md h1, .hr-md h2, .hr-md h3, .hr-md h4, .hr-md h5, .hr-md h6) {
-        margin: 10px 0 4px; font-weight: 700; line-height: 1.3; color: var(--ink, #09090b);
-      }
-      :where(.hr-md h1) { font-size: 15px; }
-      :where(.hr-md h2) { font-size: 14px; }
-      :where(.hr-md h3, .hr-md h4) { font-size: 13px; }
-      :where(.hr-md ul, .hr-md ol) { margin: 4px 0 8px; padding-left: 20px; }
-      :where(.hr-md li) { margin: 2px 0; }
-      :where(.hr-md code) {
-        font-family: var(--mono, monospace); font-size: 12px;
-        background: var(--surface-2, #f4f4f5); border: 1px solid var(--line, #e4e4e7);
-        border-radius: 4px; padding: 1px 4px;
-      }
-      :where(.hr-md pre.hr-md-pre) {
-        margin: 6px 0 8px; padding: 8px 10px; border-radius: 6px;
-        background: var(--surface-2, #f4f4f5); border: 1px solid var(--line, #e4e4e7);
-        overflow-x: auto; white-space: pre-wrap; font-family: var(--mono, monospace); font-size: 12px;
-      }
-      :where(.hr-md pre.hr-md-pre code) { background: transparent; border: 0; padding: 0; }
-      :where(.hr-md blockquote.hr-md-quote) {
-        margin: 6px 0 8px; padding: 4px 10px;
-        border-left: 3px solid var(--line-strong, #d4d4d8); color: var(--ink-2, #3f3f46);
-      }
-      :where(.hr-md hr.hr-md-hr) { border: 0; border-top: 1px solid var(--line, #e4e4e7); margin: 8px 0; }
-      :where(.hr-md-table-wrap) { overflow-x: auto; margin: 6px 0 8px; }
-      :where(.hr-md-table) {
-        width: 100%; border-collapse: collapse; font-size: 12px;
-        border: 1px solid var(--line, #e4e4e7); border-radius: 6px;
-      }
-      :where(.hr-md-table th, .hr-md-table td) {
-        padding: 5px 8px; border-bottom: 1px solid var(--line, #e4e4e7);
-        border-right: 1px solid var(--line, #e4e4e7); text-align: left; vertical-align: top;
-      }
-      :where(.hr-md-table th) { background: var(--surface-2, #f4f4f5); font-weight: 600; }
-      :where(.hr-md-table tr:last-child td) { border-bottom: 0; }
-      :where(.hr-md-table th:last-child, .hr-md-table td:last-child) { border-right: 0; }
-
-      :where(.hr-bot-item) {
-        width: 100%; display: flex; flex-direction: column; gap: 3px;
-        padding: 7px 9px; border: 1px solid var(--line, #e4e4e7); border-radius: 6px;
-        background: var(--surface, #fff); text-align: left; cursor: pointer;
-        transition: border-color .12s ease, background .12s ease;
-      }
-      :where(.hr-bot-item[data-tier="2"]) { margin-left: 8px; width: calc(100% - 8px); }
-      :where(.hr-bot-item[data-tier="3"]) { margin-left: 16px; width: calc(100% - 16px); }
-      :where(.hr-bot-item:hover) { border-color: var(--line-strong, #d4d4d8); background: var(--surface-2, #f4f4f5); }
-      :where(.hr-bot-item.is-selected) { border-color: var(--accent, #18181b); }
-      :where(.hr-bot-item[data-activity="active"]) { border-color: var(--info, #2563eb); background: var(--info-soft, #eff6ff); }
-      :where(.hr-bot-item[data-activity="done"]) { border-color: #b7e4c7; }
-      :where(.hr-bot-item[data-activity="denied"], .hr-bot-item[data-activity="error"]) { border-color: #f2b4b4; background: var(--err-soft, #fff5f5); }
-      :where(.hr-bot-item[data-activity="paused"]) { border-color: #f6d78b; background: var(--warn-soft, #fffce9); }
-      :where(.hr-bot-head) { display: flex; align-items: center; gap: 6px; min-width: 0; }
-      :where(.hr-bot-dot) { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; background: var(--line-strong, #d4d4d8); }
-      :where(.hr-bot-item[data-activity="active"] .hr-bot-dot) { background: var(--info, #2563eb); }
-      :where(.hr-bot-item[data-activity="done"] .hr-bot-dot) { background: var(--ok, #00802f); }
-      :where(.hr-bot-item[data-activity="denied"] .hr-bot-dot, .hr-bot-item[data-activity="error"] .hr-bot-dot) { background: var(--err, #db0000); }
-      :where(.hr-bot-item[data-activity="paused"] .hr-bot-dot) { background: var(--warn, #855900); }
-      :where(.hr-bot-name) { font-size: 12px; font-weight: 600; color: var(--ink, #09090b); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      :where(.hr-bot-status) { margin-left: auto; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--surface-2, #f4f4f5); color: var(--ink-3, #71717a); flex-shrink: 0; }
-      :where(.hr-bot-item[data-activity="active"] .hr-bot-status) { background: var(--info-soft, #eff6ff); color: var(--info, #2563eb); }
-      :where(.hr-bot-item[data-activity="done"] .hr-bot-status) { background: var(--ok-soft, #effff1); color: var(--ok, #00802f); }
-      :where(.hr-bot-item[data-activity="denied"] .hr-bot-status, .hr-bot-item[data-activity="error"] .hr-bot-status) { background: var(--err-soft, #fff5f5); color: var(--err, #db0000); }
-      :where(.hr-bot-item[data-activity="paused"] .hr-bot-status) { background: var(--warn-soft, #fffce9); color: var(--warn, #855900); }
-      :where(.hr-bot-sub) { font-size: 11px; color: var(--ink-3, #71717a); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      :where(.hr-bot-details) {
-        margin-top: 4px; padding-top: 5px; border-top: 1px dashed var(--line, #e4e4e7);
-        font-size: 11px; color: var(--ink-2, #3f3f46); display: flex; flex-direction: column; gap: 3px;
-      }
-
-      :where(.hr-drawer-toolbar) { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
-      :where(.hr-drawer-section) { margin-bottom: 14px; }
-      :where(.hr-drawer-section-title) { margin: 0 0 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3, #71717a); }
-      :where(.hr-drawer-card) {
-        border: 1px solid var(--line, #e4e4e7); border-radius: 8px; padding: 10px 11px;
-        background: var(--surface, #fff); margin-bottom: 8px; display: flex; flex-direction: column; gap: 6px;
-      }
-      :where(.hr-drawer-card.is-active) { border-color: var(--accent, #18181b); }
-      :where(.hr-drawer-card-head) { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-      :where(.hr-drawer-card-title) { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink, #09090b); }
-      :where(.hr-drawer-card-meta) { font-size: 11px; color: var(--ink-3, #71717a); }
-      :where(.hr-drawer-card-desc) { margin: 0; font-size: 12px; color: var(--ink-2, #3f3f46); line-height: 1.45; }
-      :where(.hr-drawer-chips) { display: flex; flex-wrap: wrap; gap: 4px; }
-      :where(.hr-drawer-chip) {
-        font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
-        background: var(--surface-2, #f4f4f5); border: 1px solid var(--line, #e4e4e7); color: var(--ink-2, #3f3f46);
-      }
-      :where(.hr-drawer-actions) { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 2px; }
-      :where(.hr-drawer-empty) {
-        padding: 20px 12px; text-align: center; color: var(--ink-3, #71717a);
-        border: 1px dashed var(--line, #e4e4e7); border-radius: 8px; font-size: 12.5px;
-      }
-      :where(.hr-guide-steps) { margin: 0; padding-left: 18px; font-size: 12px; color: var(--ink-2, #3f3f46); display: flex; flex-direction: column; gap: 3px; }
-      :where(.hr-guide-tips) { margin: 4px 0 0; padding: 7px 9px; border-radius: 6px; background: var(--surface-2, #f4f4f5); font-size: 11.5px; color: var(--ink-2, #3f3f46); }
-      :where(.hr-history-btn) {
-        all: unset; cursor: pointer; display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0;
-      }
-      :where(.hr-history-btn:focus-visible) { outline: 2px solid var(--accent, #18181b); border-radius: 4px; }
-    `;
-    document.head.append(style);
-  }
-
-  /* ------------------------------------------------------------- catalog */
+  /* ------------------------------------------------------------- config */
 
   function getCatalog() {
     const ec = (window.EnterpriseCatalog && typeof window.EnterpriseCatalog === "object")
@@ -1226,6 +1117,7 @@
     state.threadId = null;
     state.pendingEmployeeConfirm = null;
     state.pendingManagerReviews.clear();
+    state.historyByUser.clear();
     state.currentMessages = [];
     state.botActivity = {};
     state.activeHandoverChain = [];
@@ -1328,27 +1220,15 @@
   }
 
   function loadHistoryList() {
-    try {
-      const raw = sessionStorage.getItem(getUserHistoryStorageKey());
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed.filter((x) => x && typeof x === "object" && x.threadId) : [];
-    } catch {
-      return [];
-    }
+    const items = state.historyByUser.get(getUserHistoryStorageKey());
+    if (!Array.isArray(items)) return [];
+    return items.filter((x) => x && typeof x === "object" && x.threadId);
   }
 
   function writeHistoryList(items) {
     const key = getUserHistoryStorageKey();
     const capped = items.slice(0, MAX_HISTORY_THREADS);
-    try {
-      sessionStorage.setItem(key, JSON.stringify(capped));
-    } catch {
-      // Retry with smaller cap if storage quota is tight.
-      try {
-        sessionStorage.setItem(key, JSON.stringify(capped.slice(0, 10)));
-      } catch { /* ignore */ }
-    }
+    state.historyByUser.set(key, capped);
   }
 
   function deriveThreadTitle(messages) {
@@ -1408,9 +1288,7 @@
   }
 
   function clearAllHistory() {
-    try {
-      sessionStorage.removeItem(getUserHistoryStorageKey());
-    } catch { /* ignore */ }
+    state.historyByUser.delete(getUserHistoryStorageKey());
     if (state.drawerOpen && state.drawerMode === "history") {
       renderDrawerBody();
     }
@@ -3144,7 +3022,7 @@
 
   async function start() {
     purgeLegacyPersistentStorage();
-    injectFallbackStyles();
+    purgePrefixedKeys(window.sessionStorage, [STORAGE_KEYS.historyPrefix]);
     const { MARKETPLACE_AGENTS } = getCatalog();
     if (MARKETPLACE_AGENTS.length > 0) {
       state.activeAgentId = MARKETPLACE_AGENTS[0].id || "hr-assistant";
