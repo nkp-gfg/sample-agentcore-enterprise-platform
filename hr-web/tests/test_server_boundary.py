@@ -39,7 +39,34 @@ VALID_RUNTIME_ARN = (
 VALID_ISSUER = "https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_pool"
 VALID_GATEWAY = "https://gw.example.com/mcp"
 VALID_WEB_CLIENT_ID = "1a2b3c4d5e"
-SECRET_CANARY = "SECRET-DO-NOT-LEAK-" + ("x" * 20)
+SECRET_CANARY = "SECRET-DO-NOT-LEAK-" + ("x" * 20)  # pragma: allowlist secret
+
+
+def _stub_bearer_header(
+    *,
+    iss: str | None = VALID_ISSUER,
+    exp: object = "DEFAULT",
+    extra_claims: dict[str, object] | None = None,
+) -> str:
+    import base64
+
+    claims: dict[str, object] = {"sub": "u1"}
+    if iss is not None:
+        claims["iss"] = iss
+    if exp == "DEFAULT":
+        claims["exp"] = int(time.time()) + 3600
+    elif exp is not None:
+        claims["exp"] = exp
+    if extra_claims:
+        claims.update(extra_claims)
+
+    hdr = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+    body = (
+        base64.urlsafe_b64encode(json.dumps(claims).encode("utf-8"))
+        .rstrip(b"=")
+        .decode()
+    )
+    return f"Bearer {hdr}.{body}.sig"
 
 
 def _public_config() -> server.PublicConfig:
@@ -105,7 +132,7 @@ def test_make_server_refuses_non_loopback_host():
     # address: binding anything other than loopback is a configuration bug
     # we flag at boot, not a runtime check we hope succeeds.
     with pytest.raises(server.ConfigError, match="loopback"):
-        server.make_server(_public_config(), host="0.0.0.0", port=0)
+        server.make_server(_public_config(), host="0.0.0.0", port=0)  # nosec B104 — tests non-loopback rejection
 
 
 def test_rejects_non_loopback_host_header(running_server):
@@ -130,6 +157,8 @@ def test_rejects_non_loopback_host_header_on_root(running_server):
 
 
 def test_accepts_loopback_host_header(running_server):
+    from urllib.parse import urlsplit
+
     status, headers, _ = _request(
         running_server.server_port,
         "GET",
@@ -137,15 +166,28 @@ def test_accepts_loopback_host_header(running_server):
     )
     assert status == HTTPStatus.OK
     assert headers.get("x-frame-options") == "DENY"
+    assert headers.get("server") == "AgentCoreHrWeb/1"
+    assert "Python/" not in headers.get("server", "")
+    assert (
+        headers.get("permissions-policy") == "camera=(), microphone=(), geolocation=()"
+    )
+    assert headers.get("cross-origin-opener-policy") == "same-origin"
+    assert headers.get("cross-origin-resource-policy") == "same-origin"
     csp = headers.get("content-security-policy", "")
     assert "frame-ancestors 'none'" in csp
+    assert "object-src 'none'" in csp
+    assert "worker-src 'none'" in csp
+    assert "style-src 'self'" in csp
+    assert "'unsafe-inline'" not in csp
     # W3C CSP forbids mid-hostname wildcards like `https://cognito-idp.*.amazonaws.com`
     # (which Chrome/Safari reject, blocking OIDC discovery on Sign in).
     assert ".*." not in csp
-    assert "https://cognito-idp.eu-west-1.amazonaws.com" in csp
-    assert "https://bedrock-agentcore.eu-west-1.amazonaws.com" in csp
-    assert "https://*.amazoncognito.com" in csp
-    assert "https://login.microsoftonline.com" in csp
+    issuer_origin = f"https://{urlsplit(VALID_ISSUER).netloc}"
+    cfg = _public_config()
+    assert issuer_origin in csp
+    assert f"https://*.auth.{cfg.region}.amazoncognito.com" in csp
+    assert "https://*.amazoncognito.com" not in csp
+    assert "https://login.microsoftonline.com" not in csp
 
 
 # ---------------------------------------------------- 2. No mutation surface
@@ -339,46 +381,72 @@ def test_a2ui_protocol_version_is_a_bare_semver_string():
 
 
 def test_invocations_rejects_unauthenticated_and_cross_origin_requests(running_server):
-    """POST /invocations requires loopback Host, loopback Origin, Bearer token, and valid session id."""
-    # Missing Bearer token -> 401
-    status, _, body = _request(
-        running_server.server_port,
+    """POST /invocations requires loopback Host, same-origin Origin, valid JWT, and session id."""
+    port = running_server.server_port
+    same_origin = f"http://127.0.0.1:{port}"
+
+    # Missing Origin header -> 403 + Cache-Control: no-store
+    status, headers, body = _request(
+        port,
         "POST",
         "/invocations",
         body=b"{}",
-        extra_headers={"Content-Type": "application/json"},
+        extra_headers={
+            "Content-Type": "application/json",
+            "Authorization": _stub_bearer_header(),
+            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+        },
+    )
+    assert status == HTTPStatus.FORBIDDEN
+    assert headers.get("cache-control") == "no-store"
+    assert "origin" in json.loads(body)["error"].lower()
+
+    # Missing Bearer token -> 401 + Cache-Control: no-store
+    status, headers, body = _request(
+        port,
+        "POST",
+        "/invocations",
+        body=b"{}",
+        extra_headers={
+            "Content-Type": "application/json",
+            "Origin": same_origin,
+        },
     )
     assert status == HTTPStatus.UNAUTHORIZED
+    assert headers.get("cache-control") == "no-store"
     assert "bearer" in json.loads(body)["error"].lower()
 
     # Cross-origin Origin header -> 403
-    status, _, body = _request(
-        running_server.server_port,
+    status, headers, body = _request(
+        port,
         "POST",
         "/invocations",
         body=b"{}",
         extra_headers={
             "Content-Type": "application/json",
             "Origin": "https://evil.example",
-            "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+            "Authorization": _stub_bearer_header(),
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
         },
     )
     assert status == HTTPStatus.FORBIDDEN
+    assert headers.get("cache-control") == "no-store"
 
-    # Short session id -> 400
-    status, _, body = _request(
-        running_server.server_port,
+    # Short session id -> 400 + Cache-Control: no-store
+    status, headers, body = _request(
+        port,
         "POST",
         "/invocations",
         body=b"{}",
         extra_headers={
             "Content-Type": "application/json",
-            "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+            "Origin": same_origin,
+            "Authorization": _stub_bearer_header(),
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "short",
         },
     )
     assert status == HTTPStatus.BAD_REQUEST
+    assert headers.get("cache-control") == "no-store"
 
 
 def test_default_boto3_ssm_reader_queries_single_prefixed_paths(monkeypatch):
@@ -581,7 +649,7 @@ def test_invocations_requires_exact_same_origin_when_origin_present(running_serv
     port = running_server.server_port
     base_headers = {
         "Content-Type": "application/json",
-        "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+        "Authorization": _stub_bearer_header(),
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
     }
 
@@ -651,7 +719,7 @@ def test_invocations_streams_sse_incrementally_via_read1(running_server, monkeyp
                 "Host": f"127.0.0.1:{port}",
                 "Origin": f"http://127.0.0.1:{port}",
                 "Content-Type": "application/json",
-                "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+                "Authorization": _stub_bearer_header(),
                 "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
             },
         )
@@ -714,11 +782,20 @@ def test_main_accepts_region_cli_flag(monkeypatch):
 
 
 def test_app_js_client_security_invariants():
-    """app.js keeps tokens out of localStorage/window and enforces OIDC nonce/iss/aud."""
+    """app.js keeps tokens/history out of persistent storage, drops inline styles, and enforces OIDC nonce/iss/aud/exp."""
     app_text = (HR_WEB / "public" / "app.js").read_text(encoding="utf-8")
     assert "localStorage.setItem" not in app_text
     assert "window.HrWeb" not in app_text
+    assert "injectFallbackStyles" not in app_text
+    assert "historyByUser" in app_text
+    assert "sessionStorage.setItem(key" not in app_text
     assert "revocation_endpoint" in app_text
+    assert "assertHttpsUrl" in app_text
+    assert "validateDiscoveryDocument" in app_text
+    assert "TextDecoder" in app_text
+    assert "formatOAuthCallbackError" in app_text
+    assert "ID token missing exp claim." in app_text
+    assert "Access token missing exp claim." in app_text
     assert "nonce: oidcNonce" in app_text
     assert "ID token nonce mismatch" in app_text
     assert "ID token issuer mismatch" in app_text
@@ -730,6 +807,249 @@ def test_app_js_client_security_invariants():
         "document.write",
     ):
         assert dangerous_sink not in app_text
+
+
+def test_csp_connect_src_scopes_to_direct_entra_issuer():
+    """Direct Entra issuer gets login.microsoftonline.com without Cognito wildcards."""
+    entra_cfg = server.PublicConfig(
+        runtime_arn=VALID_RUNTIME_ARN,
+        region=_public_config().region,
+        web_client_id=VALID_WEB_CLIENT_ID,
+        issuer_url="https://login.microsoftonline.com/tenant-123/v2.0",
+        gateway_url=VALID_GATEWAY,
+        a2ui_protocol_version=server.A2UI_PROTOCOL_VERSION,
+    )
+    srv = server.make_server(entra_cfg, host="127.0.0.1", port=0)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    for _ in range(50):
+        if srv.server_port:
+            break
+        time.sleep(0.01)
+    try:
+        status, headers, _ = _request(srv.server_port, "GET", "/")
+        assert status == HTTPStatus.OK
+        csp = headers.get("content-security-policy", "")
+        assert "https://login.microsoftonline.com" in csp
+        assert "amazoncognito.com" not in csp
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=2)
+
+
+def test_invocations_validates_content_type_and_json_object(running_server):
+    """POST /invocations requires Content-Type: application/json and a JSON object body."""
+    port = running_server.server_port
+    auth_headers = {
+        "Origin": f"http://127.0.0.1:{port}",
+        "Authorization": _stub_bearer_header(),
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+    }
+
+    # Wrong Content-Type -> 415
+    status, headers, body = _request(
+        port,
+        "POST",
+        "/invocations",
+        body=b"{}",
+        extra_headers={**auth_headers, "Content-Type": "text/plain"},
+    )
+    assert status == HTTPStatus.UNSUPPORTED_MEDIA_TYPE
+    assert headers.get("cache-control") == "no-store"
+    assert "application/json" in json.loads(body)["error"]
+
+    # Invalid JSON -> 400
+    status, headers, body = _request(
+        port,
+        "POST",
+        "/invocations",
+        body=b"{not-json",
+        extra_headers={**auth_headers, "Content-Type": "application/json"},
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert headers.get("cache-control") == "no-store"
+    assert "valid json" in json.loads(body)["error"].lower()
+
+    # Non-object JSON -> 400
+    status, headers, body = _request(
+        port,
+        "POST",
+        "/invocations",
+        body=b'["array"]',
+        extra_headers={**auth_headers, "Content-Type": "application/json"},
+    )
+    assert status == HTTPStatus.BAD_REQUEST
+    assert headers.get("cache-control") == "no-store"
+    assert "json object" in json.loads(body)["error"].lower()
+
+
+def test_invocation_gate_rate_limit_and_concurrency(monkeypatch):
+    """InvocationGate bounds concurrent streams and per-minute rate with 429."""
+    gate = server.InvocationGate(concurrent=1, per_minute=2)
+    srv = server.make_server(
+        _public_config(), host="127.0.0.1", port=0, invocation_gate=gate
+    )
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    for _ in range(50):
+        if srv.server_port:
+            break
+        time.sleep(0.01)
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingUpstream:
+        def __init__(self):
+            self.headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            entered.set()
+            assert release.wait(timeout=3)
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def read1(self, _n: int) -> bytes:
+            return b""
+
+    monkeypatch.setattr(server, "urlopen", lambda *_a, **_kw: BlockingUpstream())
+    req_headers = {
+        "Origin": f"http://127.0.0.1:{srv.server_port}",
+        "Content-Type": "application/json",
+        "Authorization": _stub_bearer_header(),
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+    }
+
+    first_result: list[int] = []
+
+    def _run_first():
+        st, _, _ = _request(
+            srv.server_port,
+            "POST",
+            "/invocations",
+            body=b'{"threadId":"t1"}',
+            extra_headers=req_headers,
+        )
+        first_result.append(st)
+
+    try:
+        t1 = threading.Thread(target=_run_first, daemon=True)
+        t1.start()
+        assert entered.wait(timeout=2)
+
+        # Second concurrent request hits concurrency limit -> 429.
+        st2, _, body2 = _request(
+            srv.server_port,
+            "POST",
+            "/invocations",
+            body=b'{"threadId":"t2"}',
+            extra_headers=req_headers,
+        )
+        assert st2 == HTTPStatus.TOO_MANY_REQUESTS
+        assert "too many" in json.loads(body2)["error"].lower()
+
+        release.set()
+        t1.join(timeout=3)
+        assert first_result == [HTTPStatus.OK]
+
+        # Second sequential request succeeds (per_minute=2).
+        st3, _, _ = _request(
+            srv.server_port,
+            "POST",
+            "/invocations",
+            body=b'{"threadId":"t3"}',
+            extra_headers=req_headers,
+        )
+        assert st3 == HTTPStatus.OK
+
+        # Third request in same minute hits per_minute=2 -> 429.
+        st4, _, _ = _request(
+            srv.server_port,
+            "POST",
+            "/invocations",
+            body=b'{"threadId":"t4"}',
+            extra_headers=req_headers,
+        )
+        assert st4 == HTTPStatus.TOO_MANY_REQUESTS
+    finally:
+        release.set()
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=2)
+
+
+def test_urlopen_blocks_http_redirects():
+    """server.urlopen disables 3xx redirects so Bearer tokens never leave origin."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.error import HTTPError
+    from urllib.request import Request
+
+    saw_target = False
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            nonlocal saw_target
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "/secret-target")
+                self.end_headers()
+            else:
+                saw_target = True
+                self.send_response(200)
+                self.end_headers()
+
+        def log_message(self, *_a):
+            pass
+
+    target_srv = HTTPServer(("127.0.0.1", 0), RedirectHandler)
+    t = threading.Thread(target=target_srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        req = Request(
+            f"http://127.0.0.1:{target_srv.server_port}/redirect",
+            data=b"{}",
+            headers={"Authorization": "Bearer secret-token"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as exc_info:
+            server.urlopen(req, timeout=2)
+        assert exc_info.value.code == 302
+        assert saw_target is False
+    finally:
+        target_srv.shutdown()
+        target_srv.server_close()
+        t.join(timeout=2)
+
+
+def test_invocations_hides_raw_urlerror_reason(running_server, monkeypatch):
+    """URLError returns generic 502 error without exposing internal exc.reason."""
+    from urllib.error import URLError
+
+    def fail_urlopen(*_a, **_kw):
+        raise URLError("SENSITIVE_INTERNAL_DNS_ERROR")
+
+    monkeypatch.setattr(server, "urlopen", fail_urlopen)
+    port = running_server.server_port
+    status, headers, body = _request(
+        port,
+        "POST",
+        "/invocations",
+        body=b"{}",
+        extra_headers={
+            "Origin": f"http://127.0.0.1:{port}",
+            "Content-Type": "application/json",
+            "Authorization": _stub_bearer_header(),
+            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+        },
+    )
+    assert status == HTTPStatus.BAD_GATEWAY
+    assert headers.get("cache-control") == "no-store"
+    payload = json.loads(body)
+    assert payload == {"error": "Could not reach AgentCore runtime."}
+    assert "SENSITIVE_INTERNAL_DNS_ERROR" not in body.decode("utf-8")
 
 
 def test_hr_adapter_and_primitives_days_and_multi_review_surfaces():
@@ -839,6 +1159,243 @@ if (del1[0].deleteSurface.surfaceId !== "surface-manager-review-lr-111") {
 """
     res = subprocess.run(
         [node, "-e", script, adapter_path, primitives_path],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr or res.stdout
+
+
+def test_invocations_rejects_malformed_expired_or_wrong_issuer_jwts(
+    running_server, monkeypatch
+):
+    """Local JWT validation rejects non-JWTs, missing/expired exp, and wrong iss before dialing upstream."""
+
+    def forbid_urlopen(*_a, **_kw):
+        raise AssertionError("urlopen must not be called for invalid JWTs")
+
+    monkeypatch.setattr(server, "urlopen", forbid_urlopen)
+    port = running_server.server_port
+    base_headers = {
+        "Origin": f"http://127.0.0.1:{port}",
+        "Content-Type": "application/json",
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+    }
+
+    bad_tokens = [
+        "Bearer not-a-jwt-token-at-all",
+        "Bearer aaa.bbb.ccc",
+        _stub_bearer_header(exp=None),
+        _stub_bearer_header(exp=True),
+        _stub_bearer_header(exp=int(time.time()) - 120),
+        _stub_bearer_header(iss="https://evil.example/pool"),
+    ]
+    for auth in bad_tokens:
+        status, headers, body = _request(
+            port,
+            "POST",
+            "/invocations",
+            body=b"{}",
+            extra_headers={**base_headers, "Authorization": auth},
+        )
+        assert status == HTTPStatus.UNAUTHORIZED, auth
+        assert headers.get("cache-control") == "no-store"
+        assert "error" in json.loads(body)
+
+
+def test_head_options_and_static_allowlist_and_symlink_protection(
+    running_server, tmp_path
+):
+    """HEAD, OPTIONS, STATIC_ASSETS allowlist, and symlink checks return JSON envelopes."""
+    port = running_server.server_port
+
+    # HEAD /config.json -> 200, Cache-Control: no-store, empty body
+    status, headers, body = _request(port, "HEAD", "/config.json")
+    assert status == HTTPStatus.OK
+    assert headers.get("cache-control") == "no-store"
+    assert headers.get("content-type", "").startswith("application/json")
+    assert body == b""
+
+    # HEAD / -> 200
+    status, _, body = _request(port, "HEAD", "/")
+    assert status == HTTPStatus.OK
+    assert body == b""
+
+    # HEAD with non-loopback Host -> 403
+    status, _, body = _request(port, "HEAD", "/config.json", host_header="evil.example")
+    assert status == HTTPStatus.FORBIDDEN
+    assert body == b""
+
+    # HEAD unallowlisted -> 404
+    status, _, body = _request(port, "HEAD", "/ui-primitives.md")
+    assert status == HTTPStatus.NOT_FOUND
+    assert body == b""
+
+    # GET non-runtime doc (/ui-primitives.md) or traversal -> JSON 404
+    for bad_path in ("/ui-primitives.md", "/nonexistent.js", "/%2e%2e/server.py"):
+        status, headers, body = _request(port, "GET", bad_path)
+        assert status == HTTPStatus.NOT_FOUND, bad_path
+        assert headers.get("content-type", "").startswith("application/json")
+        assert json.loads(body) == {"error": "Resource not found."}
+
+    # OPTIONS / TRACE enforce loopback Host first and return JSON 405
+    for method in ("OPTIONS", "TRACE"):
+        status, _, body = _request(port, method, "/", host_header="evil.example")
+        assert status == HTTPStatus.FORBIDDEN
+        assert "loopback" in json.loads(body)["error"].lower()
+
+        status, _, body = _request(port, method, "/")
+        assert status == HTTPStatus.METHOD_NOT_ALLOWED
+        assert method in json.loads(body)["error"]
+
+    # Symlink inside public/ pointing outside PUBLIC is refused
+    secret_file = tmp_path / "secret.txt"
+    secret_file.write_text("SECRET", encoding="utf-8")
+    link_path = server.PUBLIC / "_test_symlink_probe.js"
+    try:
+        link_path.symlink_to(secret_file)
+        status, _, _ = _request(port, "GET", "/_test_symlink_probe.js")
+        assert status == HTTPStatus.NOT_FOUND
+    finally:
+        if link_path.is_symlink() or link_path.exists():
+            link_path.unlink()
+
+
+def test_server_region_validation_socket_config_and_exact_cognito_csp():
+    """Server validates region, sets daemon/timeout config, and pins exact Cognito domain."""
+    bad_cfg = server.PublicConfig(
+        runtime_arn=VALID_RUNTIME_ARN,
+        region="invalid/region?x=1",
+        web_client_id=VALID_WEB_CLIENT_ID,
+        issuer_url=VALID_ISSUER,
+        gateway_url=VALID_GATEWAY,
+        a2ui_protocol_version=server.A2UI_PROTOCOL_VERSION,
+    )
+    with pytest.raises(server.ConfigError, match="region"):
+        server.make_server(bad_cfg, host="127.0.0.1", port=0)
+
+    exact_origin = "https://my-app-domain.auth.us-east-1.amazoncognito.com"
+    srv = server.make_server(
+        _public_config(),
+        host="127.0.0.1",
+        port=0,
+        cognito_auth_origin=exact_origin,
+    )
+    assert srv.daemon_threads is True
+    assert srv.block_on_close is False
+    assert server.SOCKET_TIMEOUT_SECONDS == 15
+
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    for _ in range(50):
+        if srv.server_port:
+            break
+        time.sleep(0.01)
+    try:
+        status, headers, _ = _request(srv.server_port, "GET", "/")
+        assert status == HTTPStatus.OK
+        csp = headers.get("content-security-policy", "")
+        assert exact_origin in csp
+        assert "*.auth." not in csp
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=2)
+
+
+def test_a2ui_prototype_pollution_and_app_js_oauth_helpers():
+    """Verify a2ui.js prototype guards and app.js UTF-8/HTTPS/OAuth error behavior in Node."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+
+    a2ui_path = str(HR_WEB / "public" / "a2ui.js")
+    app_path = str(HR_WEB / "public" / "app.js")
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+
+// 1. Test a2ui.js prototype pollution guards
+const a2uiSandbox = {
+  window: {},
+  document: { createElement: () => ({ dataset: {}, append() {} }), createTextNode: () => ({}) },
+  HTMLElement: function() {},
+  console,
+};
+vm.createContext(a2uiSandbox);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), a2uiSandbox);
+const { resolveBinding, _internals } = a2uiSandbox.window.A2UI;
+
+const updated = _internals.setAtPath({}, "/__proto__/polluted", "yes");
+if ({}.polluted === "yes") throw new Error("Prototype polluted via setAtPath __proto__");
+if (Object.prototype.hasOwnProperty.call(updated, "__proto__")) {
+  throw new Error("Expected __proto__ pointer write to be ignored");
+}
+const ctorUpdated = _internals.setAtPath({}, "/constructor/prototype/polluted", "yes");
+if ({}.polluted === "yes" || Object.prototype.hasOwnProperty.call(ctorUpdated, "constructor")) {
+  throw new Error("Expected constructor pointer write to be ignored");
+}
+if (_internals.getAtPath({ a: 1 }, "/toString") !== undefined) {
+  throw new Error("getAtPath must not read prototype properties");
+}
+
+const evilObj = JSON.parse('{"__proto__": {"polluted": true}, "safe": "ok", "constructor": {"x": 1}}');
+const bound = resolveBinding(evilObj, {}, {});
+if (bound.safe !== "ok" || Object.prototype.hasOwnProperty.call(bound, "__proto__") || Object.prototype.hasOwnProperty.call(bound, "constructor")) {
+  throw new Error("resolveBinding did not strip forbidden prototype keys");
+}
+if (resolveBinding({ "@call": "toString" }, {}, { deriveDays: () => "1" }) !== undefined) {
+  throw new Error("resolveBinding invoked prototype method on functions map");
+}
+
+// 2. Verify app.js decodeClaims handles UTF-8 and OAuth error formatter ignores arbitrary descriptions
+const appSrc = fs.readFileSync(process.argv[2], "utf8");
+const assertHttpsMatch = appSrc.match(/function assertHttpsUrl[\s\S]*?\n  \}/);
+const validateDiscMatch = appSrc.match(/function validateDiscoveryDocument[\s\S]*?\n  \}/);
+const decodeMatch = appSrc.match(/function decodeClaims[\s\S]*?\n  \}/);
+const oauthErrMatch = appSrc.match(
+  /const OAUTH_ERROR_MESSAGES = Object\.freeze\(\{[\s\S]*?\n  \}\);[\s\S]*?function formatOAuthCallbackError[\s\S]*?\n  \}/,
+);
+if (!assertHttpsMatch || !validateDiscMatch || !decodeMatch || !oauthErrMatch) {
+  throw new Error("Failed to extract app.js helpers for testing");
+}
+const helperSandbox = { URL, TextDecoder, atob: (s) => Buffer.from(s, "base64").toString("binary"), Uint8Array };
+vm.createContext(helperSandbox);
+vm.runInContext(
+  assertHttpsMatch[0] + "\n" + validateDiscMatch[0] + "\n" + decodeMatch[0] + "\n" + oauthErrMatch[0],
+  helperSandbox,
+);
+
+let rejectedHttp = false;
+try {
+  helperSandbox.validateDiscoveryDocument({
+    authorization_endpoint: "http://evil.example/auth",
+    token_endpoint: "https://auth.example/token",
+  });
+} catch {
+  rejectedHttp = true;
+}
+if (!rejectedHttp) throw new Error("validateDiscoveryDocument must reject http:// endpoints");
+
+const utf8Payload = Buffer.from(JSON.stringify({ name: "José Márquez", exp: 9999999999 }), "utf8")
+  .toString("base64url");
+const decoded = helperSandbox.decodeClaims(`eyJhbGciOiJub25lIn0.${utf8Payload}.sig`);
+if (!decoded || decoded.name !== "José Márquez") {
+  throw new Error("decodeClaims failed UTF-8 decoding: " + JSON.stringify(decoded));
+}
+
+const msg = helperSandbox.formatOAuthCallbackError("access_denied", true);
+if (msg.includes("spoof")) throw new Error("Unexpected spoof text");
+const customMsg = helperSandbox.formatOAuthCallbackError("bad<script>", "Call 555-0199");
+if (customMsg.includes("555-0199") || customMsg.includes("<script>")) {
+  throw new Error("formatOAuthCallbackError leaked raw callback text: " + customMsg);
+}
+"""
+    res = subprocess.run(
+        [node, "-e", script, a2ui_path, app_path],
         capture_output=True,
         text=True,
         check=False,
