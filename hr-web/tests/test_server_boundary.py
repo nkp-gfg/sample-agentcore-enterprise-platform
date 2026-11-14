@@ -328,3 +328,46 @@ def test_a2ui_protocol_version_is_a_bare_semver_string():
     assert "@" not in value
     assert "/" not in value
     assert "secret" not in value.lower()
+
+
+def test_invocations_rejects_unauthenticated_and_cross_origin_requests(running_server):
+    """POST /invocations requires loopback Host, loopback Origin, Bearer token, and valid session id."""
+    # Missing Bearer token -> 401
+    status, _, body = _request(
+        running_server.server_port,
+        "POST",
+        "/invocations",
+        body=b"{}",
+        extra_headers={"Content-Type": "application/json"},
+    )
+    assert status == HTTPStatus.UNAUTHORIZED
+    assert "bearer" in json.loads(body)["error"].lower()
+
+    # Cross-origin Origin header -> 403
+    status, _, body = _request(
+        running_server.server_port,
+        "POST",
+        "/invocations",
+        body=b"{}",
+        extra_headers={
+            "Content-Type": "application/json",
+            "Origin": "https://evil.example",
+            "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+        },
+    )
+    assert status == HTTPStatus.FORBIDDEN
+
+    # Short session id -> 400
+    status, _, body = _request(
+        running_server.server_port,
+        "POST",
+        "/invocations",
+        body=b"{}",
+        extra_headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "short",
+        },
+    )
+    assert status == HTTPStatus.BAD_REQUEST

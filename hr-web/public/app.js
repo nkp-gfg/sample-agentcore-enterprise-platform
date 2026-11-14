@@ -225,17 +225,20 @@
 
   function renderIdentity() {
     const label = $("identityState");
+    const refreshBtn = $("refreshReviewsBtn");
     if (state.accessToken) {
       label.textContent = state.userLabel;
       label.dataset.state = "signed-in";
       $("signInBtn").hidden = true;
       $("signOutBtn").hidden = false;
+      if (refreshBtn) refreshBtn.hidden = false;
       $("authBanner").hidden = true;
     } else {
       label.textContent = "Not signed in";
       label.dataset.state = "unknown";
       $("signInBtn").hidden = false;
       $("signOutBtn").hidden = true;
+      if (refreshBtn) refreshBtn.hidden = true;
       $("authBanner").hidden = false;
     }
     $("footerSession").textContent = state.threadId
@@ -245,10 +248,12 @@
 
   function updateControls() {
     const ready = Boolean(state.accessToken) && !state.busy;
+    const refreshBtn = $("refreshReviewsBtn");
     $("chatInput").disabled = !ready;
     $("chatSend").disabled = !ready || !$("chatInput").value.trim();
     $("signInBtn").disabled = state.busy;
     $("signOutBtn").disabled = state.busy;
+    if (refreshBtn) refreshBtn.disabled = !ready;
   }
 
   function appendMessage(role, text, meta) {
@@ -289,8 +294,31 @@
   /* ------------------------------------------------------------- SSE */
 
   function runtimeUrl() {
-    const encoded = encodeURIComponent(state.config.runtime_arn);
-    return `https://bedrock-agentcore.${state.config.region}.amazonaws.com/runtimes/${encoded}/invocations?qualifier=DEFAULT`;
+    return "/invocations";
+  }
+
+  async function pollPendingReviews() {
+    if (state.busy || !state.accessToken || !state.threadId) return;
+    state.busy = true;
+    updateControls();
+    state.runId = newId("run");
+    const input = {
+      threadId: state.threadId,
+      runId: state.runId,
+      messages: [],
+      state: {},
+      tools: [],
+      context: [],
+      forwardedProps: Object.assign({ checkPendingReviews: true }, rendererMetadata()),
+    };
+    try {
+      await streamAgent(input);
+    } catch {
+      /* non-fatal background review poll on sign-in */
+    } finally {
+      state.busy = false;
+      updateControls();
+    }
   }
 
   async function sendMessage(text) {
@@ -346,7 +374,7 @@
     return out;
   }
 
-  async function sendResume(resumePayload) {
+  async function sendResume(resumePayload, interruptId) {
     if (state.busy || !state.accessToken) return;
     state.busy = true;
     updateControls();
@@ -358,8 +386,17 @@
       state: {},
       tools: [],
       context: [],
-      forwardedProps: Object.assign({ resume: [resumePayload] }, rendererMetadata()),
+      forwardedProps: Object.assign(
+        {
+          resume: [resumePayload],
+          command: { resume: resumePayload },
+        },
+        rendererMetadata(),
+      ),
     };
+    if (interruptId) {
+      input.resume = [{ interruptId, payload: resumePayload }];
+    }
     try {
       await streamAgent(input);
     } catch (err) {
@@ -470,20 +507,42 @@
     catch { return null; }
   }
 
-  function handleRunFinished(event) {
-    const outcome = event && event.outcome;
-    if (!outcome || outcome.type !== "interrupt") return;
-    const payload = outcome.value || outcome.payload || outcome.data;
-    if (!payload || typeof payload !== "object") return;
-    state.pendingInterrupt = payload;
-    const messages = window.HrToolAdapter.fromInterrupt(payload);
-    if (messages.length === 0) {
-      appendMessage("system",
-        `Review pause received for ${String(payload.kind || "unknown")}. Use the card to decide.`,
-        "Interrupt");
-      return;
+  function _extractInterruptEntries(outcome) {
+    if (!outcome || outcome.type !== "interrupt") return [];
+    if (Array.isArray(outcome.interrupts) && outcome.interrupts.length > 0) {
+      return outcome.interrupts
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const raw = item.metadata && item.metadata.langgraph && item.metadata.langgraph.raw
+            ? item.metadata.langgraph.raw
+            : (item.value || item.payload || null);
+          if (!raw || typeof raw !== "object") return null;
+          return { id: item.id || null, payload: raw };
+        })
+        .filter(Boolean);
     }
-    applyA2uiMessages(messages);
+    const fallback = outcome.value || outcome.payload || outcome.data;
+    if (fallback && typeof fallback === "object") {
+      return [{ id: fallback.id || null, payload: fallback }];
+    }
+    return [];
+  }
+
+  function handleRunFinished(event) {
+    const entries = _extractInterruptEntries(event && event.outcome);
+    if (entries.length === 0) return;
+    for (const entry of entries) {
+      const payload = entry.payload;
+      state.pendingInterrupt = Object.assign({}, payload, { _interruptId: entry.id });
+      const messages = window.HrToolAdapter.fromInterrupt(payload);
+      if (messages.length === 0) {
+        appendMessage("system",
+          `Review pause received for ${String(payload.kind || "unknown")}. Use the card to decide.`,
+          "Interrupt");
+      } else {
+        applyA2uiMessages(messages);
+      }
+    }
   }
 
   /* ------------------------------------------------- A2UI action router */
@@ -492,7 +551,7 @@
    * The ONLY path by which a decision leaves the browser. A free-text chat
    * message that says "approve" does not get here: it goes through
    * ``sendMessage`` to the agent as plain user text, which is governed by
-   * OPA, Cedar, and the gateway Lambda — none of which trust the chat.
+   * Cedar and the gateway tool policy — none of which trust the chat.
    */
   function handleRendererMessage(message) {
     if (!message || typeof message !== "object") return;
@@ -554,25 +613,28 @@
       appendMessage("error", err, "Invalid range");
       return;
     }
+    const interruptId = interrupt._interruptId || null;
     state.pendingInterrupt = null;
     applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("employee_confirm"));
     await sendResume({
       decision: "approve",
       kind: "employee_confirm",
       arguments: merged,
-    });
+    }, interruptId);
   }
 
   async function onEmployeeReject(_ctx) {
     if (!state.pendingInterrupt || state.pendingInterrupt.kind !== "employee_confirm") return;
+    const interruptId = state.pendingInterrupt._interruptId || null;
     state.pendingInterrupt = null;
     applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("employee_confirm"));
     appendMessage("system", "You declined to submit this request.", "No request");
-    await sendResume({ decision: "reject", kind: "employee_confirm" });
+    await sendResume({ decision: "reject", kind: "employee_confirm" }, interruptId);
   }
 
   async function onEmployeeEdit(ctx) {
     if (!state.pendingInterrupt || state.pendingInterrupt.kind !== "employee_confirm") return;
+    const interruptId = state.pendingInterrupt._interruptId || null;
     const proposed = state.pendingInterrupt.arguments || state.pendingInterrupt.proposed || state.pendingInterrupt;
     const nextStart = prompt("New start date (YYYY-MM-DD)", ctx.start_date || proposed.start_date || "");
     if (nextStart == null) return;
@@ -590,16 +652,18 @@
     };
     state.pendingInterrupt = null;
     applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("employee_confirm"));
-    await sendResume({ decision: "edit", kind: "employee_confirm", arguments: edited });
+    await sendResume({ decision: "edit", kind: "employee_confirm", arguments: edited }, interruptId);
   }
 
   async function onManagerApprove(ctx) {
     const interrupt = state.pendingInterrupt;
     if (!interrupt || interrupt.kind !== "manager_review") return;
     const requestId = ctx.request_id || interrupt.request_id;
-    // The runtime still checks the reviewer's token against
-    // reviewer_employee_id before applying Command(resume=...). A forged
-    // resume from the dev console still fails OPA with NOT_REVIEWER.
+    state.pendingInterrupt = null;
+    applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("manager_review"));
+    // The runtime checks the reviewer's verified token against
+    // reviewer_employee_id before recording the decision. A forged
+    // resume from the dev console fails with NOT_REVIEWER.
     await sendResume({ decision: "approve", kind: "manager_review", request_id: requestId });
   }
 
@@ -607,6 +671,8 @@
     const interrupt = state.pendingInterrupt;
     if (!interrupt || interrupt.kind !== "manager_review") return;
     const requestId = ctx.request_id || interrupt.request_id;
+    state.pendingInterrupt = null;
+    applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("manager_review"));
     await sendResume({ decision: "reject", kind: "manager_review", request_id: requestId });
   }
 
@@ -656,6 +722,9 @@
       try {
         await completeSignIn(code, returnedState);
         history.replaceState(null, "", REDIRECT_URI);
+        renderIdentity();
+        updateControls();
+        await pollPendingReviews();
       } catch (err) {
         appendMessage("error", err.message, "Sign-in error");
         history.replaceState(null, "", REDIRECT_URI);
@@ -672,6 +741,9 @@
     catch (err) { appendMessage("error", err.message, "Sign-in error"); }
   });
   $("signOutBtn").addEventListener("click", signOut);
+  if ($("refreshReviewsBtn")) {
+    $("refreshReviewsBtn").addEventListener("click", pollPendingReviews);
+  }
   $("chatForm").addEventListener("submit", (e) => {
     e.preventDefault();
     sendMessage($("chatInput").value);

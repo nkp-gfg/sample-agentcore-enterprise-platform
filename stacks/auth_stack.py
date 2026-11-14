@@ -245,6 +245,27 @@ class AuthStack(cdk.Stack):
             self._app_client.node.add_dependency(federated_provider)
 
         # ── Web Client (Authorization Code + PKCE, no secret — browser SPA) ──
+        # Include hr-web's loopback origins (127.0.0.1:8899 and localhost:8899)
+        # alongside the caller-supplied / default localhost:3000 callback so
+        # Layer 3 browser PKCE sign-in works without redirect_uri_mismatch.
+        web_callbacks = list(
+            dict.fromkeys(
+                [
+                    *callback_urls,
+                    "http://127.0.0.1:8899/",
+                    "http://localhost:8899/",
+                ]
+            )
+        )
+        web_logouts = list(
+            dict.fromkeys(
+                [
+                    *logout_urls,
+                    "http://127.0.0.1:8899/",
+                    "http://localhost:8899/",
+                ]
+            )
+        )
         self._web_client = self.user_pool.add_client(
             "WebClient",
             user_pool_client_name=f"{prefix}-web-client",
@@ -258,8 +279,8 @@ class AuthStack(cdk.Stack):
                     cognito.OAuthScope.EMAIL,
                     cognito.OAuthScope.PROFILE,
                 ],
-                callback_urls=callback_urls,
-                logout_urls=logout_urls,
+                callback_urls=web_callbacks,
+                logout_urls=web_logouts,
             ),
         )
         if federated_provider:
@@ -472,6 +493,8 @@ class AuthStack(cdk.Stack):
 
     @property
     def web_client_id(self) -> str:
+        if self.is_direct:
+            return self._direct_client_id
         return self._web_client.user_pool_client_id
 
     @property

@@ -28,7 +28,9 @@ from dataclasses import asdict, dataclass
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlsplit
+from urllib.request import Request, urlopen
 
 HERE = Path(__file__).resolve().parent
 PUBLIC = HERE / "public"
@@ -68,6 +70,8 @@ PUBLIC_CONFIG_FIELDS = frozenset(
 RUNTIME_ARN_RE = re.compile(
     r"^arn:aws:bedrock-agentcore:([a-z]{2}(?:-[a-z]+)+-\d):\d{12}:runtime/.+$"
 )
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{33,128}$")
+MAX_INVOKE_BODY_BYTES = 256 * 1024
 
 # The A2UI wire protocol version this UI speaks. Pinned so a mismatched
 # catalog or renderer is a visible, reviewable change — not a silent upgrade.
@@ -242,6 +246,10 @@ class HrWebHandler(SimpleHTTPRequestHandler):
     # Every write verb is refused. The server reads SSM once at boot and never
     # changes state afterwards, so GET + HEAD are the full surface.
     def do_POST(self) -> None:
+        path_only = self.path.split("?", 1)[0]
+        if path_only == "/invocations":
+            self._forward_invocations()
+            return
         self._reject_mutation("POST")
 
     def do_PUT(self) -> None:
@@ -252,6 +260,108 @@ class HrWebHandler(SimpleHTTPRequestHandler):
 
     def do_PATCH(self) -> None:
         self._reject_mutation("PATCH")
+
+    def _forward_invocations(self) -> None:
+        """Same-origin loopback SSE passthrough to AgentCore Runtime.
+
+        Forwards ONLY the browser's Cognito Bearer JWT (zero server-side AWS
+        credentials) so browser fetch() is never blocked by cross-origin CORS
+        preflight on `bedrock-agentcore.<region>.amazonaws.com`.
+        """
+        try:
+            self._require_loopback_host()
+            origin = self.headers.get("Origin", "")
+            if origin:
+                parsed_origin = urlsplit(origin)
+                origin_port = parsed_origin.port or (
+                    443 if parsed_origin.scheme == "https" else 80
+                )
+                if (
+                    parsed_origin.hostname not in LOOPBACK_HOSTS
+                    or origin_port != self.server.server_port
+                ):
+                    raise RequestRejected(
+                        HTTPStatus.FORBIDDEN, "Same-origin loopback Origin required."
+                    )
+
+            auth_header = self.headers.get("Authorization", "").strip()
+            if not auth_header.lower().startswith("bearer ") or len(auth_header) < 16:
+                raise RequestRejected(
+                    HTTPStatus.UNAUTHORIZED, "Bearer access token required."
+                )
+
+            session_id = self.headers.get(
+                "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id", ""
+            ).strip()
+            if not SESSION_ID_RE.match(session_id):
+                raise RequestRejected(
+                    HTTPStatus.BAD_REQUEST,
+                    "Valid X-Amzn-Bedrock-AgentCore-Runtime-Session-Id (33-128 chars) required.",
+                )
+
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise RequestRejected(
+                    HTTPStatus.BAD_REQUEST, "Invalid Content-Length."
+                ) from exc
+            if content_length <= 0 or content_length > MAX_INVOKE_BODY_BYTES:
+                raise RequestRejected(
+                    HTTPStatus.BAD_REQUEST, "Request body out of bounds."
+                )
+            raw_body = self.rfile.read(content_length)
+
+            config: PublicConfig | None = getattr(self.server, "public_config", None)
+            if config is None:
+                raise RequestRejected(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Server configuration is not loaded.",
+                )
+
+            upstream_url = (
+                f"https://bedrock-agentcore.{config.region}.amazonaws.com/runtimes/"
+                f"{quote(config.runtime_arn, safe='')}/invocations?qualifier=DEFAULT"
+            )
+            upstream_req = Request(
+                upstream_url,
+                data=raw_body,
+                headers={
+                    "Authorization": auth_header,
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                    "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
+                },
+                method="POST",
+            )
+            try:
+                with urlopen(upstream_req, timeout=180) as upstream:  # nosec B310 — https
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header(
+                        "Content-Type",
+                        upstream.headers.get("Content-Type", "text/event-stream"),
+                    )
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    while True:
+                        chunk = upstream.read(4096)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+            except HTTPError as exc:
+                self._send_json(
+                    HTTPStatus(exc.code)
+                    if exc.code in HTTPStatus._value2member_map_
+                    else HTTPStatus.BAD_GATEWAY,
+                    {"error": f"Runtime returned HTTP {exc.code}."},
+                )
+            except URLError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_GATEWAY,
+                    {"error": f"Could not reach AgentCore runtime: {exc.reason}"},
+                )
+        except RequestRejected as exc:
+            self._send_json(exc.status, {"error": exc.message})
 
     def _reject_mutation(self, method: str) -> None:
         try:
@@ -280,6 +390,7 @@ class HrWebHandler(SimpleHTTPRequestHandler):
             "style-src 'self' 'unsafe-inline'; script-src 'self'; "
             "connect-src 'self' https://*.amazoncognito.com "
             "https://cognito-idp.*.amazonaws.com "
+            "https://login.microsoftonline.com "
             "https://bedrock-agentcore.*.amazonaws.com; "
             "base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
         )

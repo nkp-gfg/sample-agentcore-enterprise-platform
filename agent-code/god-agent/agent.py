@@ -7,12 +7,14 @@ agent.md`. Pauses: `custom-app-plan/human-review.md`.
 
 Wiring summary — one file so Dockerfile ``CMD`` finds `app`:
 
-    - `BedrockAgentCoreApp` serves the AG-UI SSE entry (same as
-      `agent-code/agui-langgraph-agent/agent.py`).
+    - `BedrockAgentCoreApp` serves the AG-UI SSE entry (`AGUI` protocol).
+    - Accepts both native AG-UI `RunAgentInput` payloads (`hr-web`,
+      `invoke.py --agui`, EBA Console) and CLI `{"prompt", "runtimeSessionId",
+      "resume"}` payloads (`scripts/login_chat.py`).
     - `create_deep_agent` builds the god agent with three
       `CompiledSubAgent`-wrapped department graphs, `recursion_limit=40`,
-      a `PostgresSaver` checkpointer on `agent_state`, and the write-deny
-      filesystem permission.
+      an `AsyncPostgresSaver` checkpointer on `agent_state`, and write-deny
+      filesystem permissions.
     - Each department is itself a `create_deep_agent` compiled with
       `recursion_limit=25` whose children are leaf `create_agent` graphs.
     - Each leaf has one gateway tool and the two call-limit middlewares.
@@ -25,51 +27,75 @@ Wiring summary — one file so Dockerfile ``CMD`` finds `app`:
 
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 from typing import Any
 
-from ag_ui.core import RunAgentInput, RunErrorEvent
+from ag_ui.core import (
+    EventType,
+    RunAgentInput,
+    RunErrorEvent,
+    RunFinishedEvent,
+    RunFinishedInterruptOutcome,
+    RunStartedEvent,
+    TextMessageContentEvent,
+    TextMessageEndEvent,
+    TextMessageStartEvent,
+    ToolCallEndEvent,
+    ToolCallResultEvent,
+    ToolCallStartEvent,
+)
+from ag_ui.core import (
+    Interrupt as AGUIInterrupt,
+)
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
-from checkpointer import open_checkpointer
+from checkpointer import (
+    async_open_checkpointer,
+    claim_or_verify_thread_owner,
+    complete_pending_manager_review,
+    get_pending_manager_review,
+    list_pending_manager_reviews,
+    save_pending_manager_review,
+)
 from copilotkit import LangGraphAGUIAgent
 from deepagents import create_deep_agent, register_harness_profile
 from deepagents.middleware.subagents import CompiledSubAgent
+from fastapi.middleware.cors import CORSMiddleware
 from filesystem import scratch_backend, write_deny_permission
+from gateway_client import (
+    drain_turn_tool_events,
+    resolve_employee_id_for_sub,
+    set_turn_context,
+    take_turn_pending_review,
+)
 from guardrail import build_model
 from langgraph.errors import GraphRecursionError
 from langgraph.graph.state import CompiledStateGraph
 from leaves import LEAF_SPECS, LeafSpec, build_leaf
 from rate_limit import default_limiter
+from review import PendingLeaveRequest, run_manager_review
 from shared.auth import extract_user_id_from_context
 from ssm_config import hr_tools_enabled
 from subagents import harness_profile, refusal_subagent
 
 logger = logging.getLogger(__name__)
 
-
 # ─── Limits (god-agent.md § Limits) ─────────────────────────────────────────
 
 GOD_RECURSION_LIMIT = 40
 DEPARTMENT_RECURSION_LIMIT = 25
 
-# Fixed answer for a recursion trip. god-agent.md:
-#   "I could not finish that. Please ask again." and logs `LIMIT_RECURSION`.
 RECURSION_FALLBACK_TEXT = "I could not finish that. Please ask again."
 RECURSION_LOG_CODE = "LIMIT_RECURSION"
 
-# Fixed answers for the kill switch and rate limit. Nothing goes to the model.
 SERVICE_DISABLED_TEXT = "The HR assistant is paused. Please try again in a few minutes."
 RATE_LIMITED_TEXT = (
     "You have reached the HR assistant's limit of 20 turns per 10 minutes. "
     "Please try again shortly."
 )
 
-# Which deepagents harness profile key owns our model. `ChatBedrock` reports
-# `ls_provider='amazon_bedrock'`, which is the provider-wide key we register
-# the `GeneralPurposeSubagentProfile(enabled=False)` profile under so every
-# agent constructed below inherits it.
 _HARNESS_PROFILE_KEY = "amazon_bedrock"
-
 
 # ─── Prompts ────────────────────────────────────────────────────────────────
 
@@ -79,20 +105,21 @@ GOD_SYSTEM_PROMPT = (
     "hand the question to the right department — `hr-operations` for leave "
     "balance, eligibility, and submission; `hr-payroll` for compensation and "
     "the caller's direct reports; `finance-payroll` for the telephone "
-    "allowance. The department agents each route to a leaf that calls one "
-    "gateway tool. Carry the user's question and any ids the caller provided "
-    "in the `task` description — the subagent sees no history from you. "
-    "Never answer a salary, a leave balance, or an allowance yourself. Never "
-    "invent an employee_id. If a department refuses, say 'you are not "
-    "allowed' and do not retry from another angle."
+    "allowance. Write each `task` description as a plain natural-language "
+    "question carrying the user's request and any ids provided — never write "
+    "imperative 'use tool X' commands, because the subagent sees no history "
+    "from you. Never answer a salary, a leave balance, or an allowance "
+    "yourself. Never invent an employee_id. If a department refuses, say "
+    "'You are not allowed to see this.' and do not retry from another angle."
 )
 
 HR_OPERATIONS_PROMPT = (
     "You are the HR Operations department. You have one tool: `task`. Route "
     "a leave-balance question to `leave-balance`, an eligibility check to "
     "`leave-eligibility`, and a leave submission to `leave-submit`. Pass the "
-    "user's question and the resolved ids; the leaf sees no history. Never "
-    "call a gateway tool directly — only your leaves do."
+    "user's question and resolved dates/types in plain natural language; the "
+    "leaf sees no history. Never call a gateway tool directly — only your "
+    "leaves do."
 )
 
 HR_PAYROLL_PROMPT = (
@@ -100,15 +127,15 @@ HR_PAYROLL_PROMPT = (
     "compensation request to `compensation` and a 'my team' or direct-report "
     "question to `direct-reports`. Resolve a name by asking `direct-reports` "
     "first; zero matches means the caller is not allowed to see that person. "
-    "Never call a gateway tool yourself."
+    "Pass plain natural-language descriptions. Never call a gateway tool yourself."
 )
 
 FINANCE_PAYROLL_PROMPT = (
     "You are the Finance Payroll department. You have one tool: `task`. "
     "Route any allowance question to `allowance`. The v1 allowance is "
-    "telephone only. Never call a gateway tool yourself."
+    "telephone only. Pass plain natural-language descriptions. Never call a "
+    "gateway tool yourself."
 )
-
 
 _DEPARTMENT_PROMPTS = {
     "hr-operations": HR_OPERATIONS_PROMPT,
@@ -139,29 +166,15 @@ _LEAF_TO_DEPARTMENT = {
     "allowance": "finance-payroll",
 }
 
-
-# ─── Harness profile registration ───────────────────────────────────────────
-
 _profile_registered = False
 
 
 def _register_harness_profile_once() -> None:
-    """Register the no-general-purpose profile exactly once per process.
-
-    `custom-app-plan/god-agent.md` requires
-    `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
-    on the active harness profile. We register it for the Amazon Bedrock
-    provider, which is what our `ChatBedrock` factory reports.
-    """
-
     global _profile_registered
     if _profile_registered:
         return
     register_harness_profile(_HARNESS_PROFILE_KEY, harness_profile())
     _profile_registered = True
-
-
-# ─── Graph construction ─────────────────────────────────────────────────────
 
 
 def _group_leaves(
@@ -181,17 +194,6 @@ def _department_subagent(
     name: str,
     leaf_graphs: list[tuple[LeafSpec, CompiledStateGraph]],
 ) -> CompiledSubAgent:
-    """Build one department `CompiledSubAgent` over its leaf graphs.
-
-    `mode='isolated'` keeps the department's children from inheriting the
-    god agent's message history. god-agent.md:
-
-        A department agent does not inherit the god agent's message history.
-        Each `task` call starts that agent fresh, so the description on the
-        call has to carry the question and the ids the parent already
-        resolved.
-    """
-
     inner_children: list[CompiledSubAgent] = [
         CompiledSubAgent(
             name=spec.name,
@@ -209,8 +211,6 @@ def _department_subagent(
         subagents=[refusal_subagent(), *inner_children],
         permissions=[write_deny_permission()],
         backend=scratch_backend(),
-        # Only the god agent is compiled with a checkpointer. The department
-        # graphs share the parent's thread (human-review.md § Two pauses).
         checkpointer=False,
     ).with_config(recursion_limit=DEPARTMENT_RECURSION_LIMIT)
 
@@ -227,13 +227,6 @@ def build_god_graph_from_leaves(
     *,
     checkpointer: Any,
 ) -> CompiledStateGraph:
-    """Assemble the god agent from pre-built leaf graphs.
-
-    Public and synchronous so `tests/test_god_agent_build.py` can hand it
-    stub leaf tools and skip the gateway. The production path is
-    ``build_god_graph`` below.
-    """
-
     _register_harness_profile_once()
 
     grouped = _group_leaves(leaf_graphs)
@@ -242,7 +235,7 @@ def build_god_graph_from_leaves(
         for name in ("hr-operations", "hr-payroll", "finance-payroll")
     ]
 
-    god_graph = create_deep_agent(
+    return create_deep_agent(
         model=build_model(),
         tools=[],
         system_prompt=GOD_SYSTEM_PROMPT,
@@ -251,12 +244,9 @@ def build_god_graph_from_leaves(
         backend=scratch_backend(),
         checkpointer=checkpointer,
     )
-    return god_graph
 
 
 async def build_god_graph(*, checkpointer: Any) -> CompiledStateGraph:
-    """Fetch per-leaf gateway tokens, build six leaves, assemble the graph."""
-
     leaf_graphs: list[tuple[LeafSpec, CompiledStateGraph]] = []
     for spec in LEAF_SPECS:
         leaf = await build_leaf(spec)
@@ -267,33 +257,200 @@ async def build_god_graph(*, checkpointer: Any) -> CompiledStateGraph:
 # ─── AG-UI SSE entry ────────────────────────────────────────────────────────
 
 app = BedrockAgentCoreApp()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:8899", "http://localhost:8899"],
+    allow_credentials=False,
+    allow_methods=["POST", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id",
+    ],
+)
+
+
+def _dump(event_model) -> dict[str, Any]:
+    return event_model.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 def _refusal_event(message: str, code: str) -> dict[str, Any]:
-    """Shape a fixed-text refusal as an AG-UI RunErrorEvent."""
+    return _dump(RunErrorEvent(message=message, code=code))
 
-    return RunErrorEvent(message=message, code=code).model_dump(
-        mode="json", by_alias=True, exclude_none=True
+
+def _text_events(text: str) -> list[dict[str, Any]]:
+    msg_id = f"msg-{uuid.uuid4().hex[:16]}"
+    return [
+        _dump(
+            TextMessageStartEvent(
+                type=EventType.TEXT_MESSAGE_START,
+                message_id=msg_id,
+                role="assistant",
+            )
+        ),
+        _dump(
+            TextMessageContentEvent(
+                type=EventType.TEXT_MESSAGE_CONTENT,
+                message_id=msg_id,
+                delta=text,
+            )
+        ),
+        _dump(
+            TextMessageEndEvent(
+                type=EventType.TEXT_MESSAGE_END,
+                message_id=msg_id,
+            )
+        ),
+    ]
+
+
+def _tool_result_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in events:
+        call_id = item["tool_call_id"]
+        name = item["tool_name"]
+        content = json.dumps(item["result"])
+        out.append(
+            _dump(
+                ToolCallStartEvent(
+                    type=EventType.TOOL_CALL_START,
+                    tool_call_id=call_id,
+                    tool_call_name=name,
+                )
+            )
+        )
+        out.append(
+            _dump(
+                ToolCallEndEvent(
+                    type=EventType.TOOL_CALL_END,
+                    tool_call_id=call_id,
+                )
+            )
+        )
+        out.append(
+            _dump(
+                ToolCallResultEvent(
+                    type=EventType.TOOL_CALL_RESULT,
+                    message_id=f"toolmsg-{call_id}",
+                    tool_call_id=call_id,
+                    content=content,
+                    role="tool",
+                )
+            )
+        )
+    return out
+
+
+def _interrupt_finish_event(
+    thread_id: str, run_id: str, payloads: list[dict[str, Any]]
+) -> dict[str, Any]:
+    agui_interrupts = [
+        AGUIInterrupt(
+            id=str(p.get("request_id") or f"int-{uuid.uuid4().hex[:12]}"),
+            reason=str(p.get("kind") or "interrupt"),
+            metadata={"langgraph": {"raw": p}},
+        )
+        for p in payloads
+    ]
+    return _dump(
+        RunFinishedEvent(
+            type=EventType.RUN_FINISHED,
+            thread_id=thread_id,
+            run_id=run_id,
+            outcome=RunFinishedInterruptOutcome(
+                type="interrupt",
+                interrupts=agui_interrupts,
+            ),
+        )
     )
+
+
+def _normalise_payload_to_agui(
+    payload: dict[str, Any],
+) -> tuple[RunAgentInput, dict[str, Any] | None, bool]:
+    """Accept both AG-UI `RunAgentInput` and CLI `{"prompt", "runtimeSessionId", "resume"}`.
+
+    Returns `(run_agent_input, extracted_resume_dict, check_pending_reviews)`.
+    """
+    data = dict(payload)
+    if "messages" not in data and "prompt" in data:
+        thread_id = str(
+            data.get("threadId")
+            or data.get("thread_id")
+            or data.get("runtimeSessionId")
+            or f"session-{uuid.uuid4().hex}"
+        )
+        run_id = str(
+            data.get("runId") or data.get("run_id") or f"run-{uuid.uuid4().hex}"
+        )
+        prompt_text = str(data.get("prompt") or "").strip()
+        msgs = (
+            [
+                {
+                    "id": f"msg-{uuid.uuid4().hex[:12]}",
+                    "role": "user",
+                    "content": prompt_text,
+                }
+            ]
+            if prompt_text
+            else []
+        )
+        fwd: dict[str, Any] = dict(data.get("forwardedProps") or {})
+        if data.get("resume") is not None and "resume" not in fwd:
+            raw_res = data.pop("resume")
+            fwd["resume"] = raw_res if isinstance(raw_res, list) else [raw_res]
+        data = {
+            "threadId": thread_id,
+            "runId": run_id,
+            "messages": msgs,
+            "state": {},
+            "tools": [],
+            "context": [],
+            "forwardedProps": fwd,
+        }
+
+    fwd = dict(data.get("forwardedProps") or data.get("forwarded_props") or {})
+    check_pending = bool(
+        fwd.get("checkPendingReviews") or fwd.get("check_pending_reviews")
+    )
+
+    # Extract any resume item sent via `input.resume`, `forwardedProps.resume`, or `forwardedProps.command.resume`.
+    resume_dict: dict[str, Any] | None = None
+    top_resume = data.get("resume")
+    if isinstance(top_resume, list) and top_resume:
+        first = top_resume[0]
+        if isinstance(first, dict):
+            inner = first.get("payload", first)
+            resume_dict = inner if isinstance(inner, dict) else {"decision": str(inner)}
+    elif isinstance(fwd.get("resume"), list) and fwd["resume"]:
+        first = fwd["resume"][0]
+        resume_dict = first if isinstance(first, dict) else {"decision": str(first)}
+    elif (
+        isinstance(fwd.get("command"), dict)
+        and fwd["command"].get("resume") is not None
+    ):
+        inner = fwd["command"]["resume"]
+        resume_dict = inner if isinstance(inner, dict) else {"decision": str(inner)}
+
+    # Ensure LangGraphAGUIAgent sees `forwardedProps.command.resume` for employee_confirm resumes
+    # when the caller passed `forwardedProps.resume` without an explicit `interruptId`.
+    if (
+        resume_dict is not None
+        and resume_dict.get("kind") != "manager_review"
+        and not data.get("resume")
+    ):
+        fwd["command"] = {"resume": resume_dict}
+        data["forwardedProps"] = fwd
+
+    input_data = RunAgentInput.model_validate(data)
+    return input_data, resume_dict, check_pending
 
 
 @app.entrypoint
 async def invocations(payload: dict, context: RequestContext):
-    """Main entrypoint — AG-UI SSE events for every AgentCore request.
-
-    Request body shape: `prompt`, `runtimeSessionId`, plus a `resume` list for
-    an open pause on that session (same shape the other AG-UI patterns use).
-
-    Order of checks is deliberate:
-      1. Authenticate the caller. A bad token never reaches Bedrock, the
-         gateway, or the rate limiter.
-      2. Kill switch. A paused assistant answers without a model call.
-      3. Rate limit on the verified `sub`. 21st turn → refusal, no model.
-      4. Build and run the graph. A recursion trip returns the fixed text
-         and logs LIMIT_RECURSION; nothing else is masked.
-    """
-
-    # (1) Verified caller identity. Model prompts never carry a user id.
+    """Main entrypoint — AG-UI SSE events for every AgentCore request."""
+    # (1) Verified caller identity.
     try:
         user_id = extract_user_id_from_context(context)
     except ValueError as exc:
@@ -301,13 +458,49 @@ async def invocations(payload: dict, context: RequestContext):
         yield _refusal_event("Unauthorized", "Unauthorized")
         return
 
-    # (2) Kill switch. Re-read with the 30 s cache.
+    # (2) Kill switch (30 s cache).
     if not hr_tools_enabled():
         logger.info("[KILL-SWITCH] HR tools disabled, refusing without a model call")
         yield _refusal_event(SERVICE_DISABLED_TEXT, "SERVICE_DISABLED")
         return
 
-    # (3) Per-employee rate limit on the verified sub.
+    # (3) Normalize payload before rate-limit check so lightweight pending-review
+    #     polls on sign-in do not burn the user's 20-turn quota.
+    try:
+        input_data, resume_dict, check_pending = _normalise_payload_to_agui(payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Malformed payload: %s", exc)
+        yield _refusal_event("Bad request", "BadRequest")
+        return
+
+    thread_id = input_data.thread_id
+    run_id = input_data.run_id
+    set_turn_context(user_id, thread_id)
+
+    # Lightweight manager sign-in poll: emit any open manager_review cards for this reviewer.
+    if check_pending:
+        try:
+            caller_emp = await resolve_employee_id_for_sub(user_id)
+            reviews = await list_pending_manager_reviews(caller_emp)
+            yield _dump(
+                RunStartedEvent(
+                    type=EventType.RUN_STARTED, thread_id=thread_id, run_id=run_id
+                )
+            )
+            if reviews:
+                yield _interrupt_finish_event(thread_id, run_id, reviews)
+            else:
+                yield _dump(
+                    RunFinishedEvent(
+                        type=EventType.RUN_FINISHED, thread_id=thread_id, run_id=run_id
+                    )
+                )
+        except Exception as exc:
+            logger.exception("Failed checking pending manager reviews")
+            yield _refusal_event(str(exc) or "Check failed", "ReviewPollError")
+        return
+
+    # (4) Per-employee rate limit on the verified sub.
     gate = default_limiter().check_and_record(user_id)
     if not gate.allowed:
         logger.info(
@@ -318,19 +511,96 @@ async def invocations(payload: dict, context: RequestContext):
         yield _refusal_event(RATE_LIMITED_TEXT, "RATE_LIMITED")
         return
 
-    # (4) Build the graph and stream.
-    try:
-        input_data = RunAgentInput.model_validate(payload)
-    except Exception as exc:  # noqa: BLE001 — degrade a malformed AG-UI body
-        logger.warning("Malformed AG-UI payload: %s", exc)
-        yield _refusal_event("Bad request", "BadRequest")
+    # (5) Manager-review decision resume path.
+    if resume_dict is not None and resume_dict.get("kind") == "manager_review":
+        try:
+            yield _dump(
+                RunStartedEvent(
+                    type=EventType.RUN_STARTED, thread_id=thread_id, run_id=run_id
+                )
+            )
+            request_id = str(resume_dict.get("request_id") or "").strip()
+            stored = (
+                await get_pending_manager_review(request_id) if request_id else None
+            )
+            if not stored:
+                for ev in _text_events(
+                    "No pending leave review matched that request ID."
+                ):
+                    yield ev
+                yield _dump(
+                    RunFinishedEvent(
+                        type=EventType.RUN_FINISHED, thread_id=thread_id, run_id=run_id
+                    )
+                )
+                return
+
+            caller_emp = await resolve_employee_id_for_sub(user_id)
+            req_obj = PendingLeaveRequest(
+                request_id=stored["request_id"],
+                employee_id=stored["employee_id"],
+                reviewer_employee_id=stored["reviewer_employee_id"],
+                leave_type=stored["leave_type"],
+                start_date=stored["start_date"],
+                end_date=stored["end_date"],
+                days=int(stored["days"]),
+                reason=stored["reason"],
+            )
+            outcome = await run_manager_review(
+                req_obj,
+                _resume_override={
+                    "decision": resume_dict.get("decision"),
+                    "reviewer_employee_id": caller_emp,
+                },
+            )
+            for ev in _tool_result_events(drain_turn_tool_events()):
+                yield ev
+
+            if outcome.status in {"approved", "rejected"}:
+                await complete_pending_manager_review(request_id, outcome.status)
+                for ev in _text_events(
+                    f"Leave request {request_id} has been {outcome.status}."
+                ):
+                    yield ev
+                yield _dump(
+                    RunFinishedEvent(
+                        type=EventType.RUN_FINISHED, thread_id=thread_id, run_id=run_id
+                    )
+                )
+            elif outcome.status == "not_reviewer":
+                for ev in _text_events(
+                    "You are not authorised to review this leave request."
+                ):
+                    yield ev
+                yield _interrupt_finish_event(thread_id, run_id, [stored])
+            else:
+                for ev in _text_events(
+                    f"Could not record leave decision ({outcome.reason_code})."
+                ):
+                    yield ev
+                yield _interrupt_finish_event(thread_id, run_id, [stored])
+        except Exception as exc:
+            logger.exception("Manager review resume failed")
+            yield _refusal_event(str(exc) or "Review failed", "ReviewError")
         return
 
+    # (6) Build the god graph and stream, enforcing per-user thread ownership.
     try:
-        with open_checkpointer() as checkpointer:
+        owns_thread = await claim_or_verify_thread_owner(thread_id, user_id)
+        if not owns_thread:
+            logger.warning(
+                "Caller %s attempted to access thread %s owned by another user",
+                user_id,
+                thread_id,
+            )
+            yield _refusal_event(
+                "Session belongs to another user. Start a new session.",
+                "SessionForbidden",
+            )
+            return
+
+        async with async_open_checkpointer() as checkpointer:
             graph = await build_god_graph(checkpointer=checkpointer)
-            # LangGraph defaults to recursion_limit=10_007 (god-agent.md),
-            # which is not a limit for this agent. 40 is the god agent's own.
             graph = graph.with_config(recursion_limit=GOD_RECURSION_LIMIT)
 
             agui = LangGraphAGUIAgent(
@@ -338,22 +608,38 @@ async def invocations(payload: dict, context: RequestContext):
                 description="HR assistant router (god agent)",
                 graph=graph,
                 config={"configurable": {"actor_id": user_id}},
+                emit_interrupt_outcome=True,
+                emit_raw_events=False,
             )
             try:
                 async for event in agui.run(input_data):
-                    if event is not None:
-                        yield event.model_dump(
-                            mode="json", by_alias=True, exclude_none=True
-                        )
+                    if event is None:
+                        continue
+                    # Flush any leaf gateway tool results BEFORE terminal RUN_FINISHED
+                    # so A2UI cards render on the client!
+                    if event.type == EventType.RUN_FINISHED:
+                        for tool_ev in _tool_result_events(drain_turn_tool_events()):
+                            yield tool_ev
+                        pending_review = take_turn_pending_review()
+                        if pending_review is not None:
+                            await save_pending_manager_review(pending_review, thread_id)
+                            for txt_ev in _text_events(
+                                f"Leave request {pending_review['request_id']} submitted "
+                                f"(status: pending manager review by {pending_review['reviewer_employee_id']})."
+                            ):
+                                yield txt_ev
+                    yield _dump(event)
             except GraphRecursionError:
                 logger.warning(RECURSION_LOG_CODE)
                 yield _refusal_event(RECURSION_FALLBACK_TEXT, RECURSION_LOG_CODE)
     except Exception as exc:
         logger.exception("God agent run failed")
-        yield RunErrorEvent(
-            message=str(exc) or type(exc).__name__,
-            code=type(exc).__name__,
-        ).model_dump(mode="json", by_alias=True, exclude_none=True)
+        yield _dump(
+            RunErrorEvent(
+                message=str(exc) or type(exc).__name__,
+                code=type(exc).__name__,
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -706,7 +706,7 @@ class MigrationGate(BaseModel):
             raise ValueError(
                 "approved_at must include a UTC offset, for example +00:00"
             )
-        if self.approved_at > datetime.now(timezone.utc) + timedelta(minutes=5):
+        if self.approved_at > datetime.now(UTC) + timedelta(minutes=5):
             raise ValueError("approved_at cannot be in the future")
         assert self.expires_at is not None
         if self.expires_at.tzinfo is None:
@@ -736,9 +736,7 @@ class MigrationGate(BaseModel):
     @property
     def blockers(self) -> list[str]:
         blockers = self._missing_fields()
-        if self.expires_at is not None and self.expires_at <= datetime.now(
-            timezone.utc
-        ):
+        if self.expires_at is not None and self.expires_at <= datetime.now(UTC):
             blockers.append("approval expired")
         return blockers
 

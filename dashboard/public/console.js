@@ -59,7 +59,8 @@
   function protocolFor(component, data) {
     if (component !== "orchestrator") return "A2A · IAM";
     if (data?.migration_runtime) return "HTTP · migration";
-    return String(data?.agent_pattern || "").startsWith("agui-")
+    const pattern = String(data?.agent_pattern || "");
+    return pattern.startsWith("agui-") || pattern === "god-agent"
       ? "AG-UI · OAuth"
       : "HTTP · OAuth";
   }

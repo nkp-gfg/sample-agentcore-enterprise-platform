@@ -16,15 +16,20 @@ _BY_RUNTIME_TYPE = {"orchestrator": "HTTP", "a2a_agent": "A2A", "mcp_server": "M
 CLIENT_FACING = ("HTTP", "MCP", "AGUI")
 
 
+def is_agui_pattern(dockerfile_pattern: str = "") -> bool:
+    """True when `dockerfile_pattern` serves typed AG-UI SSE events."""
+    return dockerfile_pattern.startswith("agui-") or dockerfile_pattern == "god-agent"
+
+
 def resolve_protocol(runtime_type: str, dockerfile_pattern: str = "") -> str:
     """Protocol for a runtime, accounting for the AG-UI agent patterns.
 
-    The agui-* patterns serve AG-UI's typed SSE events on the same
-    /invocations endpoint as an HTTP agent. The runtime has to be told, or it
-    proxies those events as plain HTTP and AG-UI clients cannot consume them.
+    The agui-* patterns and `god-agent` serve AG-UI's typed SSE events on the
+    same /invocations endpoint as an HTTP agent. The runtime has to be told, or
+    it proxies those events as plain HTTP and AG-UI clients cannot consume them.
     """
     protocol = _BY_RUNTIME_TYPE.get(runtime_type, "HTTP")
-    if protocol == "HTTP" and dockerfile_pattern.startswith("agui-"):
+    if protocol == "HTTP" and is_agui_pattern(dockerfile_pattern):
         return "AGUI"
     return protocol
 

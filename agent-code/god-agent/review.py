@@ -6,7 +6,7 @@
     with a JSON payload … No write happens before this `interrupt()`. After
     `Command(resume=...)` returns `approve`, the review node calls
     `record_leave_decision` once with `request_id` and `approve`. … `reject`
-    sets `rejected` the same way. A deny from OPA leaves the row `pending`
+    sets `rejected` the same way. A policy deny leaves the row `pending`
     and the card open. … A second resume sees the row is no longer `pending`
     and does not update it again.
 
@@ -63,7 +63,7 @@ class PendingLeaveRequest:
 class ReviewOutcome:
     """Result of the review node after `Command(resume=...)` returns.
 
-    - `status`: `approved`, `rejected`, `pending` (OPA deny), or `not_reviewer`
+    - `status`: `approved`, `rejected`, `pending` (policy deny), or `not_reviewer`
     - `tool_message`: a ToolMessage wrapping the structured gateway response
       the node received, for the department agent to surface. No `reason`
       field from the pending row ever travels into it.
@@ -170,7 +170,7 @@ async def run_manager_review(
 
     tool, _token = await fetch_review_node_tool()
 
-    # One call. The Lambda is the arbiter: OPA deny leaves the row pending
+    # One call. The Lambda is the arbiter: a policy deny leaves the row pending
     # (`human-review.md`), a second call on an already-approved row returns
     # `NOT_REVIEWER`. The runtime holds no `hr` credentials to write around it.
     try:
@@ -194,8 +194,8 @@ async def run_manager_review(
 
     # The Lambda's response shape is the structured `{"authorized": ...,
     # "reason_code": ..., "data": {...}}` block from `docs/hr/tools.md`.
-    # Rejections and OPA denies arrive as `authorized: false`; approvals as
-    # `authorized: true` with `status` in `data`.
+    # Policy denies arrive as `authorized: false`; approvals and rejections
+    # arrive as `authorized: true` with `status` in `data`.
     status_text, reason_code = _interpret_decision_result(tool_result, decision)
 
     return ReviewOutcome(
@@ -222,7 +222,7 @@ def _interpret_decision_result(
         reason = (tool_result.get("reason_code") or "").strip() or "NOT_AUTHORIZED"
         if reason == NOT_REVIEWER_REASON:
             return "not_reviewer", reason
-        # A deny from OPA leaves the row `pending` and the card open.
+        # A policy deny leaves the row `pending` and the card open.
         return "pending", reason
 
     data = tool_result.get("data") or {}

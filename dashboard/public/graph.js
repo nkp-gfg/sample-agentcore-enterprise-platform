@@ -101,7 +101,7 @@
     'hr-tools': {
       title: 'HR gateway tools',
       icon: 'layers',
-      blurb: 'Three Lambda targets (hr-ops, hr-payroll, hr-finance) exposing six leaf tools plus the manager-review record_leave_decision. Bundles authz.rego and a pinned OPA arm64 binary; evaluates the policy before any amount is read. Three Cedar permits bind each tool to one leaf agent_id. Kill switch: /{project}/{env}/use-cases/hr-tools/enabled.'
+      blurb: 'Three Lambda targets (hr-ops, hr-payroll, hr-finance) exposing six leaf tools plus the manager-review record_leave_decision. Evaluates deterministic Python authorization rules (shared/authz.py) before any amount is read. Three Cedar permits bind each tool to one leaf agent_id. Kill switch: /{project}/{env}/use-cases/hr-tools/enabled.'
     },
     'hr-web': {
       title: 'hr-web (A2UI)',
@@ -420,7 +420,7 @@
       [
         ['State', stateLabel(stateOf(hrTools))],
         ['Targets', 'hr-ops, hr-payroll, hr-finance'],
-        ['Policy', 'authz.rego evaluated via vendored OPA'],
+        ['Policy', 'deterministic Python authz (shared/authz.py)'],
         ['Cedar permits', 'read, submit, decision (one agent_id each)'],
         ['Kill switch', output(hrTools, 'KillSwitchParameter')]
       ],
@@ -428,7 +428,7 @@
     ));
     nodes.push(makeNode(
       'hr-data', 'hr-data', 'HR data (Aurora)', hrData, 740, 1040,
-      [['stack', 'uc-hr-data'], ['engine', 'Aurora PG 15.5 SLv2']],
+      [['stack', 'uc-hr-data'], ['engine', 'Aurora PG SLv2']],
       [
         ['State', stateLabel(stateOf(hrData))],
         ['Cluster ARN', output(hrData, 'ClusterArn')],
@@ -513,7 +513,8 @@
 
   function protocolFor(status) {
     if (status && status.migration_runtime) return 'HTTP · migration';
-    return String(status && status.agent_pattern || '').indexOf('agui-') === 0
+    var pattern = String(status && status.agent_pattern || '');
+    return pattern.indexOf('agui-') === 0 || pattern === 'god-agent'
       ? 'AG-UI · OAuth' : 'HTTP · OAuth';
   }
 

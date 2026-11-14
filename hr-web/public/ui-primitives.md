@@ -95,7 +95,7 @@ Draws the response to `get_leave_balance`.
 | `probationEndDate` | `YYYY-MM-DD` string or `null` |
 | `status` | `"ok" | "err" | "pending"` |
 | `statusLabel` | string shown as the pill |
-| `reasonCode` | OPA reason code when `status === "err"` |
+| `reasonCode` | Policy reason code when `status === "err"` |
 
 No actions. A refusal surfaces as the pill text only.
 
@@ -110,7 +110,7 @@ Draws the response to `get_allowance`.
 | `currency` | string |
 | `status` | `"ok" | "empty" | "err"` |
 | `statusLabel` | string |
-| `reasonCode` | OPA reason code when `status === "err"` |
+| `reasonCode` | Policy reason code when `status === "err"` |
 
 No actions.
 
@@ -122,7 +122,7 @@ Draws the response to `list_direct_reports`.
 | `reports` | array of `{employee_id, full_name}` |
 | `status` | `"ok" | "err"` |
 | `statusLabel` | string |
-| `reasonCode` | OPA reason code when `status === "err"` |
+| `reasonCode` | Policy reason code when `status === "err"` |
 
 No actions.
 
@@ -189,9 +189,10 @@ Actions emitted:
 | `manager_reject_review`  | **Reject** button  | `{kind: "manager_review", request_id}` |
 
 Both actions become `forwardedProps.resume: [{decision, kind, request_id}]`
-on the next AG-UI request. The gateway Lambda re-evaluates OPA (`NOT_REVIEWER`,
-`SERVICE_DISABLED`, `IDEMPOTENCY_CONFLICT`) on the backend before the row
-is updated, so a forged resume from the dev console still fails.
+on the next AG-UI request. The gateway Lambda re-evaluates the authorization
+policy (`NOT_REVIEWER`, `SERVICE_DISABLED`, `IDEMPOTENCY_CONFLICT`) on the
+backend before the row is updated, so a forged resume from the dev console
+still fails.
 
 ### `Notice`
 A short status line surfaced after a decision or a policy refusal.

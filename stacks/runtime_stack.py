@@ -86,6 +86,11 @@ class RuntimeStack(cdk.Stack):
         memory_arn: str = "",
         # CMK that encrypts Memory. AgentCore uses it with the caller's identity.
         kms_key_arn: str = "",
+        # Layer-2 god-agent extensions: M2M client secret name (for Cognito
+        # client_credentials + aws_client_metadata exchanges) and optional SSM
+        # lookup of the public Cognito web-client-id for hr-web PKCE tokens.
+        m2m_client_secret_name: str = "",
+        include_ssm_web_client: bool = False,
         # ── Migration (image-source) mode ──
         # Set source_image (registry ref) or build_context (local dir) and the
         # stack builds the migration adapter (migration/adapter/) ON TOP of the
@@ -405,8 +410,54 @@ class RuntimeStack(cdk.Stack):
                 )
             )
 
+        if dockerfile_pattern == "god-agent":
+            # Layer-2 god-agent connects to `agent_state` in Aurora PostgreSQL
+            # via RDS IAM auth as `agent_checkpoint`, and exchanges the Cognito
+            # M2M client credentials + `aws_client_metadata` for leaf-scoped
+            # gateway tokens.
+            runtime_role.add_to_policy(
+                iam.PolicyStatement(
+                    sid="GodAgentCheckpointDbConnect",
+                    actions=["rds-db:connect"],
+                    resources=[
+                        self.format_arn(
+                            service="rds-db",
+                            resource="dbuser",
+                            resource_name="*/agent_checkpoint",
+                            arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
+                        )
+                    ],
+                )
+            )
+            secret_pattern = (
+                f"{m2m_client_secret_name}-*"
+                if m2m_client_secret_name
+                else f"*{prefix}*M2MClientSecret*"
+            )
+            runtime_role.add_to_policy(
+                iam.PolicyStatement(
+                    sid="GodAgentM2MClientSecret",
+                    actions=["secretsmanager:GetSecretValue"],
+                    resources=[
+                        self.format_arn(
+                            service="secretsmanager",
+                            resource="secret",
+                            resource_name=secret_pattern,
+                            arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
+                        )
+                    ],
+                )
+            )
+
         # ── Protocol Configuration ──
         protocol = resolve_protocol(runtime_type, dockerfile_pattern)
+
+        effective_allowed_clients = list(cognito_allowed_clients or [])
+        if include_ssm_web_client and effective_allowed_clients:
+            ssm_web_client_id = ssm.StringParameter.value_for_string_parameter(
+                self, f"/{project_name}/{environment}/auth/web-client-id"
+            )
+            effective_allowed_clients.append(ssm_web_client_id)
 
         # ── Environment Variables ──
         env_vars: dict[str, str] = {
@@ -442,6 +493,8 @@ class RuntimeStack(cdk.Stack):
             if migration_secret_names:
                 env_vars["MIGRATION_SECRETS"] = ",".join(migration_secret_names)
         env_vars.update(extra_env_vars or {})
+        if include_ssm_web_client and effective_allowed_clients:
+            env_vars["COGNITO_ALLOWED_CLIENTS"] = ",".join(effective_allowed_clients)
 
         # ── Network Configuration ──
         # Shape and fail-fast rules live in infra_utils so they are testable
@@ -478,7 +531,7 @@ class RuntimeStack(cdk.Stack):
         # runtime-header-allowlist.
         if needs_jwt_authorizer(protocol) and cognito_issuer_url:
             runtime_props["authorizer_configuration"] = custom_jwt_authorizer(
-                cognito_issuer_url, cognito_allowed_clients, allowed_audience
+                cognito_issuer_url, effective_allowed_clients, allowed_audience
             )
             runtime_props["request_header_configuration"] = {
                 "requestHeaderAllowlist": ["Authorization"],

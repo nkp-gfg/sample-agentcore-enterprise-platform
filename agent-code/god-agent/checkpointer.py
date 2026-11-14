@@ -1,30 +1,18 @@
-"""PostgresSaver on the `agent_state` database.
+"""PostgresSaver / AsyncPostgresSaver on the `agent_state` database.
 
-`custom-app-plan/god-agent.md` § Checkpointer:
-
-    Only the god agent is compiled with a checkpointer. The department
-    graphs are compiled without one, so a pause belongs to the parent's
-    thread and `Command(resume=...)` on that thread continues the leaf that
-    paused.
-
-    H1 creates an empty database named `agent_state` on the same cluster.
-    The agent does not create that database. It reads the name from SSM
-    (`use-cases/hr-data/checkpoint-database`) and calls
-    `PostgresSaver.setup()` to create the checkpoint tables. The import is
-    `langgraph.checkpoint.postgres`. This is not the `hr` database and it
-    is not `MemorySaver`. `MemorySaver` dies with the process. The runtime
-    container is replaced. A review that can sit for a day has to be in
-    Postgres.
-
-Operational notes:
-
-- Setup runs with the H1 **master secret** (owner of the empty database),
-  called once per container boot. `PostgresSaver.setup()` is idempotent.
-- Steady-state connections use **agent_checkpoint** (RDS IAM auth, 15 min
-  tokens). The runtime has no access to the `hr` database and no SELECT on
-  any HR table. `docs/hr/modules.md` § Database roles.
-- `thread_id` is a UUID. The runtime passes it per-request; this module is
-  a thin factory.
+`custom-app-plan/god-agent.md` § Checkpointer and `docs/hr/modules.md` § Database roles:
+  - H1 creates the `agent_state` database and the `agent_checkpoint` role
+    (granted `rds_iam` and `USAGE, CREATE ON SCHEMA public`, with zero access
+    to the `hr` database).
+  - The runtime connects ONLY as `agent_checkpoint` using short-lived (15 min)
+    RDS IAM authentication tokens — the runtime never uses H1's master secret.
+  - `AsyncPostgresSaver` backs the live async AG-UI streaming entrypoint so
+    `aget_tuple` / `aput` work natively; `PostgresSaver` is retained for
+    synchronous callers and build-invariant tests.
+  - Two companion metadata tables (`hr_thread_owners` and `hr_pending_reviews`)
+    live in `agent_state` (owned by `agent_checkpoint`) to isolate sessions per
+    verified Cognito `sub` and persist open manager-review cards across
+    container replacements.
 """
 
 from __future__ import annotations
@@ -32,61 +20,55 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 import boto3
+import psycopg
 from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from shared.region import runtime_region
 from ssm_config import hr_data_config
 
 logger = logging.getLogger(__name__)
 
-
 _SETUP_COMPLETED = False
-_SETUP_MARKER_KEY = "_god_agent_checkpoint_setup_done"
+_ASYNC_SETUP_COMPLETED = False
 
+_COMPANION_DDL = """
+CREATE TABLE IF NOT EXISTS hr_thread_owners (
+    thread_id   text PRIMARY KEY,
+    owner_sub   text NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
 
-# ─── Connection strings ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS hr_pending_reviews (
+    request_id           text PRIMARY KEY,
+    thread_id            text NOT NULL,
+    employee_id          text NOT NULL,
+    reviewer_employee_id text NOT NULL,
+    leave_type           text NOT NULL,
+    start_date           text NOT NULL,
+    end_date             text NOT NULL,
+    days                 integer NOT NULL,
+    reason               text NOT NULL,
+    status               text NOT NULL DEFAULT 'pending',
+    created_at           timestamptz NOT NULL DEFAULT now()
+);
 
-
-def _master_conn_string() -> str:
-    """Build a libpq connection string using the H1 master secret.
-
-    Used ONLY by `PostgresSaver.setup()` to create the checkpoint tables.
-    After setup completes, the agent switches to the `agent_checkpoint`
-    role via RDS IAM auth.
-    """
-
-    cfg = hr_data_config()
-    secret = _secret_value(cfg.master_secret_name)
-    username = secret.get("username") or "postgres"
-    password = secret.get("password") or ""
-    if not password:
-        raise RuntimeError(
-            "H1 master secret has no password — refusing to build a "
-            "connection string. Check the secret shape in hr-data/stack.py."
-        )
-
-    return _libpq(
-        host=cfg.endpoint,
-        dbname=cfg.checkpoint_database,
-        user=username,
-        password=password,
-    )
+CREATE INDEX IF NOT EXISTS hr_pending_reviews_reviewer_idx
+    ON hr_pending_reviews (reviewer_employee_id, status);
+"""
 
 
 def _agent_checkpoint_conn_string() -> str:
-    """RDS IAM authentication for the `agent_checkpoint` role.
-
-    AWS mints a 15-minute token per connect (`docs/hr/modules.md`). We mint
-    a fresh one every time the entry point opens the checkpointer, so the
-    token never lands in a cache that outlives the request.
-    """
-
+    """RDS IAM authentication for the `agent_checkpoint` role on `agent_state`."""
     cfg = hr_data_config()
+    host, port = _split_endpoint(cfg.endpoint)
     token = _rds_auth_token(cfg.endpoint, "agent_checkpoint")
     return _libpq(
-        host=cfg.endpoint,
+        host=host,
+        port=str(port),
         dbname=cfg.checkpoint_database,
         user="agent_checkpoint",
         password=token,
@@ -95,13 +77,6 @@ def _agent_checkpoint_conn_string() -> str:
 
 
 def _libpq(**kv: str) -> str:
-    """Build a libpq keyword/value connection string with safe quoting.
-
-    Values go through single-quote escaping — libpq's rules — so an endpoint
-    with a dot or a secret with a special character never changes the meaning
-    of a later keyword.
-    """
-
     parts = []
     for key, value in kv.items():
         if value is None:
@@ -111,36 +86,18 @@ def _libpq(**kv: str) -> str:
     return " ".join(parts)
 
 
-# ─── AWS helpers ────────────────────────────────────────────────────────────
-
-
 def _secret_value(secret_name: str) -> dict[str, str]:
+    """Kept for backwards-compatible unit test stubs; unused at runtime."""
     client = boto3.client("secretsmanager", region_name=runtime_region())
     resp = client.get_secret_value(SecretId=secret_name)
     raw = resp.get("SecretString") or "{}"
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Secret {secret_name!r} is not JSON — expected the Aurora "
-            'default shape (`{{"username": ..., "password": ...}}`).'
-        ) from exc
+    value = json.loads(raw)
     if not isinstance(value, dict):
-        # The secret shape is fixed by H1 (Aurora default `{"username",
-        # "password"}`); anything else is a configuration error, so surface
-        # it as a RuntimeError to the operator rather than an opaque KeyError.
-        raise RuntimeError(  # noqa: TRY004 — operator-facing config failure
-            f"Secret {secret_name!r} is not a JSON object"
-        )
+        raise RuntimeError(f"Secret {secret_name!r} is not a JSON object")  # noqa: TRY004
     return value
 
 
 def _rds_auth_token(endpoint: str, username: str) -> str:
-    """Mint a fresh RDS IAM auth token for `username` at `endpoint`.
-
-    Parses `host:port` from the endpoint; defaults to the Postgres port.
-    """
-
     host, port = _split_endpoint(endpoint)
     client = boto3.client("rds", region_name=runtime_region())
     return client.generate_db_auth_token(
@@ -160,39 +117,182 @@ def _split_endpoint(endpoint: str) -> tuple[str, int]:
     return endpoint, 5432
 
 
-# ─── Public entry points ────────────────────────────────────────────────────
-
-
 def ensure_checkpoint_tables() -> None:
-    """Create the checkpoint tables once per process.
-
-    Called from the entry point before the first request. `PostgresSaver.
-    setup()` is idempotent, so the one-shot guard is a latency optimisation
-    rather than a correctness requirement.
-    """
-
+    """Create checkpoint tables synchronously via `agent_checkpoint` RDS IAM auth."""
     global _SETUP_COMPLETED
     if _SETUP_COMPLETED:
         return
-    with PostgresSaver.from_conn_string(_master_conn_string()) as saver:
+    conn_str = _agent_checkpoint_conn_string()
+    with PostgresSaver.from_conn_string(conn_str) as saver:
         saver.setup()
     _SETUP_COMPLETED = True
 
 
 @contextlib.contextmanager
 def open_checkpointer() -> Iterator[PostgresSaver]:
-    """Open a short-lived `PostgresSaver` for one invocation.
-
-    The runtime opens a new connection pool per request so the `agent_
-    checkpoint` IAM token never outlives the turn. Setup runs on the first
-    call and short-circuits thereafter.
-    """
-
+    """Synchronous `PostgresSaver` context manager (used by sync callers/tests)."""
     ensure_checkpoint_tables()
     with PostgresSaver.from_conn_string(_agent_checkpoint_conn_string()) as saver:
         yield saver
 
 
+@contextlib.asynccontextmanager
+async def async_open_checkpointer() -> AsyncIterator[AsyncPostgresSaver]:
+    """Async `AsyncPostgresSaver` context manager required by `LangGraphAGUIAgent`."""
+    global _ASYNC_SETUP_COMPLETED
+    conn_str = _agent_checkpoint_conn_string()
+    async with AsyncPostgresSaver.from_conn_string(conn_str) as saver:
+        if not _ASYNC_SETUP_COMPLETED:
+            await saver.setup()
+            async with await psycopg.AsyncConnection.connect(
+                conn_str, autocommit=True
+            ) as aconn:
+                await aconn.execute(_COMPANION_DDL)
+            _ASYNC_SETUP_COMPLETED = True
+        yield saver
+
+
+async def claim_or_verify_thread_owner(thread_id: str, caller_sub: str) -> bool:
+    """Bind `thread_id` to `caller_sub` on first use; return False if owned by someone else."""
+    conn_str = _agent_checkpoint_conn_string()
+    async with await psycopg.AsyncConnection.connect(
+        conn_str, autocommit=True
+    ) as aconn:
+        await aconn.execute(_COMPANION_DDL)
+        async with aconn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO hr_thread_owners (thread_id, owner_sub)
+                VALUES (%s, %s)
+                ON CONFLICT (thread_id) DO NOTHING
+                """,
+                (thread_id, caller_sub),
+            )
+            await cur.execute(
+                "SELECT owner_sub FROM hr_thread_owners WHERE thread_id = %s",
+                (thread_id,),
+            )
+            row = await cur.fetchone()
+            return bool(row and row[0] == caller_sub)
+
+
+async def save_pending_manager_review(payload: dict[str, Any], thread_id: str) -> None:
+    """Persist an open manager-review card in `agent_state`."""
+    conn_str = _agent_checkpoint_conn_string()
+    async with await psycopg.AsyncConnection.connect(
+        conn_str, autocommit=True
+    ) as aconn:
+        await aconn.execute(_COMPANION_DDL)
+        async with aconn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO hr_pending_reviews
+                    (request_id, thread_id, employee_id, reviewer_employee_id,
+                     leave_type, start_date, end_date, days, reason, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                ON CONFLICT (request_id) DO NOTHING
+                """,
+                (
+                    str(payload["request_id"]),
+                    str(thread_id),
+                    str(payload["employee_id"]),
+                    str(payload["reviewer_employee_id"]),
+                    str(payload["leave_type"]),
+                    str(payload["start_date"]),
+                    str(payload["end_date"]),
+                    int(payload["days"]),
+                    str(payload.get("reason") or ""),
+                ),
+            )
+
+
+async def get_pending_manager_review(request_id: str) -> dict[str, Any] | None:
+    conn_str = _agent_checkpoint_conn_string()
+    async with await psycopg.AsyncConnection.connect(
+        conn_str, autocommit=True
+    ) as aconn:
+        await aconn.execute(_COMPANION_DDL)
+        async with aconn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT request_id, thread_id, employee_id, reviewer_employee_id,
+                       leave_type, start_date, end_date, days, reason, status
+                FROM hr_pending_reviews
+                WHERE request_id = %s
+                """,
+                (request_id,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            return {
+                "kind": "manager_review",
+                "request_id": row[0],
+                "thread_id": row[1],
+                "employee_id": row[2],
+                "reviewer_employee_id": row[3],
+                "leave_type": row[4],
+                "start_date": row[5],
+                "end_date": row[6],
+                "days": row[7],
+                "reason": row[8],
+                "status": row[9],
+            }
+
+
+async def list_pending_manager_reviews(
+    reviewer_employee_id: str,
+) -> list[dict[str, Any]]:
+    if not reviewer_employee_id:
+        return []
+    conn_str = _agent_checkpoint_conn_string()
+    async with await psycopg.AsyncConnection.connect(
+        conn_str, autocommit=True
+    ) as aconn:
+        await aconn.execute(_COMPANION_DDL)
+        async with aconn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT request_id, thread_id, employee_id, reviewer_employee_id,
+                       leave_type, start_date, end_date, days, reason
+                FROM hr_pending_reviews
+                WHERE reviewer_employee_id = %s AND status = 'pending'
+                ORDER BY created_at ASC
+                """,
+                (reviewer_employee_id,),
+            )
+            rows = await cur.fetchall()
+            return [
+                {
+                    "kind": "manager_review",
+                    "request_id": r[0],
+                    "thread_id": r[1],
+                    "employee_id": r[2],
+                    "reviewer_employee_id": r[3],
+                    "leave_type": r[4],
+                    "start_date": r[5],
+                    "end_date": r[6],
+                    "days": r[7],
+                    "reason": r[8],
+                }
+                for r in rows
+            ]
+
+
+async def complete_pending_manager_review(request_id: str, status: str) -> None:
+    conn_str = _agent_checkpoint_conn_string()
+    async with await psycopg.AsyncConnection.connect(
+        conn_str, autocommit=True
+    ) as aconn:
+        await aconn.execute(_COMPANION_DDL)
+        async with aconn.cursor() as cur:
+            await cur.execute(
+                "UPDATE hr_pending_reviews SET status = %s WHERE request_id = %s",
+                (status, request_id),
+            )
+
+
 def _reset_setup_flag_for_tests() -> None:
-    global _SETUP_COMPLETED
+    global _SETUP_COMPLETED, _ASYNC_SETUP_COMPLETED
     _SETUP_COMPLETED = False
+    _ASYNC_SETUP_COMPLETED = False

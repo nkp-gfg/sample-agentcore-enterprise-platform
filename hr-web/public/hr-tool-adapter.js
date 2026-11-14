@@ -261,7 +261,9 @@
   /* ------------------------------------------------- public API */
 
   function fromToolResult(toolName, result) {
-    const handler = TOOL_HANDLERS[toolName];
+    const rawName = String(toolName || "");
+    const bareName = rawName.includes("___") ? rawName.split("___").pop() : rawName;
+    const handler = TOOL_HANDLERS[bareName];
     if (!handler) return [];
     try {
       return handler(result) || [];
@@ -270,7 +272,7 @@
         version: PROTOCOL_VERSION,
         error: {
           code: "ADAPTER_FAILED",
-          message: `Adapter for ${toolName} failed: ${err.message}`,
+          message: `Adapter for ${bareName} failed: ${err.message}`,
         },
       }];
     }
