@@ -317,7 +317,7 @@ class HrToolsStack(cdk.Stack):
                 f"Logs-{target_name}",
                 log_group_name=f"/aws/lambda/{prefix}-tool-{target_name}",
                 retention=logs.RetentionDays.ONE_YEAR,  # docs/hr/modules.md: 365 days
-                removal_policy=cdk.RemovalPolicy.RETAIN,
+                removal_policy=cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE,
             )
             log_groups[target_name] = log_group
 

@@ -72,7 +72,9 @@ def on_event(event: dict, _context) -> dict:
     user_pool_id = props["UserPoolId"]
     lambda_arn = props["LambdaArn"]
     lambda_version = props.get("LambdaVersion") or "V3_0"
-    physical_id = event.get("PhysicalResourceId") or f"hr-identity-trigger-{user_pool_id}"
+    physical_id = (
+        event.get("PhysicalResourceId") or f"hr-identity-trigger-{user_pool_id}"
+    )
 
     region = os.environ.get("AWS_REGION") or None
     cognito = boto3.client("cognito-idp", region_name=region)
@@ -107,14 +109,26 @@ def on_event(event: dict, _context) -> dict:
         )
     elif request_type == "Delete":
         cfg = lambda_config.get("PreTokenGenerationConfig") or {}
+        changed = False
         if cfg.get("LambdaArn") == lambda_arn:
             lambda_config.pop("PreTokenGenerationConfig", None)
+            changed = True
         if lambda_config.get("PreTokenGeneration") == lambda_arn:
             lambda_config.pop("PreTokenGeneration", None)
-        update_kwargs["LambdaConfig"] = lambda_config
-        cognito.update_user_pool(**update_kwargs)
-        logger.info(
-            "Detached PreTokenGenerationConfig %s from %s", lambda_arn, user_pool_id
-        )
+            changed = True
+        if changed:
+            update_kwargs["LambdaConfig"] = lambda_config
+            cognito.update_user_pool(**update_kwargs)
+            logger.info(
+                "Detached PreTokenGenerationConfig %s from %s",
+                lambda_arn,
+                user_pool_id,
+            )
+        else:
+            logger.info(
+                "Trigger %s was not attached to %s on Delete; skipping UpdateUserPool",
+                lambda_arn,
+                user_pool_id,
+            )
 
     return {"PhysicalResourceId": physical_id}

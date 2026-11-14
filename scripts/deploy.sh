@@ -1060,12 +1060,12 @@ release_m2m_deployment_lock() {
     }
     M2M_DEPLOYMENT_LOCK_VALUE=""
     M2M_DEPLOYMENT_LOCK_PARAMETER=""
-    trap - EXIT
+    trap - EXIT INT TERM
 }
 
 release_m2m_deployment_lock_on_exit() {
     local exit_code=$?
-    trap - EXIT
+    trap - EXIT INT TERM
     if ! release_m2m_deployment_lock; then
         [ "$exit_code" -ne 0 ] || exit_code=1
     fi
@@ -1103,6 +1103,8 @@ acquire_m2m_deployment_lock() {
         exit 1
     fi
     trap release_m2m_deployment_lock_on_exit EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 }
 
 migrate_legacy_m2m_secret_export() {
@@ -1539,6 +1541,51 @@ rebind_orchestrator_observability() {
     ORCHESTRATOR_OBSERVABILITY_HANDOFF=0
 }
 
+recover_failed_first_create_stack() {
+    # When a brand-new stack fails its FIRST create, CloudFormation rolls back
+    # to ROLLBACK_COMPLETE — an empty shell that CloudFormation refuses to
+    # update on retry. Deleting that shell lets `deploy.sh deploy --stack ...`
+    # recreate cleanly after the operator fixes the cause (learning.md § 2.1).
+    # Never auto-delete `security` or `auth` (KMS key and identity boundaries).
+    local stack="$1" status=""
+    status=$(aws cloudformation describe-stacks \
+        --stack-name "$stack" \
+        --query 'Stacks[0].StackStatus' \
+        --output text --region "$AWS_REGION" 2>/dev/null || true)
+    case "$status" in
+        ROLLBACK_COMPLETE)
+            case "$stack" in
+                "${PREFIX}-security"|"${PREFIX}-auth")
+                    log_error "Stack $stack is in ROLLBACK_COMPLETE."
+                    log_error "Refusing automatic deletion of security/auth stacks; inspect events first."
+                    return 1
+                    ;;
+            esac
+            log_warn "Stack $stack is in ROLLBACK_COMPLETE from an earlier failed first create."
+            log_info "Deleting empty ROLLBACK_COMPLETE shell before retry..."
+            aws cloudformation delete-stack --stack-name "$stack" --region "$AWS_REGION" || {
+                log_error "Could not delete ROLLBACK_COMPLETE stack $stack"
+                return 1
+            }
+            aws cloudformation wait stack-delete-complete --stack-name "$stack" --region "$AWS_REGION" || {
+                log_error "Timed out or failed waiting for $stack deletion"
+                return 1
+            }
+            log_info "Cleaned up empty shell $stack; proceeding with fresh create."
+            ;;
+        ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED|DELETE_FAILED)
+            log_error "Stack $stack is stuck in $status."
+            aws cloudformation describe-stack-events \
+                --stack-name "$stack" \
+                --query "StackEvents[?contains(ResourceStatus,'FAILED')].[LogicalResourceId,ResourceStatus,ResourceStatusReason]" \
+                --output table --region "$AWS_REGION" >&2 || true
+            log_error "Resolve the failed resource above in CloudFormation before retrying."
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 deploy_stacks() {
     local stack
     # A targeted deploy still follows CDK dependencies unless --exclusively is
@@ -1554,6 +1601,7 @@ deploy_stacks() {
             ;;
     esac
     for stack in "$@"; do
+        recover_failed_first_create_stack "$stack" || exit 1
         if [ "$ORCHESTRATOR_OBSERVABILITY_HANDOFF" = "1" ] \
             && [ "$stack" = "${PREFIX}-runtime-orchestrator" ]; then
             log_step "Runtime handoff 2/3: create the replacement runtime"
@@ -1563,7 +1611,11 @@ deploy_stacks() {
             npx cdk deploy "$stack" --require-approval never \
             "${CONTEXT_ARGS[@]}" "${M2M_ROTATION_CONTEXT_ARGS[@]}" 2>&1 || {
             log_error "Failed to deploy $stack"
-            log_error "Check CloudFormation console for details."
+            aws cloudformation describe-stack-events \
+                --stack-name "$stack" \
+                --query "StackEvents[?contains(ResourceStatus,'FAILED')].[LogicalResourceId,ResourceStatusReason]" \
+                --output table --region "$AWS_REGION" >&2 2>/dev/null || true
+            log_error "Fix the root cause above and re-run the same deploy command."
             exit 1
         }
     done

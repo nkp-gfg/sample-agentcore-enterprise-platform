@@ -79,7 +79,9 @@ class HrDataStack(cdk.Stack):
             engine_version = str(engine_version).strip() or None
 
         lifecycle = (
-            cdk.RemovalPolicy.RETAIN if retain_data else cdk.RemovalPolicy.DESTROY
+            cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE
+            if retain_data
+            else cdk.RemovalPolicy.DESTROY
         )
 
         # --------------------------------------------------------------
@@ -207,9 +209,27 @@ class HrDataStack(cdk.Stack):
             removal_policy=lifecycle,
         )
 
+        # CloudWatch log group for the exported postgresql log stream.
+        # Created BEFORE `Cluster` so RDS log export does not race to auto-create
+        # the group first and trigger ResourceAlreadyExistsException.
+        postgres_logs = logs.LogGroup(
+            self,
+            "PostgresLogs",
+            log_group_name=(f"/aws/rds/cluster/{prefix}-uc-hr-data/postgresql"),
+            retention=logs.RetentionDays.ONE_YEAR,
+            removal_policy=lifecycle,
+        )
+
         # --------------------------------------------------------------
         # Aurora PostgreSQL Serverless v2 cluster (L1 to avoid synth-time
         # VPC lookups; the platform interface forbids importing stacks/*).
+        #
+        # `deletion_protection` starts False on the CfnDBCluster resource and is
+        # enabled by `Provision` (`rds:ModifyDBCluster`) ONLY AFTER all SQL
+        # files succeed. That way, if `WriterInstance` or `Provision` fails on
+        # the very first deploy, CloudFormation can cleanly delete `Cluster`
+        # during rollback (`RetainExceptOnCreate`) instead of wedging the stack
+        # in ROLLBACK_FAILED ("Cannot delete protected Cluster").
         # --------------------------------------------------------------
 
         cluster_kwargs: dict = {
@@ -228,7 +248,7 @@ class HrDataStack(cdk.Stack):
             "storage_encrypted": True,
             "kms_key_id": resolved_key_arn,
             "enable_iam_database_authentication": True,
-            "deletion_protection": retain_data,
+            "deletion_protection": False,
             "backup_retention_period": 14,
             # Data API: the provisioner Lambda and operator mapping can
             # run SQL without a VPC connection. H3/H4 Lambdas and the
@@ -251,6 +271,7 @@ class HrDataStack(cdk.Stack):
 
         cluster = rds.CfnDBCluster(self, "Cluster", **cluster_kwargs)
         cluster.apply_removal_policy(lifecycle)
+        cluster.node.add_dependency(postgres_logs)
 
         instance = rds.CfnDBInstance(
             self,
@@ -262,20 +283,6 @@ class HrDataStack(cdk.Stack):
         )
         instance.apply_removal_policy(lifecycle)
         instance.add_dependency(cluster)
-
-        # --------------------------------------------------------------
-        # CloudWatch log group for the exported postgresql log stream.
-        # Matches the retention allow-list in stacks/observability_stack.py
-        # (30/90/180/365). HR keeps 365 days.
-        # --------------------------------------------------------------
-
-        logs.LogGroup(
-            self,
-            "PostgresLogs",
-            log_group_name=(f"/aws/rds/cluster/{prefix}-uc-hr-data/postgresql"),
-            retention=logs.RetentionDays.ONE_YEAR,
-            removal_policy=lifecycle,
-        )
 
         # --------------------------------------------------------------
         # Provisioner Lambda + CloudFormation custom resource. Runs on
@@ -301,6 +308,7 @@ class HrDataStack(cdk.Stack):
                     "rds-data:BeginTransaction",
                     "rds-data:CommitTransaction",
                     "rds-data:RollbackTransaction",
+                    "rds:ModifyDBCluster",
                 ],
                 resources=[cluster.attr_db_cluster_arn],
             )
@@ -352,10 +360,12 @@ class HrDataStack(cdk.Stack):
             service_token=provider.service_token,
             properties={
                 "ClusterArn": cluster.attr_db_cluster_arn,
+                "ClusterIdentifier": cluster.ref,
                 "SecretArn": master_secret.secret_arn,
                 "Database": database_name,
                 "CheckpointDb": CHECKPOINT_DATABASE_NAME,
                 "Seed": "true" if seed else "false",
+                "RetainData": "true" if retain_data else "false",
                 # Bust the custom resource cache on every change so an updated
                 # schema.sql or a flipped seed flag triggers a re-run.
                 "SchemaVersion": _asset_fingerprint(

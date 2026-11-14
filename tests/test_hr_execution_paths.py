@@ -78,11 +78,7 @@ def test_sql_files_have_valid_dynamic_database_grants_and_no_opa():
         REPO / "use-cases" / "hr-data" / "provisioner" / "schema.sql"
     ).read_text()
     agent_sql = (
-        REPO
-        / "use-cases"
-        / "hr-data"
-        / "provisioner"
-        / "agent_state_schema.sql"
+        REPO / "use-cases" / "hr-data" / "provisioner" / "agent_state_schema.sql"
     ).read_text()
 
     for content in (schema_sql, agent_sql):
@@ -154,15 +150,11 @@ def test_hr_identity_v3_client_credentials_and_federated_sub_resolution():
         out_fed = mod.handler(federated_event, None)
         fed_details = out_fed["response"]["claimsAndScopeOverrideDetails"]
         assert (
-            fed_details["accessTokenGeneration"]["claimsToAddOrOverride"][
-                "employee_id"
-            ]
+            fed_details["accessTokenGeneration"]["claimsToAddOrOverride"]["employee_id"]
             == "E1"
         )
         assert (
-            fed_details["idTokenGeneration"]["claimsToAddOrOverride"][
-                "employee_id"
-            ]
+            fed_details["idTokenGeneration"]["claimsToAddOrOverride"]["employee_id"]
             == "E1"
         )
 
@@ -249,15 +241,13 @@ def test_hr_tools_dispatcher_and_handlers_enforce_two_phase_read_and_idempotency
 
     import dispatcher
     import shared
-    import shared.ssm_flag as ssm_flag
+    from shared import ssm_flag
 
     monkeypatch.setattr(ssm_flag, "is_service_enabled", lambda: True)
     monkeypatch.setattr(
         "get_employee_compensation.handler.is_service_enabled", lambda: True
     )
-    monkeypatch.setattr(
-        "submit_leave_request.handler.is_service_enabled", lambda: True
-    )
+    monkeypatch.setattr("submit_leave_request.handler.is_service_enabled", lambda: True)
 
     audit_rows: list[dict] = []
 
@@ -269,14 +259,14 @@ def test_hr_tools_dispatcher_and_handlers_enforce_two_phase_read_and_idempotency
     monkeypatch.setattr(
         "get_employee_compensation.handler.log_decision", fake_log_decision
     )
-    monkeypatch.setattr(
-        "submit_leave_request.handler.log_decision", fake_log_decision
-    )
+    monkeypatch.setattr("submit_leave_request.handler.log_decision", fake_log_decision)
 
     # 1. Unmapped caller -> dispatcher catches NotMapped and logs decided_by_layer='tool'.
     ctx = SimpleNamespace(
         client_context=SimpleNamespace(
-            custom={"bedrockAgentCoreToolName": "hr-payroll___get_employee_compensation"}
+            custom={
+                "bedrockAgentCoreToolName": "hr-payroll___get_employee_compensation"
+            }
         )
     )
     unmapped_res = dispatcher.handler({"caller_employee_id": ""}, ctx)
@@ -312,9 +302,7 @@ def test_hr_tools_dispatcher_and_handlers_enforce_two_phase_read_and_idempotency
     def fake_comp_connect(_role):
         yield _CompConn()
 
-    monkeypatch.setattr(
-        "get_employee_compensation.handler.connect", fake_comp_connect
-    )
+    monkeypatch.setattr("get_employee_compensation.handler.connect", fake_comp_connect)
     deny_res = dispatcher.handler(
         {
             "caller_employee_id": "E1",
@@ -382,9 +370,7 @@ def test_hr_tools_dispatcher_and_handlers_enforce_two_phase_read_and_idempotency
     def fake_submit_connect(_role):
         yield _SubmitConn()
 
-    monkeypatch.setattr(
-        "submit_leave_request.handler.connect", fake_submit_connect
-    )
+    monkeypatch.setattr("submit_leave_request.handler.connect", fake_submit_connect)
     submit_ctx = SimpleNamespace(
         client_context=SimpleNamespace(
             custom={"bedrockAgentCoreToolName": "hr-ops___submit_leave_request"}
@@ -501,3 +487,66 @@ def test_god_agent_normalises_both_cli_and_agui_payloads(monkeypatch):
         "kind": "manager_review",
         "request_id": "lr-123",
     }
+
+
+def test_part2_stacks_use_retain_except_on_create_and_deferred_deletion_protection():
+    """Ensure a failed first create rolls back cleanly without wedging ROLLBACK_FAILED
+    or leaving orphaned fixed-name LogGroups/DBClusters that block retry."""
+    import aws_cdk as cdk
+    from aws_cdk.assertions import Template
+
+    ctx = {
+        "project": "rbtest",
+        "environment": "prod",
+        "prefix": "rbtest-prod",
+        "ssm_prefix": "/rbtest/prod",
+        "region": "eu-west-1",
+        "cdk_env": cdk.Environment(account="111111111111", region="eu-west-1"),
+    }
+
+    app = cdk.App()
+    hr_data_mod = _load_module(
+        "hr_data_stack_rb_test", REPO / "use-cases" / "hr-data" / "stack.py"
+    )
+    hr_id_mod = _load_module(
+        "hr_id_stack_rb_test", REPO / "use-cases" / "hr-identity" / "stack.py"
+    )
+    hr_tools_mod = _load_module(
+        "hr_tools_stack_rb_test", REPO / "use-cases" / "hr-tools" / "stack.py"
+    )
+
+    hr_data_mod.build(app, ctx, {"retain_data": True, "seed": True})
+    hr_id_mod.build(app, ctx, {})
+    hr_tools_mod.build(app, ctx, {})
+
+    data_tpl = Template.from_stack(
+        app.node.find_child("rbtest-prod-uc-hr-data")
+    ).to_json()
+    id_tpl = Template.from_stack(
+        app.node.find_child("rbtest-prod-uc-hr-identity")
+    ).to_json()
+    tools_tpl = Template.from_stack(
+        app.node.find_child("rbtest-prod-uc-hr-tools")
+    ).to_json()
+
+    # 1. CfnDBCluster starts with DeletionProtection=False so first-create rollback
+    #    can delete it if WriterInstance/Provision fails; Provision enables it after SQL!
+    clusters = [
+        r for r in data_tpl["Resources"].values() if r["Type"] == "AWS::RDS::DBCluster"
+    ]
+    assert len(clusters) == 1
+    assert clusters[0]["Properties"]["DeletionProtection"] is False
+    assert clusters[0]["DeletionPolicy"] == "RetainExceptOnCreate"
+
+    # 2. All retained fixed-name LogGroups across H1, H3, H4 use RetainExceptOnCreate,
+    #    never plain Retain (which strands fixed log-group names on initial rollback).
+    for tpl_name, tpl in (
+        ("hr-data", data_tpl),
+        ("hr-identity", id_tpl),
+        ("hr-tools", tools_tpl),
+    ):
+        for lid, res in tpl["Resources"].items():
+            if res["Type"] == "AWS::Logs::LogGroup" and "DeletionPolicy" in res:
+                assert res["DeletionPolicy"] == "RetainExceptOnCreate", (
+                    f"{tpl_name}:{lid} uses {res['DeletionPolicy']} instead of RetainExceptOnCreate"
+                )

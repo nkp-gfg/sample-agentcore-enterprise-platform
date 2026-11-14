@@ -385,6 +385,15 @@ aws ssm put-parameter --overwrite --type String \
 
 Set back to `true` to resume.
 
+## Rollback and retry
+
+Part 2 is designed so a failed deploy can be fixed and re-run without wedging in `ROLLBACK_FAILED` or colliding with orphaned resources:
+
+1. **`RetainExceptOnCreate` (`RETAIN_ON_UPDATE_OR_DELETE`)**: All retained HR resources (Aurora cluster/instance/subnet-group/secret and the 365-day CloudWatch log groups across `uc-hr-data`, `uc-hr-identity`, and `uc-hr-tools`) use CloudFormation `RetainExceptOnCreate`. If a stack fails during its **very first** create, CloudFormation deletes the partial resources cleanly during rollback instead of leaving fixed-name log groups or DB clusters behind that would block your retry with `ResourceAlreadyExistsException`. Once the stack reaches `CREATE_COMPLETE`, retention is armed for all future updates and `destroy` runs.
+2. **Deferred `DeletionProtection` & safe trigger rollback**: `uc-hr-data` enables RDS `DeletionProtection` inside the provisioner CustomResource **only after** `schema.sql`, `agent_state_schema.sql`, and `seed.sql` succeed, and `uc-hr-identity`'s trigger manager skips `UpdateUserPool` on `Delete` if `Create` never attached the trigger — preventing `ROLLBACK_FAILED`.
+3. **Automatic `ROLLBACK_COMPLETE` shell cleanup**: If a Part 2 stack fails on its first create and lands in `ROLLBACK_COMPLETE`, `scripts/deploy.sh` prints the failing `StackEvents`, releases the SSM deployment lock (even on `Ctrl+C`), and on your next `./scripts/deploy.sh deploy --stack "$PREFIX-uc-hr-..."` automatically deletes the empty `ROLLBACK_COMPLETE` shell before recreating it (`security` and `auth` are never auto-deleted).
+4. **Update failures**: If a stack already reached `CREATE_COMPLETE` and a later code/config update fails, CloudFormation rolls back in place to `UPDATE_ROLLBACK_COMPLETE`. Fix your code and re-run the exact same `./scripts/deploy.sh deploy --stack ...` command.
+
 ## When something fails
 
 | What you see | Why | What to do |

@@ -181,7 +181,7 @@ class HrIdentityStack(cdk.Stack):
             "FunctionLogs",
             log_group_name=f"/aws/lambda/{prefix}-uc-hr-identity-pretoken",
             retention=logs.RetentionDays.ONE_YEAR,
-            removal_policy=cdk.RemovalPolicy.RETAIN,
+            removal_policy=cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE,
         )
 
         # --------------------------------------------------------------

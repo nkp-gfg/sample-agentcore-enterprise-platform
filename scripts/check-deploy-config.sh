@@ -912,4 +912,49 @@ grep -q 'workshop-outputs-\*\.json' "$SCRIPT_DIR/../.gitignore" \
     || fail "account-specific workshop exports are not gitignored"
 echo "PASS: summaries/exports exclude unknown outputs and local exports are ignored"
 
+# (ab) ROLLBACK_COMPLETE auto-recovery: a failed first create of a use-case or
+# non-protected stack deletes the empty ROLLBACK_COMPLETE shell before retry;
+# security and auth stacks are never auto-deleted.
+eval "$(sed -n '/^recover_failed_first_create_stack()/,/^}/p' "$SCRIPT_DIR/deploy.sh")"
+PREFIX="rb-check"
+AWS_REGION="us-east-1"
+RB_ARGS="$TMP/rb-aws.args"
+log_warn() { :; }
+log_info() { :; }
+log_error() { printf '%s\n' "$*" >&2; }
+
+# shellcheck disable=SC2329
+aws() {
+    printf '%s\n' "$*" >> "$RB_ARGS"
+    case "$1 $2" in
+        "cloudformation describe-stacks") printf 'ROLLBACK_COMPLETE\n' ;;
+        "cloudformation delete-stack")    return 0 ;;
+        "cloudformation wait")            return 0 ;;
+        *)                                return 1 ;;
+    esac
+}
+: > "$RB_ARGS"
+recover_failed_first_create_stack "rb-check-uc-hr-tools" \
+    || fail "recover_failed_first_create_stack failed on uc-hr-tools"
+grep -q "delete-stack --stack-name rb-check-uc-hr-tools" "$RB_ARGS" \
+    || fail "did not delete ROLLBACK_COMPLETE uc-hr-tools: $(cat "$RB_ARGS")"
+grep -q "wait stack-delete-complete --stack-name rb-check-uc-hr-tools" "$RB_ARGS" \
+    || fail "did not wait for uc-hr-tools deletion: $(cat "$RB_ARGS")"
+
+: > "$RB_ARGS"
+if recover_failed_first_create_stack "rb-check-security" >/dev/null 2>&1; then
+    fail "auto-deleted protected security stack in ROLLBACK_COMPLETE"
+fi
+! grep -q "delete-stack" "$RB_ARGS" \
+    || fail "delete-stack called on protected security stack"
+
+: > "$RB_ARGS"
+if recover_failed_first_create_stack "rb-check-auth" >/dev/null 2>&1; then
+    fail "auto-deleted protected auth stack in ROLLBACK_COMPLETE"
+fi
+! grep -q "delete-stack" "$RB_ARGS" \
+    || fail "delete-stack called on protected auth stack"
+unset -f aws
+echo "PASS: ROLLBACK_COMPLETE auto-recovery cleans retryable stacks and protects auth/security"
+
 echo "OK: all deploy-config checks passed"
