@@ -15,7 +15,7 @@ Product decisions and the module graph. The pages an implementer codes from are 
 | [docs/hr/README.md](../docs/hr/README.md) | The reading order |
 | [docs/hr/modules.md](../docs/hr/modules.md) | Folders, `platform.yaml`, deploy, destroy |
 | [docs/hr/schema.md](../docs/hr/schema.md) | Tables and the demo seed |
-| [docs/hr/policy.md](../docs/hr/policy.md) | OPA input and reason codes |
+| [docs/hr/policy.md](../docs/hr/policy.md) | Policy input and reason codes |
 | [docs/hr/tools.md](../docs/hr/tools.md) | Tool names, arguments, responses |
 | [docs/hr/acceptance.md](../docs/hr/acceptance.md) | Tests each module must pass |
 

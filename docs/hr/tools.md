@@ -2,9 +2,9 @@
 
 Three gateway targets, one Lambda each. Cedar already uses `ENFORCE`, so the permits are deployed with the targets. The action is `AgentCore::Action::"<target>___<tool>"` and the resource is `AgentCore::Gateway::"<gateway-arn>"`. Each tool is bound to the leaf that may call it through the `agent_id` claim. Row rules stay in [Policy](policy.md). Do not add a `forbid` policy.
 
-A policy deny is a normal tool result with `authorized: false`. It is not a Lambda exception and not a JSON-RPC `isError`. `POLICY_UNAVAILABLE` and `DATA_UNAVAILABLE` are normal results too, so the model cannot fill in a number after a crash.
+A policy deny is a normal tool result with `authorized: false`. It is not a Lambda exception and not a JSON-RPC `isError`. `DATA_UNAVAILABLE` is a normal result too, so the model cannot fill in a number after a crash.
 
-| Target | Tool | Who Cedar allows to invoke it | Who OPA allows to succeed |
+| Target | Tool | Who Cedar allows to invoke it | Who the policy allows to succeed |
 |---|---|---|---|
 | `hr-payroll` | `get_employee_compensation` | any signed-in employee | self, or the target's direct manager |
 | `hr-payroll` | `list_direct_reports` | any signed-in employee | the query itself is the rule |
@@ -74,7 +74,7 @@ A gateway Lambda target does not receive the caller's bearer token. The REQUEST 
 
 The Lambda trusts these three fields only because the interceptor overwrote them. It does not parse the token again. The phase 4 detail is in [phases.md](../../custom-app-plan/phases.md).
 
-`caller_employee_id` is not in any input schema. If a caller sends it, the Lambda ignores it and uses the `employee_id` claim from [Modules](modules.md). No claim returns `NOT_MAPPED` and does not call OPA. The tool argument `employee_id`, where a tool has one, is only the OPA field `requested_employee_id`.
+`caller_employee_id` is not in any input schema. If a caller sends it, the Lambda ignores it and uses the `employee_id` claim from [Modules](modules.md). No claim returns `NOT_MAPPED` before policy evaluation. The tool argument `employee_id`, where a tool has one, is only the policy field `requested_employee_id`.
 
 The gateway role is granted `lambda:InvokeFunction` on these three functions and no others.
 
@@ -151,7 +151,7 @@ CloudWatch log lines for these functions are the `decision_log` row as one JSON 
 
 ## Guardrail
 
-The egress interceptor scans `tools/call` responses. The default guardrail anonymizes `NAME`, `EMAIL`, `PHONE`, and `ADDRESS`, and blocks `US_SOCIAL_SECURITY_NUMBER`. Tool responses therefore contain `employee_id` and `full_name`, and the demo seed sets those two to the same short id (`E1`, `R1`). They do not contain email, phone, address, or a government id. Salary numbers are not in that PII list, so an allowed amount reaches the model. Do not widen the guardrail to mask numbers as part of this work. OPA is the control for amounts.
+The egress interceptor scans `tools/call` responses. The default guardrail anonymizes `NAME`, `EMAIL`, `PHONE`, and `ADDRESS`, and blocks `US_SOCIAL_SECURITY_NUMBER`. Tool responses therefore contain `employee_id` and `full_name`, and the demo seed sets those two to the same short id (`E1`, `R1`). They do not contain email, phone, address, or a government id. Salary numbers are not in that PII list, so an allowed amount reaches the model. Do not widen the guardrail to mask numbers as part of this work. The in-process authorization policy (`shared/authz.py`) is the control for amounts.
 
 The guardrail's prompt-attack filter does not read tool results. Tool results are therefore structured fields, and no tool returns free text that a person wrote, except leave `reason`. `reason` is returned to no leaf. It goes only into the manager review payload.
 

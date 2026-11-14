@@ -20,8 +20,8 @@ What this use case ships:
   turns every HR tool off with `aws ssm put-parameter --overwrite` — no
   redeploy, no model call.
 - Per-Lambda CloudWatch log groups with 365-day retention, so the SIEM has
-  enough history to join a Cedar decision with the OPA decision the Lambda
-  logged on the same `session_id` and `trace_id`.
+  enough history to join a Cedar decision with the tool-policy decision the
+  Lambda logged on the same `session_id` and `trace_id`.
 
 What this use case needs from the platform ([`docs/hr/modules.md`](../../docs/hr/modules.md) § SSM interface):
 
@@ -66,6 +66,7 @@ in the full-footprint plan, in the deployment contract (`expected_stacks()`),
 and in the destroy path:
 
 ```bash
+./scripts/deploy.sh deploy --stack <project>-<env>-gateway
 ./scripts/deploy.sh deploy --stack <project>-<env>-uc-hr-tools
 ```
 
@@ -152,8 +153,8 @@ platform-wide.
 
 - [`docs/hr/tools.md`](../../docs/hr/tools.md) — tool names, arguments,
   response shapes, Cedar permits, interceptor rules.
-- [`docs/hr/policy.md`](../../docs/hr/policy.md) — the OPA input document
-  and the reason-code order the Lambdas follow.
+- [`docs/hr/policy.md`](../../docs/hr/policy.md) — the authorization policy
+  input document and the reason-code order the Lambdas follow.
 - [`docs/hr/acceptance.md`](../../docs/hr/acceptance.md) § H4 — the
   behavioural acceptance table.
 - [`custom-app-plan/production-principles.md`](../../custom-app-plan/production-principles.md)

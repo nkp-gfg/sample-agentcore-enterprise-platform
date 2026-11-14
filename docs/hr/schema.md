@@ -23,7 +23,7 @@ v1 stores one row per person. A transfer updates `manager_id` on that row. A lat
 | Column | Type | Rule |
 |---|---|---|
 | `employee_id` | text, primary key, references `employees` | One current row. |
-| `base_salary` | numeric(12,2), not null, zero or more | Never selected before OPA allows. |
+| `base_salary` | numeric(12,2), not null, zero or more | Never selected before the authorization policy allows. |
 | `currency` | text, not null | |
 
 ## leave_balances
@@ -68,10 +68,10 @@ Append-only. No amounts, no leave reason, no names.
 | `agent_id` | text, not null |
 | `session_id` | text, nullable |
 | `trace_id` | text, nullable |
-| `decided_by_layer` | text, not null, `opa` or `tool` |
+| `decided_by_layer` | text, not null, `policy` or `tool` |
 | `policy_version` | text, not null |
 
-`tool` means the Lambda decided before OPA, for example `SERVICE_DISABLED` or `NOT_MAPPED`. A Cedar deny never reaches the Lambda, so Cedar decisions are in Cedar's own decision log, not in this table. H4 confirms which log group that is before the SIEM filter is written. The SIEM joins the two on `session_id` and `trace_id`.
+`tool` means the Lambda decided before the authorization policy, for example `SERVICE_DISABLED` or `NOT_MAPPED`. A Cedar deny never reaches the Lambda, so Cedar decisions are in Cedar's own decision log, not in this table. H4 confirms which log group that is before the SIEM filter is written. The SIEM joins the two on `session_id` and `trace_id`.
 
 The `hr_audit` role may only INSERT into this table. No role in the HR modules may UPDATE or DELETE it.
 
