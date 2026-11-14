@@ -330,6 +330,14 @@ declare -A TEAM_MAP
 TEAM_MAP[platform]="${PREFIX}-networking ${PREFIX}-auth ${PREFIX}-identity ${PREFIX}-gateway ${PREFIX}-observability"
 TEAM_MAP[agent]="${PREFIX}-runtime-orchestrator ${PREFIX}-runtime-code-agent ${PREFIX}-runtime-research-agent ${PREFIX}-memory"
 TEAM_MAP[security]="${PREFIX}-security ${PREFIX}-observability"
+# HR assistant Part 2 use-case stacks (custom-app-plan/phases.md Layer 1).
+# Order: tools → identity → data for destroy, so a `destroy --team hr` tears
+# them down in reverse-dependency order; `deploy --team hr` is NOT the right
+# command, because the three stacks depend on each other through SSM dynamic
+# references that resolve at CloudFormation deploy time and `cdk deploy` on
+# multiple stacks runs them concurrently. Deploy phased per
+# GFG_Deployment_Part2.md; use --team hr only to tear the HR footprint down.
+TEAM_MAP[hr]="${PREFIX}-uc-hr-tools ${PREFIX}-uc-hr-identity ${PREFIX}-uc-hr-data"
 
 # ── Module/Team → required feature flags ──
 # A module/team definition owns BOTH its stack names and the feature flags

@@ -268,7 +268,11 @@ Stop the local process. Do not delete a stack. The agent and the infrastructure 
 
 ## Remove everything from part 2
 
-Leave Part 1 up. Do these in order, and stop when the remaining system is the one you want.
+Leave Part 1 up. There are two supported paths. Pick one.
+
+### Path A — explicit per-phase (safest, matches the per-phase remove steps above)
+
+Do these in order, and stop when the remaining system is the one you want.
 
 1. Stop the `hr-web` process.
 2. Run phase 5's remove step (redeploy the previous pattern).
@@ -277,6 +281,38 @@ Leave Part 1 up. Do these in order, and stop when the remaining system is the on
 5. `./scripts/deploy.sh destroy --stack "$PREFIX-uc-hr-data"`
 
 After step 5, delete the `use_cases` block from `platform.yaml`. Then run Part 1, Step 15. You need the original eight stacks, each `CREATE_COMPLETE` or `UPDATE_COMPLETE`.
+
+### Path B — one command, HR only
+
+`scripts/deploy.sh` ships a `hr` team map covering the three HR use-case stacks in reverse-dependency order (tools → identity → data), so a single command tears the HR footprint down and leaves Part 1 untouched:
+
+```bash
+./scripts/deploy.sh destroy --team hr
+```
+
+You still need to run phase 5's remove step first (flip `agents.pattern` back to the previous pattern and redeploy `runtime-orchestrator`). `--team hr` does not touch the orchestrator; attempting to destroy the HR tools while the god agent is still live would make the running agent call Lambdas that are being removed.
+
+**What `--team hr` does and does not do:**
+
+- Destroys the three `uc-hr-*` CloudFormation stacks concurrently (CDK's `--exclusively` is applied per stack, so no platform stack is touched).
+- Runs the H3 DETACH custom resource, which clears `LambdaConfig.PreTokenGenerationConfig` on module 3's Cognito user pool. The user pool itself stays.
+- Drops `pass_request_headers` on the gateway and `HR_IDENTITY_PROMOTION=1` on the interceptor env on the next gateway deploy (which `--team hr` does **not** trigger — deploy `gateway` manually if you need the flip to take effect immediately).
+- Does **not** run `sweep_leftovers`, so retained log groups stay (see "retain semantics" below). Full-footprint `destroy` is the only path that sweeps them.
+- Does **not** touch the Aurora cluster, master secret, or backups when `retain_data: true` (the default). Salary rows survive. Dropping them is a later, explicit step, not part of `destroy`.
+
+### Also: `./scripts/deploy.sh destroy` with no flags
+
+This is the full-footprint destroy. It is correct and HR-aware — HR is in the CDK app graph via `use_cases:`, so `cdk destroy --all --force` tears down the HR stacks alongside the platform ones, and the post-destroy `sweep_leftovers` catches orphan Lambda log groups through its `/aws/lambda/${PREFIX}-` prefix, which covers:
+
+- `/aws/lambda/${PREFIX}-uc-hr-identity-pretoken` — H3 pre-token Lambda.
+- `/aws/lambda/${PREFIX}-uc-hr-data-Provisioner*` — the H1 schema-and-seed custom-resource Lambda.
+- `/aws/lambda/${PREFIX}-uc-hr-tools-*` — the three H4 tool Lambdas.
+
+Avoid running this unless you really want Part 1 gone too. If you only want to remove HR, use Path A or Path B.
+
+### Retain semantics
+
+`retain_data: true` (the H1 default) applies `RemovalPolicy.RETAIN` to the Aurora cluster, the writer instance, the DB subnet group, the master secret, and the `postgresql` log group under `/aws/rds/cluster/$PREFIX-uc-hr-data/`. None of the three destroy paths above remove those. If you set `retain_data: false` on a disposable account before destroying, CloudFormation deletes them on the stack tear-down and the backups follow. Switching `retain_data` on an already-deployed cluster only changes future stack updates; destroy the stack with the new value in place for the deletion policy to take effect.
 
 Do not destroy `auth`, `security`, or `networking` to remove Part 2.
 
