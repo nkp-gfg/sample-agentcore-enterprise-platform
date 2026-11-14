@@ -18,6 +18,7 @@ sys.path.insert(0, str(REPO))
 from dashboard import server
 
 CONSOLE_JS = (REPO / "dashboard" / "public" / "console.js").read_text()
+APP_JS = (REPO / "dashboard" / "public" / "app.js").read_text()
 INDEX_HTML = (REPO / "dashboard" / "public" / "index.html").read_text()
 
 
@@ -356,21 +357,56 @@ def test_health_endpoint_is_local_and_hardened(console_handler):
     assert health["maxPromptChars"] == server.MAX_PROMPT_CHARS
     assert health["csrfToken"] == server.CSRF_TOKEN
     assert headers["X-Frame-Options"] == "DENY"
-    assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+    csp = headers["Content-Security-Policy"]
+    assert "frame-ancestors 'none'" in csp
+    assert "script-src 'self';" in csp
     assert headers["Cache-Control"] == "no-store"
 
-    status, _, _ = console_handler(
-        "GET",
-        "/api/health",
-        headers={"Host": "attacker.example"},
-    )
-    assert status == 403
+    for bad_host in (
+        "attacker.example",
+        "127.0.0.1",
+        "localhost",
+        "127.0.0.1:8889",
+        "127.0.0.1:80",
+    ):
+        status, _, _ = console_handler(
+            "GET",
+            "/api/health",
+            headers={"Host": bad_host},
+        )
+        assert status == 403, bad_host
 
+    assert server._is_same_origin("http://127.0.0.1:8888", "127.0.0.1:8888", 8888)
     assert not server._is_same_origin(
         "http://localhost:8888",
         "127.0.0.1:8888",
         8888,
     )
+    assert not server._is_same_origin(
+        "https://127.0.0.1:8888",
+        "127.0.0.1:8888",
+        8888,
+    )
+    assert not server._is_same_origin(
+        "http://127.0.0.1",
+        "127.0.0.1:80",
+        80,
+    )
+
+
+def test_static_asset_allowlist_and_mime_map(console_handler):
+    assert "/app.js" in server.STATIC_ASSETS
+    assert server.EbaConsoleHandler.extensions_map[".js"].startswith(
+        "application/javascript"
+    )
+    assert server.EbaConsoleHandler.extensions_map[".svg"] == "image/svg+xml"
+
+    status, _, body = console_handler("GET", "/../server.py")
+    assert status == 404
+    assert "not found" in json.loads(body)["error"].lower()
+
+    status, _, _ = console_handler("GET", "/secret.txt")
+    assert status == 404
 
 
 def test_post_requires_same_origin_json_and_never_returns_raw(console_handler):
@@ -485,6 +521,8 @@ def test_ui_preserves_the_demo_style_without_unsafe_response_rendering():
     assert "createElement" in CONSOLE_JS
     assert ".textContent =" in CONSOLE_JS
     assert "innerHTML" not in CONSOLE_JS
+    assert "innerHTML" not in APP_JS
+    assert "innerHTML" not in INDEX_HTML
     assert "navigator.clipboard" not in CONSOLE_JS
     assert "create agent" not in CONSOLE_JS.lower()
     assert "delete agent" not in CONSOLE_JS.lower()

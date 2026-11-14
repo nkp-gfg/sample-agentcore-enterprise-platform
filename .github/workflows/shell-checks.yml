@@ -2,9 +2,9 @@ name: Shell Code Quality
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, part2-without-opa-godbot-v3 ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, part2-without-opa-godbot-v3 ]
 
 permissions:
   contents: read
@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Repo-wide rather than changed-files-only: these scripts are the workshop's
       # front door, and a merge can break a file the PR never touched.
@@ -34,12 +34,12 @@ jobs:
       # it (deliberate: a participant may not have the venv yet), so without
       # these two the check reports "platform.yaml value not applied" here.
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
 
       - name: Install the config dependencies
-        run: pip install "pydantic>=2.13.4,<3" "pyyaml>=6.0.3"
+        run: pip install pydantic==2.14.3 pyyaml==6.0.3
 
       # No AWS, no network: both scripts stub the CLI and run deploy.sh's
       # functions in a sandbox.

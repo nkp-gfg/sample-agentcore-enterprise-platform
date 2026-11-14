@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import urlsplit
 
 import boto3
@@ -59,6 +60,20 @@ COMPONENTS = {
 }
 INTERACTIVE_COMPONENT = "orchestrator"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+STATIC_ASSETS = frozenset(
+    {
+        "/",
+        "/index.html",
+        "/app.js",
+        "/app.css",
+        "/console.js",
+        "/console.css",
+        "/graph.js",
+        "/graph.css",
+        "/favicon.svg",
+        "/status.json",
+    }
+)
 CSRF_TOKEN = secrets.token_urlsafe(32)
 
 
@@ -417,14 +432,15 @@ def parse_runtime_response(body: str) -> tuple[str, list[dict[str, str]]]:
 
 
 def _loopback_host(value: str, expected_port: int) -> str | None:
+    if not value:
+        return None
     try:
         parsed = urlsplit(f"//{value}")
-        port = parsed.port or expected_port
     except ValueError:
         return None
     valid = (
         parsed.hostname in LOOPBACK_HOSTS
-        and port == expected_port
+        and parsed.port == expected_port
         and not parsed.username
         and not parsed.password
         and not parsed.path
@@ -443,9 +459,10 @@ def _is_same_origin(
     host_authority: str,
     expected_port: int,
 ) -> bool:
+    if not value or not host_authority:
+        return False
     try:
         parsed = urlsplit(value)
-        port = parsed.port or (80 if parsed.scheme == "http" else 443)
     except ValueError:
         return False
     request_host = _loopback_host(host_authority, expected_port)
@@ -453,7 +470,8 @@ def _is_same_origin(
         parsed.scheme == "http"
         and request_host is not None
         and parsed.hostname == request_host
-        and port == expected_port
+        and parsed.port == expected_port
+        and parsed.netloc.lower() == host_authority.strip().lower()
         and not parsed.username
         and not parsed.password
         and parsed.path in {"", "/"}
@@ -466,6 +484,14 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
     """Static dashboard plus a same-origin invoke endpoint."""
 
     server_version = "AgentCoreEbaConsole/1"
+    extensions_map: ClassVar[dict[str, str]] = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".html": "text/html; charset=utf-8",
+        ".js": "application/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".svg": "image/svg+xml",
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(PUBLIC), **kwargs)
@@ -477,7 +503,7 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data:; style-src 'self' "
-            "'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+            "'unsafe-inline'; script-src 'self'; "
             "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
             "form-action 'none'",
         )
@@ -503,7 +529,8 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         try:
             self._require_loopback_host()
-            if self.path.split("?", 1)[0] == "/api/health":
+            path_only = self.path.split("?", 1)[0]
+            if path_only == "/api/health":
                 self._send_json(
                     HTTPStatus.OK,
                     {
@@ -514,6 +541,8 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
                     },
                 )
                 return
+            if path_only not in STATIC_ASSETS:
+                raise RequestRejected(HTTPStatus.NOT_FOUND, "Resource not found.")
             super().do_GET()
         except RequestRejected as exc:
             self._send_json(exc.status, {"error": exc.message})

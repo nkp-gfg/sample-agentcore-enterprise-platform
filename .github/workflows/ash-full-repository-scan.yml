@@ -3,7 +3,7 @@ name: ASH Full Repository Scan
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, part2-without-opa-godbot-v3 ]
   schedule:
     - cron: '0 2 1 * *'
   workflow_dispatch:
@@ -17,17 +17,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.10'
 
       - name: Install ASH
-        run: pip install git+https://github.com/awslabs/automated-security-helper.git@v3.2.2
+        run: pip install "git+https://github.com/awslabs/automated-security-helper.git@65ac41970da8207d4457aeada0ba27065aaf43a8" # v3.2.2
 
       - name: Run ASH full repository scan
         run: |
@@ -74,7 +74,7 @@ jobs:
 
       - name: Upload ASH results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ash-full-scan-${{ github.run_id }}
           path: |
@@ -85,7 +85,7 @@ jobs:
 
       - name: Create issue for critical findings (monthly scan)
         if: github.event_name == 'schedule' && steps.scan-summary.outputs.has_findings == 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |

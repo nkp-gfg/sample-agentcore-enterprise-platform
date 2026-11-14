@@ -19,7 +19,7 @@ stages: [lint, validate, test, synth, terraform]
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "part2-without-opa-godbot-v3"
 
 default:
   image: public.ecr.aws/docker/library/python:3.13-slim
@@ -39,7 +39,7 @@ ruff:
   <<: *pip-cache
   before_script:
     - apt-get update -qq && apt-get install -y -qq git > /dev/null
-    - pip install -q ruff
+    - pip install -q ruff==0.17.5
   script:
     # Diff against the MR target branch (or previous commit on main)
     - |
@@ -54,9 +54,8 @@ ruff:
         exit 0
       fi
       echo "Linting changed files:"; echo "$CHANGED"
-      # shellcheck disable=SC2086
-      ruff check $CHANGED
-      ruff format --check $CHANGED
+      printf '%s\n' "$CHANGED" | xargs -r ruff check
+      printf '%s\n' "$CHANGED" | xargs -r ruff format --check
   variables:
     GIT_DEPTH: "0"
 
@@ -67,7 +66,7 @@ shell:
     - apt-get update -qq && apt-get install -y -qq git shellcheck > /dev/null
     # deploy.sh fails soft when it cannot import infra_utils.platform_config, so
     # without these the precedence check reports "platform.yaml value not applied".
-    - pip install -q pydantic pyyaml
+    - pip install -q pydantic==2.14.3 pyyaml==6.0.3
   script:
     # Repo-wide, not changed-files: these scripts are the workshop's front door
     # and a merge can break a file the MR never touched. --severity=warning
@@ -81,7 +80,7 @@ control-library:
   stage: validate
   <<: *pip-cache
   before_script:
-    - pip install -q pyyaml checkov
+    - pip install -q pyyaml==6.0.3 checkov==3.2.459
   script:
     - python scripts/validate_control_library.py
   rules:
@@ -92,7 +91,7 @@ control-library:
         - scripts/validate_control_library.py
         - tests/**/*
         - .gitlab-ci.yml
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "part2-without-opa-godbot-v3"
 
 dockerfile-parse:
   stage: validate
@@ -122,14 +121,14 @@ dockerfile-parse:
         - agent-code/**/*
         - migration/**/*
         - .gitlab-ci.yml
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "part2-without-opa-godbot-v3"
 
 pytest:
   stage: test
   <<: *pip-cache
   before_script:
     # boto3 + colorama: imported by scripts/utils.py, which the scripts tests import
-    - pip install -q pyyaml pytest boto3 colorama
+    - pip install -q pyyaml==6.0.3 pytest==9.1.1 boto3==1.44.3 colorama==0.4.6
   script:
     - python -m pytest tests/ -q
 
@@ -140,14 +139,14 @@ cdk-synth:
   before_script:
     - apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv > /dev/null
     - python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt
+    - npm install -g aws-cdk@2.1135.1 > /dev/null
   script:
     # Synth with a placeholder account — validates all stacks assemble
     # without AWS credentials. Docker asset bundling is not exercised.
     - CDK_DEFAULT_ACCOUNT=111111111111 CDK_DEFAULT_REGION=us-east-1
-      npx --yes cdk synth --app ".venv/bin/python3 app.py" --quiet
+      npx --no-install cdk synth --app ".venv/bin/python3 app.py" --quiet
     # Preset ↔ synth parity: app.py and the deployment contract
     # (expected_stacks) must agree on every preset's footprint.
-    - npm install -g aws-cdk > /dev/null
     - PY=.venv/bin/python3 bash scripts/check-contract.sh
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -164,7 +163,7 @@ cdk-synth:
         - presets/**/*
         - scripts/check-contract.sh
         - .gitlab-ci.yml
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "part2-without-opa-godbot-v3"
 
 terraform:
   stage: terraform
@@ -180,4 +179,4 @@ terraform:
       changes:
         - control-library/**/*
         - .gitlab-ci.yml
-    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "part2-without-opa-godbot-v3"

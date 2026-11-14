@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Self-check for the dashboard's statusClass logic (extracted from index.html,
+// Self-check for the dashboard's statusClass logic (extracted from app.js,
 // so it tests the shipped code, not a copy). Fails loudly if the substring
 // ordering bug ever returns. Run: node dashboard/check-status-logic.mjs
 import { readFileSync, existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 
-const html = readFileSync(new URL("./public/index.html", import.meta.url), "utf8");
-const src = html.match(/function statusClass\(stack\) \{[\s\S]*?\n\}/)?.[0];
-assert.ok(src, "statusClass not found in index.html");
+const appJs = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
+const src = appJs.match(/function statusClass\(stack\) \{[\s\S]*?\n\}/)?.[0];
+assert.ok(src, "statusClass not found in app.js");
 const statusClass = new Function(`return ${src}`)();
 
 const cases = {

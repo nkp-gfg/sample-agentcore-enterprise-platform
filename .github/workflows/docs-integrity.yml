@@ -2,8 +2,9 @@ name: Documentation Integrity
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, part2-without-opa-godbot-v3 ]
   pull_request:
+    branches: [ main, part2-without-opa-godbot-v3 ]
 
 permissions:
   contents: read

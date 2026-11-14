@@ -188,21 +188,35 @@ eval "$(sed -n '/^upsert_oauth_secret()/,/^}/p; /^upsert_idp_secret()/,/^}/p; /^
 # eval'd function, and the aws stub is invoked from inside it — both invisible
 # to shellcheck's static view.
 # shellcheck disable=SC2034,SC2329
-aws() { printf '%s\n' "$*" >> "$TMP/aws.args"; return 0; }
+aws() {
+    printf '%s\n' "$*" >> "$TMP/aws.args"
+    if [[ " $* " == *" file:///dev/stdin "* ]]; then
+        printf '[%s]\n' "$(cat)" >> "$TMP/aws.stdin"
+    fi
+    return 0
+}
 # shellcheck disable=SC2034
 PREFIX="check-prefix"; AWS_REGION="us-east-1"
 
-: > "$TMP/aws.args"
+: > "$TMP/aws.args"; : > "$TMP/aws.stdin"
 IDP_CLIENT_SECRET=$'sekret-value\n'          # trailing newline, as pasted/piped
 upsert_idp_secret >/dev/null 2>&1 || true
-grep -q -- "--secret-string sekret-value " "$TMP/aws.args" \
-    || fail "newline not stripped before Secrets Manager: $(cat "$TMP/aws.args")"
+grep -q -- "--secret-string file:///dev/stdin " "$TMP/aws.args" \
+    || fail "secret not piped via file:///dev/stdin: $(cat "$TMP/aws.args")"
+! grep -q "sekret-value" "$TMP/aws.args" \
+    || fail "secret leaked into aws argv: $(cat "$TMP/aws.args")"
+grep -qx '\[sekret-value\]' "$TMP/aws.stdin" \
+    || fail "newline not stripped before Secrets Manager: $(cat "$TMP/aws.stdin")"
 
-: > "$TMP/aws.args"
+: > "$TMP/aws.args"; : > "$TMP/aws.stdin"
 IDP_CLIENT_SECRET="  padded  "
 upsert_idp_secret >/dev/null 2>&1 || true
-grep -q -- "--secret-string padded " "$TMP/aws.args" \
-    || fail "surrounding spaces not stripped: $(cat "$TMP/aws.args")"
+grep -q -- "--secret-string file:///dev/stdin " "$TMP/aws.args" \
+    || fail "secret not piped via file:///dev/stdin: $(cat "$TMP/aws.args")"
+! grep -q "padded" "$TMP/aws.args" \
+    || fail "secret leaked into aws argv: $(cat "$TMP/aws.args")"
+grep -qx '\[padded\]' "$TMP/aws.stdin" \
+    || fail "surrounding spaces not stripped: $(cat "$TMP/aws.stdin")"
 
 # All-whitespace must stop the run rather than store an empty secret.
 # shellcheck disable=SC2034
@@ -309,8 +323,14 @@ echo "PASS: a configured IdP secret name is reused, not duplicated"
 # prefixed name (or a configured one), plaintext unset afterwards. These used
 # to be rendered verbatim into the synthesized template via cdk context.
 # shellcheck disable=SC2329
-aws() { printf '%s\n' "$*" >> "$TMP/aws.args"; return 0; }
-: > "$TMP/aws.args"
+aws() {
+    printf '%s\n' "$*" >> "$TMP/aws.args"
+    if [[ " $* " == *" file:///dev/stdin "* ]]; then
+        printf '[%s]\n' "$(cat)" >> "$TMP/aws.stdin"
+    fi
+    return 0
+}
+: > "$TMP/aws.args"; : > "$TMP/aws.stdin"
 # shellcheck disable=SC2034  # read via indirection in the eval'd functions
 GOOGLE_CLIENT_SECRET=$'g-sekret\n'
 # shellcheck disable=SC2034
@@ -320,10 +340,14 @@ NOTION_CLIENT_SECRET_NAME="my-corp/notion"   # bring-your-own name
 # shellcheck disable=SC2034
 NOTION_CLIENT_SECRET="n-sekret"
 upsert_3lo_secrets >/dev/null 2>&1 || true
-grep -q -- "--secret-string g-sekret " "$TMP/aws.args" \
-    || fail "google secret newline not stripped: $(cat "$TMP/aws.args")"
-grep -q -- "--secret-string gh-sekret " "$TMP/aws.args" \
-    || fail "github secret padding not stripped: $(cat "$TMP/aws.args")"
+grep -q -- "--secret-string file:///dev/stdin " "$TMP/aws.args" \
+    || fail "3LO secret not piped via file:///dev/stdin: $(cat "$TMP/aws.args")"
+! grep -qE "g-sekret|gh-sekret|n-sekret" "$TMP/aws.args" \
+    || fail "3LO secret leaked into aws argv: $(cat "$TMP/aws.args")"
+grep -qx '\[g-sekret\]' "$TMP/aws.stdin" \
+    || fail "google secret newline not stripped: $(cat "$TMP/aws.stdin")"
+grep -qx '\[gh-sekret\]' "$TMP/aws.stdin" \
+    || fail "github secret padding not stripped: $(cat "$TMP/aws.stdin")"
 grep -q -- "--secret-id my-corp/notion" "$TMP/aws.args" \
     || fail "notion bring-your-own name ignored: $(cat "$TMP/aws.args")"
 [ "$GOOGLE_CLIENT_SECRET_NAME" = "check-prefix-google-oauth-secret" ] \

@@ -38,6 +38,7 @@ from monitor import (
 )
 
 INDEX_HTML = (REPO / "dashboard" / "public" / "index.html").read_text()
+APP_JS = (REPO / "dashboard" / "public" / "app.js").read_text()
 DEPLOY_SH = (REPO / "scripts" / "deploy.sh").read_text()
 
 
@@ -81,15 +82,14 @@ def test_states_are_mutually_exclusive():
 
 def test_ui_takes_the_denominator_from_the_contract():
     # The fake floor is gone...
-    assert "Math.max(allNames.length, 10)" not in INDEX_HTML
+    assert "Math.max(allNames.length, 10)" not in APP_JS
     # ...and the count comes from monitor.py's summary.
-    assert "summary.total_stacks" in INDEX_HTML
+    assert "summary.total_stacks" in APP_JS
 
 
 def test_ui_prefers_the_emitted_state():
     assert (
-        "if (typeof stack === 'object' && stack?.state) return stack.state;"
-        in INDEX_HTML
+        "if (typeof stack === 'object' && stack?.state) return stack.state;" in APP_JS
     )
 
 
@@ -120,12 +120,13 @@ def test_xray_shape_checks_the_status_payload():
 
 
 def test_architecture_tab_mounts_only_when_visible():
-    tab_section = INDEX_HTML.split("function switchTab", 1)[1][:1600]
+    tab_section = APP_JS.split("function switchTab", 1)[1][:1600]
     assert "classList.add('active')" in tab_section
     assert tab_section.index("classList.add('active')") < tab_section.index(
         "ArchGraph.mount"
     )
     assert 'src="graph.js"' in INDEX_HTML
+    assert 'src="app.js" defer' in INDEX_HTML
     assert 'href="graph.css"' in INDEX_HTML
     assert 'id="archFlow"' in INDEX_HTML
 
@@ -577,27 +578,45 @@ def test_ui_never_offers_secret_reveal_or_copy():
         "SECRET_RE",
     ):
         assert forbidden not in INDEX_HTML
+        assert forbidden not in APP_JS
+
+
+def test_dashboard_html_has_no_inline_scripts_and_zero_html_sinks():
+    assert '<script src="app.js" defer></script>' in INDEX_HTML
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", INDEX_HTML, re.IGNORECASE)
+    for asset_name, text in (
+        ("index.html", INDEX_HTML),
+        ("app.js", APP_JS),
+        ("graph.js", GRAPH_JS),
+    ):
+        for sink in (
+            ".innerHTML",
+            ".outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+        ):
+            assert sink not in text, f"{asset_name} contains dangerous sink {sink}"
 
 
 def test_ui_sanitizes_payload_before_any_rendering():
-    fetch = INDEX_HTML.split("async function fetchStatus()", 1)[1]
+    fetch = APP_JS.split("async function fetchStatus()", 1)[1]
     sanitize_at = fetch.index("sanitizeStatus(await res.json())")
     store_at = fetch.index("lastStatus = data")
     render_at = fetch.index("render(data)")
     assert sanitize_at < store_at < render_at
-    assert "SAFE_OUTPUT_KEYS.has(key)" in INDEX_HTML
-    assert "SAFE_PARAMETER_KEYS.has(key)" in INDEX_HTML
+    assert "SAFE_OUTPUT_KEYS.has(key)" in APP_JS
+    assert "SAFE_PARAMETER_KEYS.has(key)" in APP_JS
 
 
 def test_ui_hides_health_when_poll_fails_or_becomes_stale():
-    unavailable = INDEX_HTML.split("function showUnavailable", 1)[1].split(
+    unavailable = APP_JS.split("function showUnavailable", 1)[1].split(
         "/* ── OVERVIEW", 1
     )[0]
     assert "$('stateOnline').hidden = true" in unavailable
-    assert "el.hidden = true" in unavailable
-    stale = INDEX_HTML.split("function tickLive()", 1)[1].split(
-        "function startPolling", 1
-    )[0]
+    assert "elNode.hidden = true" in unavailable
+    stale = APP_JS.split("function tickLive()", 1)[1].split("function startPolling", 1)[
+        0
+    ]
     assert "showUnavailable(" in stale
     assert "!Number.isFinite(age) || age < -5" in stale
     assert "Invalid status timestamp" in stale
@@ -643,7 +662,7 @@ def test_dashboard_knows_about_the_hr_use_case_stacks():
 
 
 def test_browser_allowlist_covers_backend_reviewed_outputs():
-    browser_list = INDEX_HTML.split(
+    browser_list = APP_JS.split(
         "const SAFE_OUTPUT_KEYS = new Set([",
         1,
     )[1].split("]);", 1)[0]
@@ -655,7 +674,7 @@ def test_browser_allowlist_covers_backend_reviewed_outputs():
         for key in browser_keys
     )
 
-    browser_parameters = INDEX_HTML.split(
+    browser_parameters = APP_JS.split(
         "const SAFE_PARAMETER_KEYS = new Set([",
         1,
     )[1].split("]);", 1)[0]
