@@ -555,6 +555,13 @@ class FrontendConfig(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    @field_validator("cpu", mode="before")
+    @classmethod
+    def _coerce_cpu(cls, v: object) -> object:
+        if isinstance(v, str) and v.strip().isdigit():
+            return int(v.strip())
+        return v
+
     @field_validator("domain_name")
     @classmethod
     def _domain_shape(cls, v: str) -> str:

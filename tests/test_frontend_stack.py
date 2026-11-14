@@ -9,7 +9,11 @@ import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Template
 
-from infra_utils.platform_config import PlatformConfig
+from infra_utils.platform_config import (
+    PlatformConfig,
+    apply_environment_overrides,
+    to_env,
+)
 from stacks.auth_stack import AuthStack
 from stacks.frontend_stack import FrontendStack
 from stacks.networking_stack import NetworkingStack
@@ -86,6 +90,11 @@ def test_frontend_config_validation_and_contract() -> None:
                 "frontend": {"enabled": True, "min_capacity": 4, "max_capacity": 2},
             }
         )
+
+    # to_env() -> apply_environment_overrides() round-trips cleanly (FRONTEND_CPU str->int).
+    round_tripped = apply_environment_overrides(cfg, to_env(cfg))
+    assert round_tripped.frontend.cpu == 512
+    assert round_tripped.frontend.enabled is True
 
 
 def _synth_frontend(
