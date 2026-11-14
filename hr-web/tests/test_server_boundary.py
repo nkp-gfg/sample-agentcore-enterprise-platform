@@ -39,7 +39,15 @@ VALID_RUNTIME_ARN = (
 VALID_ISSUER = "https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_pool"
 VALID_GATEWAY = "https://gw.example.com/mcp"
 VALID_WEB_CLIENT_ID = "1a2b3c4d5e"
-SECRET_CANARY = "SECRET-DO-NOT-LEAK-" + ("x" * 20)
+SECRET_CANARY = "SECRET-DO-NOT-LEAK-" + ("x" * 20)  # pragma: allowlist secret
+
+
+def _stub_bearer_header() -> str:
+    import base64
+
+    hdr = base64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode()
+    body = base64.urlsafe_b64encode(b'{"sub":"u1"}').rstrip(b"=").decode()
+    return f"Bearer {hdr}.{body}.sig"
 
 
 def _public_config() -> server.PublicConfig:
@@ -105,7 +113,7 @@ def test_make_server_refuses_non_loopback_host():
     # address: binding anything other than loopback is a configuration bug
     # we flag at boot, not a runtime check we hope succeeds.
     with pytest.raises(server.ConfigError, match="loopback"):
-        server.make_server(_public_config(), host="0.0.0.0", port=0)
+        server.make_server(_public_config(), host="0.0.0.0", port=0)  # nosec B104 — tests non-loopback rejection
 
 
 def test_rejects_non_loopback_host_header(running_server):
@@ -366,7 +374,7 @@ def test_invocations_rejects_unauthenticated_and_cross_origin_requests(running_s
         extra_headers={
             "Content-Type": "application/json",
             "Origin": "https://evil.example",
-            "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+            "Authorization": _stub_bearer_header(),
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
         },
     )
@@ -380,7 +388,7 @@ def test_invocations_rejects_unauthenticated_and_cross_origin_requests(running_s
         body=b"{}",
         extra_headers={
             "Content-Type": "application/json",
-            "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+            "Authorization": _stub_bearer_header(),
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "short",
         },
     )
@@ -587,7 +595,7 @@ def test_invocations_requires_exact_same_origin_when_origin_present(running_serv
     port = running_server.server_port
     base_headers = {
         "Content-Type": "application/json",
-        "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+        "Authorization": _stub_bearer_header(),
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
     }
 
@@ -657,7 +665,7 @@ def test_invocations_streams_sse_incrementally_via_read1(running_server, monkeyp
                 "Host": f"127.0.0.1:{port}",
                 "Origin": f"http://127.0.0.1:{port}",
                 "Content-Type": "application/json",
-                "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+                "Authorization": _stub_bearer_header(),
                 "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
             },
         )
@@ -774,7 +782,7 @@ def test_invocations_validates_content_type_and_json_object(running_server):
     """POST /invocations requires Content-Type: application/json and a JSON object body."""
     port = running_server.server_port
     auth_headers = {
-        "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+        "Authorization": _stub_bearer_header(),
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
     }
 
@@ -846,7 +854,7 @@ def test_invocation_gate_rate_limit_and_concurrency(monkeypatch):
     monkeypatch.setattr(server, "urlopen", lambda *_a, **_kw: BlockingUpstream())
     req_headers = {
         "Content-Type": "application/json",
-        "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+        "Authorization": _stub_bearer_header(),
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
     }
 
@@ -966,7 +974,7 @@ def test_invocations_hides_raw_urlerror_reason(running_server, monkeypatch):
         body=b"{}",
         extra_headers={
             "Content-Type": "application/json",
-            "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+            "Authorization": _stub_bearer_header(),
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
         },
     )
