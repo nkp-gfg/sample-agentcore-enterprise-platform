@@ -1,0 +1,25 @@
+# Layer-2 god-agent runtime dependencies.
+#
+# Every top-level dependency is pinned. New versions reach this runtime through
+# a dependency bump committed to this file, not an unpinned float: a floating
+# `langchain` or `deepagents` would move the ten `ChatBedrock` factories or the
+# `SubAgentMiddleware` behaviour under us without a code review.
+deepagents==0.7.38
+langchain==1.5.0
+langgraph==1.2.21
+langgraph-checkpoint-postgres==3.2.0
+langchain-aws==1.7.1
+langchain-mcp-adapters==0.3.2
+psycopg[binary]==3.3.9
+# boto3 is pinned to the floor bedrock-agentcore 1.26 requires (>=1.43.127);
+# langchain-aws 1.7 also accepts it (>=1.43.64). A pin below 1.43.127 fails
+# `pip install` in the CodeBuild image build.
+boto3==1.43.127
+copilotkit==0.1.94
+ag-ui-protocol==1.0.0
+mcp==1.29.0
+fastapi==0.162.7
+uvicorn==0.54.0
+pydantic==2.13.4
+bedrock-agentcore==1.26.0
+PyJWT[crypto]==2.13.0

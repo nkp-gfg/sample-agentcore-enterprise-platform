@@ -6,7 +6,7 @@ The clock for any test that says "last month" is `2026-11-13`. The seed is in [S
 
 ## H2, before any deploy
 
-H2 does not use the deployed cluster. Salary, leave, and allowance decisions are pure Rego against the seed fixture. Idempotency uses a local database loaded with that seed. The amount column is what H4 must return on allow, and what it must omit on deny.
+H2 does not use the deployed cluster. Salary, leave, and allowance decisions are pure Python (`use-cases/hr-tools/lambdas/shared/authz.py`) against the seed fixture. Idempotency uses a database transaction. The amount column is what H4 must return on allow, and what it must omit on deny.
 
 | Case | Decision | Amount H4 may return |
 |---|---|---|
@@ -27,7 +27,6 @@ H2 does not use the deployed cluster. Salary, leave, and allowance decisions are
 | Same idempotency key and a different date | `IDEMPOTENCY_CONFLICT`, still one row | none |
 | E1 telephone allowance for `2026-10` | allow | 25 |
 | E1 reads M1's allowance | `NOT_AUTHORIZED` | none |
-| Rego file cannot be evaluated | `POLICY_UNAVAILABLE` | none |
 | Postgres cannot be read | `DATA_UNAVAILABLE` | none |
 
 ## H3

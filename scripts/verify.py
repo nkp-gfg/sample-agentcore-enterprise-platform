@@ -51,7 +51,9 @@ HEALTH_PROMPT = "Health check: reply with one word."
 CODE_INTERPRETER_MARKER = "CODE_INTERPRETER_OK"
 # Plain-language on purpose: an imperative "use <tool> to run <code>" is flagged
 # by the guardrail's PROMPT_ATTACK filter at production (HIGH) strength.
-CODE_INTERPRETER_PROMPT = "Using Python, print the text CODE_INTERPRETER_OK and share the output."
+CODE_INTERPRETER_PROMPT = (
+    "Using Python, print the text CODE_INTERPRETER_OK and share the output."
+)
 
 
 def load_config() -> PlatformConfig:
@@ -106,8 +108,9 @@ def checks_for(
             # tool or speaks AG-UI.
             invoke_args = ["invoke.py", "--require-success", HEALTH_PROMPT]
         else:
-            agui = ["--agui"] if agent_pattern.startswith("agui-") else []
-            if agent_pattern == "orchestrator":
+            is_agui = agent_pattern.startswith("agui-") or agent_pattern == "god-agent"
+            agui = ["--agui"] if is_agui else []
+            if agent_pattern in {"orchestrator", "god-agent"}:
                 invoke_args = ["invoke.py", *agui, HEALTH_PROMPT]
             else:
                 invoke_args = [

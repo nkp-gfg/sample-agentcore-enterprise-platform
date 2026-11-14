@@ -22,7 +22,7 @@ AGENT_CODE = Path(__file__).resolve().parents[1] / "agent-code"
 
 
 def test_agui_patterns_get_the_agui_protocol():
-    for pattern in ("agui-strands-agent", "agui-langgraph-agent"):
+    for pattern in ("agui-strands-agent", "agui-langgraph-agent", "god-agent"):
         assert resolve_protocol("orchestrator", pattern) == "AGUI"
 
 

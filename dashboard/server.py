@@ -108,7 +108,7 @@ def _parse_timestamp(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
@@ -273,7 +273,9 @@ def protocol_for(component: str) -> str:
     if config.migration is not None:
         return "http"
     pattern = os.environ.get("AGENT_PATTERN") or config.agents.pattern
-    return "ag-ui" if pattern.startswith("agui-") else "http"
+    return (
+        "ag-ui" if (pattern.startswith("agui-") or pattern == "god-agent") else "http"
+    )
 
 
 def invoke_component(

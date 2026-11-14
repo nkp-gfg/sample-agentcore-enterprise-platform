@@ -36,7 +36,7 @@ import boto3
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from infra_utils.platform_config import load_platform_config, resolve_region  # noqa: E402
+from infra_utils.platform_config import load_platform_config, resolve_region
 
 REGION = resolve_region()
 LOGIN_TIMEOUT_SECONDS = 300
@@ -52,7 +52,9 @@ def _project_and_env() -> tuple[str, str]:
         project = project or config.project
         env = env or config.environment
     if not project or not env:
-        sys.exit("Set PROJECT_NAME and ENVIRONMENT, or run from a repo with platform.yaml")
+        sys.exit(
+            "Set PROJECT_NAME and ENVIRONMENT, or run from a repo with platform.yaml"
+        )
     return project, env
 
 
@@ -81,7 +83,9 @@ def _login_settings(prefix: str) -> dict:
     )
     if not callback:
         sys.exit("The app client has no http://localhost callback URL to listen on")
-    providers = [p for p in client.get("SupportedIdentityProviders", []) if p != "COGNITO"]
+    providers = [
+        p for p in client.get("SupportedIdentityProviders", []) if p != "COGNITO"
+    ]
     return {
         "domain": domain,
         "client_id": client_id,
@@ -112,7 +116,7 @@ def _wait_for_code(callback: str, state: str) -> str:
     result: dict = {}
 
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802 — http.server API
+        def do_GET(self):
             url = urllib.parse.urlsplit(self.path)
             params = urllib.parse.parse_qs(url.query)
             if url.path != parsed.path:
@@ -179,8 +183,8 @@ def _claims(jwt: str) -> dict:
 
 
 def _reply_text(body: str) -> str:
-    """Join the streamed text chunks; fall back to errors or the raw body."""
-    text, errors = [], []
+    """Join streamed text chunks (both HTTP Strands and AG-UI SSE); surface interrupts/errors."""
+    root_text, subagent_text, errors, interrupts = [], [], [], []
     for line in body.splitlines():
         if not line.startswith("data:"):
             continue
@@ -189,28 +193,64 @@ def _reply_text(body: str) -> str:
         except json.JSONDecodeError:
             continue
         if isinstance(event, str):
-            text.append(event)
+            root_text.append(event)
         elif isinstance(event, dict):
             if isinstance(event.get("data"), str):
-                text.append(event["data"])
+                root_text.append(event["data"])
+            elif event.get("type") == "TEXT_MESSAGE_CONTENT" and isinstance(
+                event.get("delta"), str
+            ):
+                if event.get("subagentRunId") or event.get("subagent_run_id"):
+                    subagent_text.append(event["delta"])
+                else:
+                    root_text.append(event["delta"])
             if event.get("status") == "error":
                 errors.append(str(event.get("error")))
+            elif event.get("type") == "RUN_ERROR":
+                errors.append(str(event.get("message") or event.get("code") or "error"))
+            elif event.get("type") == "RUN_FINISHED":
+                outcome = event.get("outcome") or {}
+                if isinstance(outcome, dict) and outcome.get("type") == "interrupt":
+                    for item in outcome.get("interrupts") or []:
+                        raw = (
+                            ((item.get("metadata") or {}).get("langgraph") or {}).get(
+                                "raw"
+                            )
+                            if isinstance(item, dict)
+                            else None
+                        )
+                        interrupts.append(json.dumps(raw or item))
     if errors:
         return "ERROR: " + "; ".join(errors)
-    return "".join(text) or body
+    joined = "".join(root_text) or "".join(subagent_text)
+    if interrupts:
+        pause_note = "\n[PAUSED FOR REVIEW] " + "; ".join(interrupts)
+        return (joined + pause_note).strip()
+    return joined or body
 
 
-def _ask(runtime_arn: str, token: str, session_id: str, prompt: str) -> str:
+def _ask(
+    runtime_arn: str,
+    token: str,
+    session_id: str,
+    prompt: str,
+    *,
+    resume: dict | None = None,
+) -> str:
     url = (
         f"https://bedrock-agentcore.{REGION}.amazonaws.com/runtimes/"
         f"{urllib.parse.quote(runtime_arn, safe='')}/invocations?qualifier=DEFAULT"
     )
+    payload: dict = {"prompt": prompt, "runtimeSessionId": session_id}
+    if resume is not None:
+        payload["resume"] = [resume]
     request = urllib.request.Request(
         url,
-        data=json.dumps({"prompt": prompt, "runtimeSessionId": session_id}).encode(),
+        data=json.dumps(payload).encode(),
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "Accept": "text/event-stream, application/json",
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
         },
     )
@@ -220,9 +260,25 @@ def _ask(runtime_arn: str, token: str, session_id: str, prompt: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--url-only", action="store_true", help="Print the sign-in link and exit")
+    parser.add_argument(
+        "--url-only", action="store_true", help="Print the sign-in link and exit"
+    )
     parser.add_argument("--prompt", help="Send one prompt after sign-in, then exit")
-    parser.add_argument("--no-browser", action="store_true", help="Do not open a browser")
+    parser.add_argument(
+        "--session", help="Reuse an existing runtimeSessionId (>=33 chars)"
+    )
+    parser.add_argument(
+        "--resume",
+        choices=("approve", "reject"),
+        help="Resume an open confirmation/review pause on --session",
+    )
+    parser.add_argument(
+        "--request-id",
+        help="Pending leave request_id when resuming a manager review from the CLI",
+    )
+    parser.add_argument(
+        "--no-browser", action="store_true", help="Do not open a browser"
+    )
     args = parser.parse_args()
 
     project, env = _project_and_env()
@@ -244,17 +300,31 @@ def main() -> None:
 
     print(f"Region: {REGION}   Project: {project}/{env}")
     print(f"Sign-in link (opening in your browser):\n\n  {url}\n")
-    print(f"Waiting up to {LOGIN_TIMEOUT_SECONDS // 60} minutes for {settings['callback']} ...")
+    print(
+        f"Waiting up to {LOGIN_TIMEOUT_SECONDS // 60} minutes for {settings['callback']} ..."
+    )
     if not args.no_browser:
         webbrowser.open(url)
     code = _wait_for_code(settings["callback"], state)
     tokens = _exchange_code(settings, code, verifier)
     access_token = tokens["access_token"]
     claims = _claims(tokens.get("id_token") or access_token)
-    print(f"Signed in as: {claims.get('email') or claims.get('cognito:username')}\n")
+    print(f"Signed in as: {claims.get('email') or claims.get('cognito:username')}")
 
     runtime_arn = _ssm(prefix, "runtimes/orchestrator/arn")
-    session_id = f"session-{secrets.token_hex(16)}"
+    session_id = args.session or f"session-{secrets.token_hex(16)}"
+    print(f"Session ID:   {session_id}\n")
+
+    if args.resume:
+        resume_payload: dict = {"decision": args.resume}
+        if args.request_id:
+            resume_payload["kind"] = "manager_review"
+            resume_payload["request_id"] = args.request_id
+        else:
+            resume_payload["kind"] = "employee_confirm"
+        print(_ask(runtime_arn, access_token, session_id, "", resume=resume_payload))
+        return
+
     if args.prompt:
         print(_ask(runtime_arn, access_token, session_id, args.prompt))
         return

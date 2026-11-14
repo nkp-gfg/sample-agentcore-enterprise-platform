@@ -66,7 +66,7 @@ Who issues the tokens the platform trusts.
 
 | Key | Type | Default | Env override | Description |
 |---|---|---|---|---|
-| `agents.pattern` | one of: `orchestrator`, `strands-agent`, `langgraph-agent`, `claude-sdk-agent`, `claude-sdk-multi-agent`, `agui-strands-agent`, `agui-langgraph-agent` | `'orchestrator'` | `AGENT_PATTERN` | Which agent container the runtime stack builds (docs/ARCHITECTURE.md). Ignored for the image once `migration:` is set, but still exported so verify and invoke behave. |
+| `agents.pattern` | one of: `orchestrator`, `strands-agent`, `langgraph-agent`, `claude-sdk-agent`, `claude-sdk-multi-agent`, `agui-strands-agent`, `agui-langgraph-agent`, `god-agent` | `'orchestrator'` | `AGENT_PATTERN` | Which agent container the runtime stack builds (docs/ARCHITECTURE.md). Ignored for the image once `migration:` is set, but still exported so verify and invoke behave. |
 | `agents.model_id` | str | `""` | `MODEL_ID` | Bedrock model or cross-region inference profile injected as `MODEL_ID` into every agent. Empty = each pattern's baked-in default. |
 | `agents.orchestrator_runtime_generation` | int (1–99) | `1` | `ORCHESTRATOR_RUNTIME_GENERATION` | Controlled replacement generation for the orchestrator AgentCore Runtime. Increase only when an existing runtime is unreadable or another immutable runtime property requires replacement; healthy A2A runtimes are unaffected. |
 | `agents.allowed_models` | list of str | `[]` | `ALLOWED_MODELS` | Model allow-list. When set, the runtime roles' Bedrock IAM is scoped to exactly these and `model_id` must be one of them (otherwise the containers' defaults would bypass the list). Empty = unrestricted, today's behaviour. |

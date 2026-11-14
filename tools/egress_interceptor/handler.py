@@ -19,8 +19,24 @@ Only tools/call is scanned: its arguments are what leaves toward a target and it
 result is what a target sends back. Protocol traffic (initialize, tools/list) passes
 through untouched; scanning it would rewrite JSON-RPC fields and cost one guardrail
 call per schema string.
+
+HR identity promotion (phase H4 of the HR plan, custom-app-plan/phases.md § H4):
+
+When `HR_IDENTITY_PROMOTION=1` is set on the interceptor function AND the
+gateway is configured with `PassRequestHeaders: true`, the REQUEST pass (after
+the guardrail scan) looks at the forwarded headers, decodes the gateway-
+validated JWT without reverifying it (the gateway already did), and writes
+`caller_employee_id`, `agent_id`, and `session_id` onto the tool arguments,
+OVERWRITING whatever the model sent. The identity promotion only fires on
+HR gateway targets (`hr-ops`, `hr-payroll`, `hr-finance`), so unrelated
+gateway targets are unaffected even with the header pass-through on.
+
+docs/hr/tools.md § Identity on the call is the source of truth.
 """
 
+import base64
+import binascii
+import json
 import logging
 import os
 
@@ -32,6 +48,11 @@ logger.setLevel(logging.INFO)
 _GUARDRAIL_ID = os.environ.get("GUARDRAIL_ID", "")
 _GUARDRAIL_VERSION = os.environ.get("GUARDRAIL_VERSION", "DRAFT")
 _OUTPUT_VERSION = "1.0"
+
+# docs/hr/tools.md § Routing names three HR gateway targets. Identity
+# promotion only runs for these; every other gateway target sees the
+# unmodified request body.
+_HR_TARGET_PREFIXES = ("hr-ops___", "hr-payroll___", "hr-finance___")
 
 _bedrock = boto3.client("bedrock-runtime")
 
@@ -102,7 +123,9 @@ def _blocked_response(point: str, reason: str, request_body: dict):
                 "jsonrpc": "2.0",
                 "id": request_body.get("id"),
                 "result": {
-                    "content": [{"type": "text", "text": "Blocked by egress guardrail."}],
+                    "content": [
+                        {"type": "text", "text": "Blocked by egress guardrail."}
+                    ],
                     "isError": True,
                 },
             },
@@ -110,19 +133,111 @@ def _blocked_response(point: str, reason: str, request_body: dict):
     )
 
 
-def _on_request(request_body: dict):
+def _identity_promotion_enabled() -> bool:
+    """docs/hr/tools.md § Identity on the call: the HR flag is read from
+    an env var set by `stacks/gateway_stack.py` whenever hr-tools is in
+    the use_cases block. Default off."""
+    return os.environ.get("HR_IDENTITY_PROMOTION", "") == "1"
+
+
+def _is_hr_tool(name) -> bool:
+    return isinstance(name, str) and name.startswith(_HR_TARGET_PREFIXES)
+
+
+def _header(headers, name: str):
+    """Headers are case-insensitive. Normalise to the lowercase name once."""
+    if not isinstance(headers, dict):
+        return None
+    lower = name.lower()
+    for key, value in headers.items():
+        if isinstance(key, str) and key.lower() == lower:
+            return value
+    return None
+
+
+def _decode_jwt_claims(token: str) -> dict:
+    """Base64-decode the JWT middle segment WITHOUT signature verification.
+
+    The gateway has already validated the signature, the issuer, and the
+    audience (that is what the CUSTOM_JWT authorizer does). Re-verifying
+    here would be a second call to the IdP's JWKS endpoint per request,
+    which is exactly the latency the gateway's cache exists to avoid.
+
+    A malformed token returns {}; the Lambda layer then refuses with
+    NOT_MAPPED because `caller_employee_id` is missing.
+    """
+    try:
+        _header_b64, payload_b64, _signature_b64 = token.split(".")
+    except ValueError:
+        return {}
+    pad = "=" * (-len(payload_b64) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(payload_b64 + pad)
+        claims = json.loads(raw)
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
+def _promote_identity(params: dict, headers) -> dict:
+    """Overwrite caller_employee_id, agent_id, and session_id on the
+    tool arguments with the values the gateway already validated.
+
+    docs/hr/tools.md § Identity on the call pins the contract: the
+    Lambda trusts these three fields only because the interceptor
+    overwrote them. The model MUST NOT be able to spoof them.
+    """
+    auth = _header(headers, "Authorization") or _header(headers, "authorization") or ""
+    scheme, _, token = auth.partition(" ")
+    claims: dict = {}
+    if scheme.lower() == "bearer" and token:
+        claims = _decode_jwt_claims(token)
+
+    arguments = params.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = {}
+
+    new_arguments = dict(arguments)
+    # An empty string is the correct "no value" signal downstream —
+    # the Lambda then raises NotMapped and refuses NOT_MAPPED. Keeping
+    # a None could sneak through a `.get()` default upstream.
+    new_arguments["caller_employee_id"] = str(claims.get("employee_id") or "")
+    new_arguments["agent_id"] = str(claims.get("agent_id") or "")
+    new_arguments["session_id"] = str(
+        _header(headers, "Mcp-Session-Id")
+        or _header(headers, "runtimeSessionId")
+        or claims.get("runtimeSessionId")
+        or ""
+    )
+
+    new_params = dict(params)
+    new_params["arguments"] = new_arguments
+    return new_params
+
+
+def _on_request(request_body: dict, event_headers=None):
     body = dict(request_body)
     if body.get("method") == "tools/call":
         params = dict(body.get("params") or {})
         if "arguments" in params:
             params["arguments"] = _mask_tree(params["arguments"], "INPUT")
+        # HR identity promotion runs AFTER the guardrail scan so the
+        # masking never touches the token-derived fields. Only HR
+        # targets are affected; everything else keeps the arguments
+        # the model sent verbatim (minus any guardrail anonymisation).
+        if _identity_promotion_enabled() and _is_hr_tool(params.get("name")):
+            params = _promote_identity(params, event_headers)
         body["params"] = params
     return _output(transformedGatewayRequest={"body": body})
 
 
 def _on_response(request_body: dict, response: dict):
     body = response.get("body")
-    if request_body.get("method") == "tools/call" and isinstance(body, dict) and "result" in body:
+    if (
+        request_body.get("method") == "tools/call"
+        and isinstance(body, dict)
+        and "result" in body
+    ):
         body = {**body, "result": _mask_tree(body["result"], "OUTPUT")}
     transformed = {"body": body}
     # Streaming follow-up events carry only a body; status and headers are already sent.
@@ -134,14 +249,20 @@ def _on_response(request_body: dict, response: dict):
 
 def handler(event, context):
     mcp = event.get("mcp") or {}
-    request_body = (mcp.get("gatewayRequest") or {}).get("body") or {}
+    gateway_request = mcp.get("gatewayRequest") or {}
+    request_body = gateway_request.get("body") or {}
+    # Only present when the gateway was configured with
+    # PassRequestHeaders: true. The HR identity-promotion path is the
+    # one caller that reads this; every other code path leaves them
+    # untouched.
+    request_headers = gateway_request.get("headers") or {}
     response = mcp.get("gatewayResponse")
     point = "REQUEST" if response is None else "RESPONSE"
     logger.info("interceptor %s method=%s", point, request_body.get("method"))
 
     try:
         if response is None:
-            return _on_request(request_body)
+            return _on_request(request_body, request_headers)
         return _on_response(request_body, response)
     except GuardrailBlocked as exc:
         return _blocked_response(point, str(exc), request_body)

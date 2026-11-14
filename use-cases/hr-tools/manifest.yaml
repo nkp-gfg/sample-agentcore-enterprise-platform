@@ -1,0 +1,13 @@
+# The manifest is the only file the platform reads about hr-tools.
+# Everything here is validated at load time (infra_utils/platform_config.py).
+name: hr-tools
+owner: hr-platform
+summary: >-
+  HR assistant tool layer (phase H4 of the HR plan). Three AgentCore Gateway
+  Lambda targets (hr-ops, hr-payroll, hr-finance), the seven per-tool handlers
+  behind them with deterministic Python authorization, three Cedar permits from
+  docs/hr/tools.md, and the SSM kill switch that turns every HR tool into
+  SERVICE_DISABLED without a redeploy.
+requires: [gateway, identity, networking]
+stacks: [uc-hr-tools]
+entry: stack.py

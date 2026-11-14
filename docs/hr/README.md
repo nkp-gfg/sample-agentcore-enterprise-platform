@@ -18,7 +18,7 @@ If a planning note and a page in this folder disagree about a column, a tool fie
 |---|---|
 | [Modules](modules.md) | Folders, `platform.yaml`, deploy, verify, destroy |
 | [Schema](schema.md) | Tables, constraints, and the demo seed |
-| [Policy](policy.md) | The OPA input document and the reason codes |
+| [Policy](policy.md) | The authorization policy input document and the reason codes |
 | [Tools](tools.md) | Gateway tool names, arguments, and responses |
 | [Acceptance](acceptance.md) | The cases each module must pass, and the red-team set |
 

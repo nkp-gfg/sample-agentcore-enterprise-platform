@@ -21,10 +21,10 @@ use-cases/hr-identity/         layer 1  pre-token Lambda
   stack.py
   verify.py
   walkthrough.md
-use-cases/hr-tools/            layer 1  Lambdas, Cedar, OPA
+use-cases/hr-tools/            layer 1  Lambdas, Cedar, authz policy
   manifest.yaml
   stack.py
-  policy/authz.rego
+  lambdas/shared/authz.py
   verify.py
   walkthrough.md
 agent-code/god-agent/          layer 2  runtime image
@@ -33,7 +33,7 @@ agent-code/god-agent/          layer 2  runtime image
   agent.py
 ```
 
-The policy tests live in `tests/test_hr_authz.py` and load `use-cases/hr-tools/policy/authz.rego`. They are layer 1. They are not a stack.
+The policy tests live in `tests/test_hr_authz.py` and load `use-cases/hr-tools/lambdas/shared/authz.py`. They are layer 1. They are not a stack.
 
 Layer 2 is a pattern next to the other images under `agent-code/`. It does not import `stacks` or `infra_utils`. The shape is [god-agent.md](../../custom-app-plan/god-agent.md).
 
@@ -119,7 +119,7 @@ The Lambda selects `employee_id` where `cognito_sub` equals that `sub`, `status`
 | `role` | The constant `employee` |
 | `agent_id` | `clientMetadata.calling_agent`, only if it is one of `leave-balance`, `leave-eligibility`, `leave-submit`, `compensation`, `direct-reports`, `allowance`, `review-node`. Any other value adds no `agent_id`, and Cedar then denies every HR tool |
 
-There is no `role` column. `hr_admin` and `payroll_admin` are not issued, and `role` does not change what OPA allows. An active row is missing, or the row is terminated: the Lambda adds no `employee_id`. It does not invent a guest employee. The tool then returns `NOT_MAPPED` and does not call OPA.
+There is no `role` column. `hr_admin` and `payroll_admin` are not issued, and `role` does not change what the authorization policy allows. An active row is missing, or the row is terminated: the Lambda adds no `employee_id`. It does not invent a guest employee. The tool then returns `NOT_MAPPED` before evaluating the policy.
 
 The runtime code sets `calling_agent`, one token per leaf. The model cannot set it. In v1 this is asserted by the runtime, not proved by a separate credential. One Cognito app client per leaf, matched in Cedar on `client_id`, is the stronger version when the departments become separate runtimes.
 

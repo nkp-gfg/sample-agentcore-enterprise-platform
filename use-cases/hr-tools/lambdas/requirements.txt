@@ -1,0 +1,10 @@
+# Runtime dependencies for every HR tool Lambda.
+#
+# psycopg[binary] is the PostgreSQL driver the shared library imports
+# inside `connect(role)`. boto3 ships with the Lambda Python 3.13
+# runtime, so it is not pinned here.
+#
+# docs/hr/modules.md § Database roles: the driver opens the connection
+# with an RDS IAM auth token (valid 15 min), not with the master
+# cluster secret.
+psycopg[binary]>=3.2.3,<4

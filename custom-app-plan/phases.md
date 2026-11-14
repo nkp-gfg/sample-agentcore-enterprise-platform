@@ -4,7 +4,7 @@ Three layers, in this order. Finish a layer's verify command before anyone start
 
 The platform modules stay as they are (`docs/modules/README.md`). HR is not a new number in `MODULE_MAP`. The product adds three use-case stacks inside layer 1. A use-case stack name starts with `uc-`. `expected_stacks()` picks it up when `platform.yaml` lists it.
 
-Columns, the seed, the OPA input, tool arguments, and the acceptance matrix are in [`docs/hr/`](../docs/hr/README.md). If this file and `docs/hr/` disagree about a field or an error code, `docs/hr/` wins. `review.md` holds the product rules.
+Columns, the seed, the policy input, tool arguments, and the acceptance matrix are in [`docs/hr/`](../docs/hr/README.md). If this file and `docs/hr/` disagree about a field or an error code, `docs/hr/` wins. `review.md` holds the product rules.
 
 ## Layer 1 — infrastructure
 
@@ -13,9 +13,9 @@ CDK only. No god agent, no CLI chat, no web page.
 | Step | Where it lives | Deploy | Prove it before the next step |
 |---|---|---|---|
 | H1 `hr-data` | `use-cases/hr-data/` | `./scripts/deploy.sh deploy --stack {prefix}-uc-hr-data` | `python use-cases/hr-data/verify.py` |
-| H2 policy | `use-cases/hr-tools/policy/authz.rego` and `tests/test_hr_authz.py` | no stack | `pytest tests/test_hr_authz.py` |
+| H2 policy | `use-cases/hr-tools/lambdas/shared/authz.py` and `tests/test_hr_authz.py` | no stack | `pytest tests/test_hr_authz.py` |
 | H3 `hr-identity` | `use-cases/hr-identity/` | `./scripts/deploy.sh deploy --stack {prefix}-uc-hr-identity` | `python use-cases/hr-identity/verify.py` |
-| H4 `hr-tools` | `use-cases/hr-tools/` | `./scripts/deploy.sh deploy --stack {prefix}-uc-hr-tools` | `python use-cases/hr-tools/verify.py` |
+| H4 `hr-tools` | `use-cases/hr-tools/` | `./scripts/deploy.sh deploy --stack {prefix}-gateway` then `--stack {prefix}-uc-hr-tools` | `python use-cases/hr-tools/verify.py` |
 
 H1 needs networking and security. H2 and H3 both need H1, and either can go first. H4 needs the gateway, identity, H1, H2, and H3. `requires` in the manifest can only name core stacks. The HR edges are SSM parameters, not CloudFormation exports, so deploy the publisher first. `deploy.sh deploy --stack` does not pass `--exclusively`. A use-case stack must not take a CDK dependency on a platform stack, or that deploy will update the platform stack too.
 
@@ -117,63 +117,17 @@ Aurora PostgreSQL Serverless v2 in the private subnets from module C. The master
 
 Tables: `employees`, `salaries`, `leave_balances`, `leave_requests`, `payroll_items`, `decision_log`. Columns and the seed (M1, E1, R1–R4, P1, X1, E2) are in [`docs/hr/schema.md`](../docs/hr/schema.md). v1 has one row per person. A transfer updates `manager_id` on that row.
 
-This module does not create Lambdas and does not know about OPA. It creates two databases on the one cluster: `hr` for the tables in [`docs/hr/schema.md`](../docs/hr/schema.md), and an empty `agent_state` for the layer 2 checkpointer. The agent creates the checkpoint tables later. It does not create the database.
+This module does not create HR tool Lambdas. It creates two databases on the one cluster: `hr` for the tables in [`docs/hr/schema.md`](../docs/hr/schema.md), and an empty `agent_state` for the layer 2 checkpointer. The agent creates the checkpoint tables later. It does not create the database.
 
-The laptop is not in the VPC, so H1's `verify.py` does not open a SQL connection. It checks the stack and the SSM parameters. The seed is proved later, when H4's tools call the database from inside the VPC.
+The laptop is not in the VPC, so H1's `verify.py` verifies the schema, roles, and seed over HTTPS via RDS Data API rather than port 5432.
 
-Exit: SSM has the endpoint, the secret name, the HR database name, and the checkpoint database name.
+Exit: SSM has the endpoint, the secret name, the HR database name, and the checkpoint database name, and RDS Data API confirms the tables and roles exist.
 
 ### H2 — policy
 
-No stack. The Rego file is `use-cases/hr-tools/policy/authz.rego`, evaluated in-process by the tests and by H4. There is no OPA server to deploy. H4 calls that file before any salary or allowance amount is read. H1 is the only copy of `manager_id`. There is no OPA data bundle to go stale when someone changes team. Input fields and reason codes are in [`docs/hr/policy.md`](../docs/hr/policy.md). The allow rules below are the sketch those tests must keep.
+No stack. The deterministic Python policy module is `use-cases/hr-tools/lambdas/shared/authz.py`, evaluated in-process by the tests and by H4 with zero external binaries. H4 calls `evaluate_policy(...)` before any salary or allowance amount is read. H1 is the only copy of `manager_id`. Input fields and reason codes are in [`docs/hr/policy.md`](../docs/hr/policy.md).
 
-```rego
-package hr.authz
-
-default allow = false
-
-allow if {
-  input.action == "get_employee_compensation"
-  input.target_status == "active"
-  input.caller_employee_id == input.requested_employee_id
-}
-
-allow if {
-  input.action == "get_employee_compensation"
-  input.target_status == "active"
-  input.target_manager_id == input.caller_employee_id
-}
-
-allow if {
-  input.action == "get_leave_balance"
-  input.caller_employee_id == input.requested_employee_id
-}
-
-allow if {
-  input.action == "get_allowance"
-  input.caller_employee_id == input.requested_employee_id
-}
-
-allow if {
-  input.action == "check_leave_eligibility"
-  input.caller_employee_id == input.requested_employee_id
-  not input.on_probation
-  input.end_date >= input.start_date
-  input.days <= input.remaining_days
-  not input.overlaps_existing
-}
-
-allow if {
-  input.action == "submit_leave_request"
-  input.caller_employee_id == input.requested_employee_id
-  not input.on_probation
-  input.end_date >= input.start_date
-  input.days <= input.remaining_days
-  not input.overlaps_existing
-}
-```
-
-Exit is the Phase 1 unit tests: self and direct reports allowed, manager and peer and skip-level and terminated and unknown all denied with the same text, transfer takes effect on the next call, probation and overlap and balance and idempotent submit, allowance is self-only. OPA unreachable is a deny. No AWS.
+Exit is the Phase 1 unit tests (`pytest tests/test_hr_authz.py`): self and direct reports allowed, manager and peer and skip-level and terminated and unknown all denied with the same text, transfer takes effect on the next call, probation and overlap and balance and submit rules, allowance is self-only. No AWS.
 
 ### H3 — hr-identity
 
@@ -193,7 +147,7 @@ Each Lambda connects with an RDS IAM token for its own database role ([modules.m
 
 `get_allowance` reads `payroll_items`. A later finance API replaces the body of that function, not the module boundary.
 
-Exit: the H2 cases pass through `tools/call`, a spoofed caller id still resolves to the token, a call with the wrong `agent_id` is a Cedar deny, `enabled: false` returns `SERVICE_DISABLED`, a stopped OPA or a bad database password does not log a salary, `decision_log` has a row per call with no amounts and with `agent_id` and `session_id`, and the same row appears in the SIEM through the subscription filter. `verify.py` exits 0. Stop. The agent is the next layer.
+Exit: the H2 cases pass through `tools/call`, a spoofed caller id still resolves to the token, a call with the wrong `agent_id` is a Cedar deny, `enabled: false` returns `SERVICE_DISABLED`, a bad database password does not log a salary, `decision_log` has a row per call with no amounts and with `agent_id` and `session_id`, and the same row appears in the SIEM through the subscription filter. `verify.py` exits 0. Stop. The agent is the next layer.
 
 ## Layer 2 detail
 
@@ -228,7 +182,7 @@ Pick a row. You do not have to take the rows below it.
 | Bundle | Layer | You get |
 |---|---|---|
 | Database only | 1, H1 | Postgres in the VPC. No tools, no agent, no UI |
-| Rules only | 1, H2 on a local database | OPA tests. No AWS beyond a database you already have |
+| Rules only | 1, H2 | Policy unit tests. No AWS |
 | APIs, no agent | 1, through H4 | Gateway tools. `verify.py` is the proof |
 | Agent, no UI | 2 | The god agent on the CLI |
 | The goal | 3 | The same agent in the browser, with review cards |
@@ -239,17 +193,17 @@ Pick a row. You do not have to take the rows below it.
 |---|---|
 | The model never supplies `caller_employee_id`. | A prompt can claim to be someone else. |
 | Unknown, peer, manager, skip-level, and terminated targets get the same denial, with no amount and no "this person exists". | Stops directory probing. |
-| OPA down or Postgres down is a deny, not an allow. | A failed check must not fall open. |
+| Postgres down is a deny, not an allow. | A failed check must not fall open. |
 | Amounts and leave reasons are not logged on a deny. | Traces must not leak the number. |
 | Every tool is bound to one leaf `agent_id` in Cedar. | A leaf cannot borrow another leaf's tool. |
 | Read and write tools have separate Cedar permits and separate database roles. | A read path cannot write. |
 | `SERVICE_DISABLED` from SSM stops every HR tool. | Turning HR off does not wait for a deploy. |
 | Leave `reason` never reaches a model. | Employee text is not an instruction to the manager's agent. |
 | `manager_id` is the current manager. Acting managers and matrix reporting are not in these modules. | One hop matches "my four subordinates". |
-| No role bypasses OPA here. | A global HR view is a new Rego rule, reviewed on its own. |
+| No role bypasses the policy here. | A global HR view is an explicit rule change, reviewed on its own. |
 | Probation blocks every leave type, on eligibility and on submit. | The form is not a back door. |
 | Submit creates a pending request and does not deduct the balance. | Apply is not approval. |
 | The same idempotency key inserts one row. | The form will be clicked twice. |
-| Name search runs only inside the ids OPA already allows. | The model must not see the whole company. |
+| Name search runs only inside the ids the policy already allows. | The model must not see the whole company. |
 
 Not in these modules: skip-level reports, acting managers, a live finance API, deducting leave balance when a manager approves, separate A2A runtimes, A2UI, row-level security, and a hosted website.

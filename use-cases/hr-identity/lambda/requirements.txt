@@ -1,0 +1,9 @@
+# Runtime deps for the hr-identity pre-token Lambda. Installed into the
+# sibling Lambda layer at deploy time; see use-cases/hr-identity/walkthrough.md.
+#
+# pg8000 is a pure-Python PostgreSQL driver. Pure-Python keeps synth offline
+# (no manylinux wheel to pick) and removes the "which libc?" question that
+# dogs psycopg2-binary on newer Lambda runtimes. It supports PostgreSQL
+# scram-sha-256, TLS, and the long password value RDS IAM auth needs.
+# boto3 is provided by the Lambda runtime and is NOT listed here.
+pg8000>=1.30.5,<2

@@ -616,6 +616,32 @@ def test_documented_dashboard_servers_are_loopback_only():
         assert all("--bind 127.0.0.1" in line for line in commands), relative
 
 
+def test_dashboard_knows_about_the_hr_use_case_stacks():
+    """When HR is deployed, the Overview, Parameters, and Architecture tabs
+    must reflect it. Pin the exact suffix set the dashboard tracks plus the
+    six SSM paths HR publishes (docs/hr/modules.md § SSM interface)."""
+    for suffix in ("uc-hr-data", "uc-hr-identity", "uc-hr-tools"):
+        assert suffix in STACK_META, f"{suffix} missing from STACK_META"
+        meta = STACK_META[suffix]
+        assert meta["team"] == "hr", suffix
+        assert meta["module"].startswith("H"), suffix
+        assert meta["description"], suffix
+    hr_ssm = {
+        "use-cases/hr-data/endpoint",
+        "use-cases/hr-data/secret-name",
+        "use-cases/hr-data/database-name",
+        "use-cases/hr-data/checkpoint-database",
+        "use-cases/hr-identity/function-arn",
+        "use-cases/hr-tools/enabled",
+    }
+    assert hr_ssm <= SAFE_SSM_PARAMETERS
+    # Secret VALUES never leak through CFN outputs: the master-secret NAME is
+    # intentionally excluded from the uc-hr-data stack outputs; operators
+    # look it up through the SSM parameter instead (see the test above that
+    # refuses any browser-side output key containing "secret").
+    assert "SecretName" not in SAFE_STACK_OUTPUTS.get("uc-hr-data", frozenset())
+
+
 def test_browser_allowlist_covers_backend_reviewed_outputs():
     browser_list = INDEX_HTML.split(
         "const SAFE_OUTPUT_KEYS = new Set([",

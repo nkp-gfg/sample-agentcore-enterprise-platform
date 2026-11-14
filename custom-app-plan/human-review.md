@@ -35,7 +35,7 @@ The leave-submit leaf sets:
 interrupt_on={"submit_leave_request": {"allowed_decisions": ["approve", "edit", "reject"]}}
 ```
 
-`approve` runs the tool with the proposed arguments. The Lambda still overwrites the caller from the token and still asks OPA. `edit` changes those arguments and then takes the same path, so a probation date or a longer range still comes back `PROBATION_PERIOD` or `INSUFFICIENT_BALANCE` and inserts nothing. `reject` does not call the Lambda. The tool message tells the leaf the request was not submitted.
+`approve` runs the tool with the proposed arguments. The Lambda still overwrites the caller from the token and still evaluates the authorization policy. `edit` changes those arguments and then takes the same path, so a probation date or a longer range still comes back `PROBATION_PERIOD` or `INSUFFICIENT_BALANCE` and inserts nothing. `reject` does not call the Lambda. The tool message tells the leaf the request was not submitted.
 
 The node that inserts the row does not also call `interrupt()`. On resume, LangGraph runs the node from the top again. An insert placed before `interrupt()` would run twice.
 
@@ -52,7 +52,7 @@ After the tool returns a `pending` request, the next node interrupts with a JSON
 | `leave_type`, `start_date`, `end_date`, `days` | The stored request |
 | `reason` | The employee's text. Drawn on the card as plain text. Never sent to a model |
 
-No write happens before this `interrupt()`. After `Command(resume=...)` returns `approve`, the review node calls `record_leave_decision` once with `request_id` and `approve`. The Lambda asks OPA, then one update sets `status` to `approved`, `decided_by` to the reviewer from the token, and `decided_at`. `reject` sets `rejected` the same way. A deny from OPA leaves the row `pending` and the card open. The balance is not reduced. A second resume sees the row is no longer `pending` and does not update it again.
+No write happens before this `interrupt()`. After `Command(resume=...)` returns `approve`, the review node calls `record_leave_decision` once with `request_id` and `approve`. The Lambda evaluates the authorization policy, then one update sets `status` to `approved`, `decided_by` to the reviewer from the token, and `decided_at`. `reject` sets `rejected` the same way. A policy deny leaves the row `pending` and the card open. The balance is not reduced. A second resume sees the row is no longer `pending` and does not update it again.
 
 The employee confirmation payload uses `kind: employee_confirm` and the same request fields, plus the proposed tool arguments.
 
@@ -84,7 +84,7 @@ The card is still there after a refresh and after the runtime container is repla
 | Eligible employee confirms | one `pending` row, balance unchanged |
 | Employee rejects the card | no row |
 | Employee types "approve" | no row, the card remains |
-| Edited dates that fail OPA | no row, the reason code from the tool |
+| Edited dates that fail policy | no row, the reason code from the tool |
 | Same key, second confirm | one row |
 | Runtime restarted while the card is open | the same card returns |
 | Direct manager approves | `approved`, `decided_by` is that manager, balance unchanged |

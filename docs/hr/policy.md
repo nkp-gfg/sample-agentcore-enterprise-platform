@@ -1,10 +1,10 @@
 # HR policy
 
-File, when coding starts: `use-cases/hr-tools/policy/authz.rego`. Package name: `hr.authz`.
+Module: `use-cases/hr-tools/lambdas/shared/authz.py` (`evaluate_policy`).
 
-H2 and H4 evaluate that file in-process. v1 does not deploy an OPA server. OPA does not store the org chart. The tool reads the current row from Postgres, builds the input below, and evaluates the policy. A stale copy of `manager_id` inside OPA is forbidden. The same rule is not also written as a `WHERE` clause on the salary query.
+H2 and H4 evaluate that deterministic Python module in-process with zero external binaries or subprocesses. The policy module does not store the org chart: the tool reads the current row from Postgres, builds the input below, and evaluates the policy. A stale copy of `manager_id` outside Postgres is forbidden. The same rule is not also written as a `WHERE` clause on the salary query.
 
-Default decision is deny. If the file cannot be loaded or the evaluator returns an error, the tool does not read the amount and returns `POLICY_UNAVAILABLE`.
+Default decision is deny (`allow = False`, `reason_code = "NOT_AUTHORIZED"`).
 
 ## Input
 
@@ -16,7 +16,7 @@ Dates are `YYYY-MM-DD`. Numeric fields are JSON numbers, not strings. ISO dates 
 |---|---|---|---|
 | `action` | string | all | One of the tool names in [Tools](tools.md), except `list_direct_reports` |
 | `caller_employee_id` | string | all | From the token. Never from tool arguments |
-| `requested_employee_id` | string | all | Who the question is about. The tool argument `employee_id` maps to this field. For self-only tools the tool sets it equal to the caller before the call |
+| `requested_employee_id` | string | all | Who the question is about. The tool argument `employee_id` maps to this field. For self-only tools the tool sets it equal to the caller before evaluation |
 | `target_status` | string | salary | `active` or `terminated`. Missing means deny |
 | `target_manager_id` | string or null | salary | The requested person's current `manager_id`. JSON `null` when they have none |
 | `on_probation` | bool | leave check, submit | `probation_end_date` is after the tool's UTC date. The end date itself is not probation |
@@ -40,18 +40,9 @@ Leave check and submit are allowed only when all of these hold: the caller is th
 
 `record_leave_decision` is allowed only when `request_status` is `pending`, `caller_employee_id` equals `requester_manager_id`, and the caller is not the requester. `requested_employee_id` is the requester. Anything else is `NOT_REVIEWER`, and the row is not updated.
 
-```rego
-allow if {
-  input.action == "record_leave_decision"
-  input.request_status == "pending"
-  input.requester_manager_id == input.caller_employee_id
-  input.caller_employee_id != input.requested_employee_id
-}
-```
+The module declares `POLICY_VERSION` as a string constant. Every tool writes it to `decision_log`. A change to any rule changes that string in the same commit.
 
-The Rego file declares `policy_version` as a string constant. Every tool writes it to `decision_log`. A change to any rule changes that string in the same commit.
-
-`list_direct_reports` is not an OPA decision. The query is `manager_id = caller` and `status = active`. It returns ids and names only.
+`list_direct_reports` is enforced directly by its SQL query (`manager_id = caller` and `status = active`). It returns ids and names only.
 
 ## Reason codes
 
@@ -60,7 +51,6 @@ The tool maps a deny to exactly one code. The first match wins, in this order.
 | Code | When |
 |---|---|
 | `SERVICE_DISABLED` | SSM `use-cases/hr-tools/enabled` is not `true`, or cannot be read. Checked before anything else |
-| `POLICY_UNAVAILABLE` | The Rego file was not evaluated |
 | `DATA_UNAVAILABLE` | Postgres was not read |
 | `NOT_MAPPED` | The token has no `employee_id` |
 | `INVALID_LEAVE_TYPE` | Leave type is not `annual` or `sick` |

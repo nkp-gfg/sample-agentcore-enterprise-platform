@@ -136,6 +136,7 @@ def test_invocation_rejects_oversized_prompt_and_unsafe_session():
     [
         ("orchestrator", "orchestrator", None, "http"),
         ("orchestrator", "agui-strands-agent", None, "ag-ui"),
+        ("orchestrator", "god-agent", None, "ag-ui"),
         ("orchestrator", "agui-strands-agent", object(), "http"),
     ],
 )

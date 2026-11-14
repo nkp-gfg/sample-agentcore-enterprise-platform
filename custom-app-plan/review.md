@@ -27,7 +27,7 @@ The model never decides who can see a salary or whether probation blocks leave. 
 | Who receives the request | One god agent. It routes. It is not an HR agent. Department agents and their leaves are in [god-agent.md](god-agent.md). |
 | What each layer does | The god agent only routes. A department agent only routes to its leaves. A leaf picks its one tool and phrases the answer. The tool allows or denies. A review card, not the model, resumes a pause. |
 | Review for v1 | The employee confirms `submit_leave_request` before it runs. The direct manager then approves or rejects the pending row. Both are interrupts, in the UI and in Postgres. The contract is [human-review.md](human-review.md). A chat message does not approve. |
-| Where the code lives | Three use cases, not one and not the core stacks: `hr-data`, `hr-identity`, `hr-tools`. The Rego file lives in `hr-tools`. H5 and H6 are switches on module 6 and the local frontend. |
+| Where the code lives | Three use cases, not one and not the core stacks: `hr-data`, `hr-identity`, `hr-tools`. The authorization policy module (`shared/authz.py`) lives in `hr-tools`. H5 and H6 are switches on module 6 and the local frontend. |
 | Cedar | Production is already `ENFORCE`. Each new tool ships with its permit in the same deploy. Do not turn the engine back to log-only for the whole gateway. Do not add a blanket `forbid`. |
 | Model | Stay on `openai.gpt-oss-120b-1:0` until a routing test fails. Cross-region Claude profiles stay blocked by the organization SCP. |
 | UI hosting for v1 | FAST frontend on localhost, pointed at the deployed runtime. No CloudFront or Amplify stack until chat and the leave form work. |
@@ -86,7 +86,7 @@ Exit: two test users get different `employee_id` claims. A tool call that tries 
 
 ### 4. Cedar permits
 
-One permit per new tool, action `AgentCore::Action::"<target>___<tool>"`, resource the gateway ARN. Any signed-in caller may invoke the six tools. There is no approve tool, so `role` does not narrow Cedar in v1. The salary and leave row rules are the OPA file in [`docs/hr/policy.md`](../docs/hr/policy.md). They are not a second copy in SQL, and they are not Cedar.
+One permit per new tool, action `AgentCore::Action::"<target>___<tool>"`, resource the gateway ARN. Any signed-in caller may invoke the six tools. There is no approve tool, so `role` does not narrow Cedar in v1. The salary and leave row rules live in the authorization module in [`docs/hr/policy.md`](../docs/hr/policy.md). They are not a second copy in SQL, and they are not Cedar.
 
 Ship the permits in the same deploy as the targets. Confirm the gateway role can invoke the new Lambdas.
 
@@ -125,4 +125,4 @@ Answer these before the package that needs them. They do not block package 1.
 
 ## Planning start
 
-Implement from [`docs/hr/`](../docs/hr/README.md), in the module order in `phases.md`. Do not add a column, a reason code, or a tool argument that those pages do not name. Start with H1 (`hr-data`) unless you are only writing the OPA tests.
+Implement from [`docs/hr/`](../docs/hr/README.md), in the module order in `phases.md`. Do not add a column, a reason code, or a tool argument that those pages do not name. Start with H1 (`hr-data`) unless you are only writing the policy unit tests.

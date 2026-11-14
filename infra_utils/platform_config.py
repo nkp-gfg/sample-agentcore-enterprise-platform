@@ -26,7 +26,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -352,6 +352,10 @@ AGENT_PATTERNS = (
     "claude-sdk-multi-agent",
     "agui-strands-agent",
     "agui-langgraph-agent",
+    # Layer-2 HR assistant god-agent pattern. Same runtime slot as the other
+    # AG-UI patterns; selected with `agents.pattern: god-agent` in
+    # platform.yaml. Shape: custom-app-plan/god-agent.md.
+    "god-agent",
 )
 
 
@@ -702,7 +706,7 @@ class MigrationGate(BaseModel):
             raise ValueError(
                 "approved_at must include a UTC offset, for example +00:00"
             )
-        if self.approved_at > datetime.now(timezone.utc) + timedelta(minutes=5):
+        if self.approved_at > datetime.now(UTC) + timedelta(minutes=5):
             raise ValueError("approved_at cannot be in the future")
         assert self.expires_at is not None
         if self.expires_at.tzinfo is None:
@@ -732,9 +736,7 @@ class MigrationGate(BaseModel):
     @property
     def blockers(self) -> list[str]:
         blockers = self._missing_fields()
-        if self.expires_at is not None and self.expires_at <= datetime.now(
-            timezone.utc
-        ):
+        if self.expires_at is not None and self.expires_at <= datetime.now(UTC):
             blockers.append("approval expired")
         return blockers
 
@@ -2799,6 +2801,41 @@ def resolve_region(root: Path | None = None) -> str:
     import boto3  # lazy: only the fallback needs it
 
     return boto3.Session().region_name or "us-east-1"
+
+
+def resolve_project_and_env(root: Path | None = None) -> tuple[str, str]:
+    """Resolve `(project, environment)` with the same precedence as `deploy.sh`:
+
+    env PROJECT_NAME/ENVIRONMENT > platform.yaml > workshop.env
+    > ("agentcore-workshop", "dev")
+    """
+    project = os.environ.get("PROJECT_NAME")
+    env = os.environ.get("ENVIRONMENT")
+    if project and env:
+        return project, env
+    root = root or Path(__file__).resolve().parents[1]
+    manifest = Path(os.environ.get("PLATFORM_CONFIG") or root / "platform.yaml")
+    if manifest.exists():
+        try:
+            cfg = load_platform_config(manifest)
+            project = project or cfg.project
+            env = env or cfg.environment
+        except Exception:  # noqa: BLE001, S110 — fall through on invalid manifest
+            pass
+    if project and env:
+        return project, env
+    saved = root / "workshop.env"
+    if saved.exists():
+        text = saved.read_text()
+        if not project:
+            m_proj = re.search(r"^PROJECT_NAME=([^\s#'\"]+)", text, re.MULTILINE)
+            if m_proj:
+                project = m_proj.group(1)
+        if not env:
+            m_env = re.search(r"^ENVIRONMENT=([^\s#'\"]+)", text, re.MULTILINE)
+            if m_env:
+                env = m_env.group(1)
+    return project or "agentcore-workshop", env or "dev"
 
 
 def _main() -> int:

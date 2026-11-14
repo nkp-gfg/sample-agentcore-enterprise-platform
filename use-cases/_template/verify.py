@@ -13,7 +13,6 @@ Replace the gateway call with an invocation of whatever your stack deploys
 (call the Lambda, hit the endpoint) and keep the OK/FAIL shape.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -29,10 +28,9 @@ def main() -> int:
     from test_gateway import mcp_request
     from utils import get_m2m_token
 
-    from infra_utils.platform_config import resolve_region
+    from infra_utils.platform_config import resolve_project_and_env, resolve_region
 
-    project = os.environ.get("PROJECT_NAME", "agentcore-workshop")
-    env = os.environ.get("ENVIRONMENT", "dev")
+    project, env = resolve_project_and_env()
     name = f"/{project}/{env}/use-cases/{{name}}/gateway-seen"
     ssm = boto3.client("ssm", region_name=resolve_region())
     try:

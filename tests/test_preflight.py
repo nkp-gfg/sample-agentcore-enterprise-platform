@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -195,3 +196,128 @@ def test_command_runner_blocks_unapproved_aws_call_before_execution() -> None:
 
     assert result.returncode == 1
     assert result.stderr == "blocked non-read-only AWS command"
+
+
+def test_preflight_validates_hr_part2_footprint_and_god_agent_default_model(
+    tmp_path: Path, capsys
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    manifest = tmp_path / "part2.yaml"
+    manifest.write_text(
+        f"""
+project: agentcore-production
+environment: prod
+region: us-east-1
+deployment:
+  platform_account: "{ACCOUNT}"
+identity:
+  idp: cognito
+  mode: brokered
+agents:
+  pattern: god-agent
+security:
+  networking: true
+  cloudtrail_alerting: true
+  egress_filter: true
+  require_guardrails: true
+  cedar:
+    enabled: true
+    mode: ENFORCE
+use_cases:
+  hr-data:
+    seed: true
+  hr-identity: {{}}
+  hr-tools: {{}}
+""",
+        encoding="utf-8",
+    )
+    runner = FakeRunner(
+        {
+            ("aws", "bedrock", "get-foundation-model"): CommandResult(
+                0,
+                "arn:aws:bedrock:us-east-1::foundation-model/openai.gpt-oss-120b-1:0",
+            )
+        }
+    )
+
+    result = _preflight(manifest, runner, repo_root).run()
+
+    output = capsys.readouterr().out
+    assert result == 0, output
+    assert (
+        "[PASS] HR Part 2: hr-data, hr-identity, hr-tools, pattern=god-agent ready"
+        in output
+    )
+    assert "openai.gpt-oss-120b-1:0 is discoverable" in output
+    _assert_read_only_aws_calls(runner.calls)
+
+
+def test_preflight_catches_hr_tools_missing_egress_filter_or_cedar(
+    tmp_path: Path, capsys
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    manifest = tmp_path / "part2-bad.yaml"
+    manifest.write_text(
+        f"""
+project: agentcore-workshop
+environment: dev
+region: us-east-1
+deployment:
+  platform_account: "{ACCOUNT}"
+security:
+  networking: true
+  cloudtrail_alerting: true
+  egress_filter: false
+  cedar:
+    enabled: false
+use_cases:
+  hr-data: {{}}
+  hr-identity: {{}}
+  hr-tools: {{}}
+""",
+        encoding="utf-8",
+    )
+    runner = FakeRunner(
+        {
+            ("aws", "bedrock", "get-inference-profile"): CommandResult(
+                0, f"arn:aws:bedrock:us-east-1:{ACCOUNT}:inference-profile/test"
+            ),
+            ("aws", "bedrock", "get-foundation-model"): CommandResult(
+                0, "arn:aws:bedrock:us-east-1::foundation-model/test"
+            ),
+        }
+    )
+
+    result = _preflight(manifest, runner, repo_root).run()
+
+    output = capsys.readouterr().out
+    assert result == 1
+    assert "requires security.egress_filter: true" in output
+    assert "requires security.cedar.enabled: true and mode: ENFORCE" in output
+    _assert_read_only_aws_calls(runner.calls)
+
+
+def test_command_runner_strips_exported_prefix_env_var(monkeypatch) -> None:
+    monkeypatch.setenv("PREFIX", "agentcore-production-prod")
+
+    result = CommandRunner().run(
+        (sys.executable, "-c", "import os; print(os.environ.get('PREFIX', 'UNSET'))")
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "UNSET"
+
+
+def test_preflight_explains_when_cdk_on_path_but_missing_from_node_prefix(
+    tmp_path: Path, capsys
+) -> None:
+    runner = FakeRunner(
+        {("npx", "--no-install", "cdk"): CommandResult(1, stderr="missing")}
+    )
+
+    result = _preflight(_manifest(tmp_path), runner, tmp_path).run()
+
+    output = capsys.readouterr().out
+    assert result == 1
+    assert "cdk is on PATH, but `npx --no-install cdk` could not resolve" in output
+    assert "npm install -g aws-cdk" in output
