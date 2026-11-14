@@ -137,7 +137,15 @@ def test_accepts_loopback_host_header(running_server):
     )
     assert status == HTTPStatus.OK
     assert headers.get("x-frame-options") == "DENY"
-    assert "frame-ancestors 'none'" in headers.get("content-security-policy", "")
+    csp = headers.get("content-security-policy", "")
+    assert "frame-ancestors 'none'" in csp
+    # W3C CSP forbids mid-hostname wildcards like `https://cognito-idp.*.amazonaws.com`
+    # (which Chrome/Safari reject, blocking OIDC discovery on Sign in).
+    assert ".*." not in csp
+    assert "https://cognito-idp.eu-west-1.amazonaws.com" in csp
+    assert "https://bedrock-agentcore.eu-west-1.amazonaws.com" in csp
+    assert "https://*.amazoncognito.com" in csp
+    assert "https://login.microsoftonline.com" in csp
 
 
 # ---------------------------------------------------- 2. No mutation surface
@@ -371,3 +379,37 @@ def test_invocations_rejects_unauthenticated_and_cross_origin_requests(running_s
         },
     )
     assert status == HTTPStatus.BAD_REQUEST
+
+
+def test_default_boto3_ssm_reader_queries_single_prefixed_paths(monkeypatch):
+    """Regression: default boto3 reader must not double-prefix `/{project}/{env}`."""
+    seen_names: list[str] = []
+
+    class FakeSsmClient:
+        def get_parameter(self, *, Name: str) -> dict:
+            seen_names.append(Name)
+            assert "//" not in Name, f"Double slash in SSM parameter path: {Name}"
+            mapping = {
+                "/agentcore-production/prod/runtimes/orchestrator/arn": VALID_RUNTIME_ARN,
+                "/agentcore-production/prod/auth/web-client-id": VALID_WEB_CLIENT_ID,
+                "/agentcore-production/prod/auth/issuer-url": VALID_ISSUER,
+                "/agentcore-production/prod/gateway/url": VALID_GATEWAY,
+            }
+            return {"Parameter": {"Value": mapping[Name]}}
+
+    import boto3
+
+    monkeypatch.setattr(boto3, "client", lambda *_a, **_kw: FakeSsmClient())
+    cfg = server.load_config(
+        project="agentcore-production",
+        environment="prod",
+        region="eu-west-1",
+    )
+    assert cfg.region == "eu-west-1"
+    assert seen_names == [
+        "/agentcore-production/prod/runtimes/orchestrator/arn",
+        "/agentcore-production/prod/auth/web-client-id",
+        "/agentcore-production/prod/auth/issuer-url",
+        "/agentcore-production/prod/gateway/url",
+    ]
+

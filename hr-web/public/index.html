@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
 <title>HR assistant · AgentCore Platform</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -21,8 +22,9 @@
   </div>
   <div class="identity" aria-live="polite">
     <span id="identityState" class="identity-state" data-state="unknown">Not signed in</span>
+    <button type="button" class="hr-button hr-button--outline" id="newChatBtn" hidden>New chat</button>
     <button type="button" class="hr-button hr-button--ghost" id="refreshReviewsBtn" hidden>Check reviews</button>
-    <button type="button" class="hr-button hr-button--outline" id="signInBtn">Sign in</button>
+    <button type="button" class="hr-button" id="signInBtn">Sign in</button>
     <button type="button" class="hr-button hr-button--ghost" id="signOutBtn" hidden>Sign out</button>
   </div>
 </header>
@@ -33,9 +35,35 @@
     <div class="hr-banner" id="authBanner" role="status">
       Sign in with your corporate account to talk to the HR assistant. The
       conversation uses the AG-UI SSE stream from the module&nbsp;6 runtime;
-      this page never calls AWS directly from a server. Every card on the right
-      is rendered through the A2UI v1.0 protocol
+      this page never holds AWS credentials. Every card on the right is
+      rendered through the A2UI v1.0 protocol
       (<a href="https://a2ui.org/specification/v1_0/" rel="noopener">specification</a>).
+    </div>
+
+    <div class="hr-welcome" id="welcomeState" hidden>
+      <h2 class="hr-welcome-title">Welcome to the HR Assistant</h2>
+      <p class="hr-welcome-sub">
+        Ask about leave balances, eligibility, compensation, direct reports, or
+        monthly allowances — or pick a starter prompt below.
+      </p>
+      <div class="hr-starters" id="starterPrompts" role="list" aria-label="Starter prompts">
+        <button type="button" class="hr-starter-chip" data-prompt="How many annual and sick leave days do I have remaining?">
+          <strong>Leave balance</strong>
+          <span>Check my remaining annual and sick days</span>
+        </button>
+        <button type="button" class="hr-starter-chip" data-prompt="What was my telephone allowance for 2026-10?">
+          <strong>Telephone allowance</strong>
+          <span>View my 2026-10 payroll allowance</span>
+        </button>
+        <button type="button" class="hr-starter-chip" data-prompt="Who are my direct reports, and what is my current compensation?">
+          <strong>Team &amp; compensation</strong>
+          <span>List one-hop direct reports &amp; salary</span>
+        </button>
+        <button type="button" class="hr-starter-chip" data-prompt="Submit annual leave from 2026-12-01 to 2026-12-03 for a family trip">
+          <strong>Request leave (2-stage review)</strong>
+          <span>Trigger confirmation &amp; manager review cards</span>
+        </button>
+      </div>
     </div>
 
     <div class="hr-messages" id="chatMessages" aria-live="polite" aria-label="Conversation"></div>

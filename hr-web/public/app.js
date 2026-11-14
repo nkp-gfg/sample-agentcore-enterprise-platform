@@ -88,6 +88,28 @@
     return `${prefix}-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
   }
 
+  function newXrayTraceId() {
+    const epochHex = Math.floor(Date.now() / 1000).toString(16).padStart(8, "0");
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return `1-${epochHex}-${window.crypto.randomUUID()}`;
+    }
+    const bytes = new Uint8Array(12);
+    window.crypto.getRandomValues(bytes);
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    return `1-${epochHex}-${hex}`;
+  }
+
+  function formatTime(dateObj) {
+    try {
+      return (dateObj || new Date()).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return "";
+    }
+  }
+
   function b64urlEncode(bytes) {
     const b = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
     let bin = "";
@@ -207,6 +229,8 @@
   }
 
   function signOut() {
+    const discovery = state.discovery;
+    const clientId = state.config && state.config.web_client_id;
     state.accessToken = null;
     state.idClaims = null;
     state.userLabel = "";
@@ -219,19 +243,52 @@
     renderMessages({ reset: true });
     renderIdentity();
     updateControls();
+
+    // Clear the Cognito hosted-UI session cookie too (mirrors FAST's
+    // `signoutRedirect({ extraQueryParams: { client_id, logout_uri } })`) so a
+    // second persona (e.g. M1 after E1) can sign in cleanly without incognito.
+    if (discovery && discovery.end_session_endpoint && clientId) {
+      const logoutQuery = new URLSearchParams({
+        client_id: clientId,
+        logout_uri: REDIRECT_URI,
+      });
+      location.assign(`${discovery.end_session_endpoint}?${logoutQuery.toString()}`);
+    }
+  }
+
+  function startNewChat() {
+    if (state.busy || !state.accessToken) return;
+    if (state.sseController) state.sseController.abort();
+    state.pendingInterrupt = null;
+    state.outboundErrors = [];
+    if (state.processor) state.processor.clear();
+    state.threadId = newId("thread");
+    renderMessages({ reset: true });
+    renderIdentity();
+    updateControls();
+    $("chatInput").focus();
   }
 
   /* ------------------------------------------------------------- render */
 
+  function syncWelcomeVisibility() {
+    const welcome = $("welcomeState");
+    if (!welcome) return;
+    const hasMessages = $("chatMessages").childElementCount > 0;
+    welcome.hidden = !state.accessToken || hasMessages;
+  }
+
   function renderIdentity() {
     const label = $("identityState");
     const refreshBtn = $("refreshReviewsBtn");
+    const newChatBtn = $("newChatBtn");
     if (state.accessToken) {
       label.textContent = state.userLabel;
       label.dataset.state = "signed-in";
       $("signInBtn").hidden = true;
       $("signOutBtn").hidden = false;
       if (refreshBtn) refreshBtn.hidden = false;
+      if (newChatBtn) newChatBtn.hidden = false;
       $("authBanner").hidden = true;
     } else {
       label.textContent = "Not signed in";
@@ -239,21 +296,34 @@
       $("signInBtn").hidden = false;
       $("signOutBtn").hidden = true;
       if (refreshBtn) refreshBtn.hidden = true;
+      if (newChatBtn) newChatBtn.hidden = true;
       $("authBanner").hidden = false;
     }
     $("footerSession").textContent = state.threadId
       ? `session · ${state.threadId}`
       : "session · —";
+    syncWelcomeVisibility();
   }
 
   function updateControls() {
     const ready = Boolean(state.accessToken) && !state.busy;
     const refreshBtn = $("refreshReviewsBtn");
+    const newChatBtn = $("newChatBtn");
+    const sendBtn = $("chatSend");
     $("chatInput").disabled = !ready;
-    $("chatSend").disabled = !ready || !$("chatInput").value.trim();
+    sendBtn.disabled = !ready || !$("chatInput").value.trim();
+    sendBtn.textContent = state.busy ? "Thinking…" : "Send";
+    sendBtn.dataset.busy = state.busy ? "true" : "false";
     $("signInBtn").disabled = state.busy;
     $("signOutBtn").disabled = state.busy;
     if (refreshBtn) refreshBtn.disabled = !ready;
+    if (newChatBtn) {
+      const hasMessages = $("chatMessages").childElementCount > 0;
+      newChatBtn.disabled = !ready || !hasMessages;
+    }
+    for (const chip of document.querySelectorAll(".hr-starter-chip")) {
+      chip.disabled = !ready;
+    }
   }
 
   function appendMessage(role, text, meta) {
@@ -261,16 +331,19 @@
     const avatar = el("div", "hr-avatar", role === "user" ? "You" : role === "error" ? "!" : "HR");
     avatar.setAttribute("aria-hidden", "true");
     const column = el("div");
-    column.append(el("div", "hr-message-meta", meta || (role === "user" ? "You" : "HR assistant")));
+    const stamp = formatTime(new Date());
+    const baseMeta = meta || (role === "user" ? "You" : "HR assistant");
+    column.append(el("div", "hr-message-meta", stamp ? `${baseMeta} · ${stamp}` : baseMeta));
     column.append(el("div", "hr-message-body", text));
     message.append(avatar, column);
     const messages = $("chatMessages");
     messages.append(message);
     messages.scrollTop = messages.scrollHeight;
+    syncWelcomeVisibility();
     return message;
   }
 
-  function appendTrace(node, kind, label) {
+  function appendTrace(node, kind, label, detailJson) {
     let trace = node.querySelector(".hr-trace");
     if (!trace) {
       trace = el("ul", "hr-trace");
@@ -278,12 +351,30 @@
     }
     const item = el("li", "hr-trace-item");
     item.dataset.kind = kind;
-    item.append(el("span", "hr-trace-dot"), el("span", "hr-trace-label", label));
+    const head = el("div", "hr-trace-head");
+    head.append(el("span", "hr-trace-dot"), el("span", "hr-trace-label", label));
+    item.append(head);
+    if (detailJson !== undefined && detailJson !== null) {
+      const toggle = el("button", "hr-trace-toggle", "Details");
+      toggle.type = "button";
+      const pre = el("pre", "hr-trace-detail");
+      pre.hidden = true;
+      pre.textContent = typeof detailJson === "string"
+        ? detailJson
+        : JSON.stringify(detailJson, null, 2);
+      toggle.addEventListener("click", () => {
+        pre.hidden = !pre.hidden;
+        toggle.textContent = pre.hidden ? "Details" : "Hide";
+      });
+      head.append(toggle);
+      item.append(pre);
+    }
     trace.append(item);
   }
 
   function renderMessages({ reset }) {
     if (reset) $("chatMessages").replaceChildren();
+    syncWelcomeVisibility();
   }
 
   function applyA2uiMessages(messages) {
@@ -418,6 +509,7 @@
         "Content-Type": "application/json",
         Accept: "text/event-stream",
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": state.threadId,
+        "X-Amzn-Trace-Id": newXrayTraceId(),
       },
       body: JSON.stringify(input),
     });
@@ -427,8 +519,21 @@
     const decoder = new TextDecoder();
     let buffer = "";
     let read = 0;
-    const assistantNode = appendMessage("assistant", "", "HR assistant");
+    const isSilentPoll = Boolean(input.forwardedProps && input.forwardedProps.checkPendingReviews);
+    const assistantNode = appendMessage(
+      "assistant",
+      isSilentPoll ? "" : "Thinking…",
+      "HR assistant",
+    );
+    if (!isSilentPoll) assistantNode.dataset.thinking = "true";
     const body = assistantNode.querySelector(".hr-message-body");
+    let receivedDelta = false;
+    const clearThinkingPlaceholder = () => {
+      if (assistantNode.dataset.thinking === "true") {
+        delete assistantNode.dataset.thinking;
+        if (!receivedDelta) body.textContent = "";
+      }
+    };
     const outstanding = new Map();
     for (;;) {
       const { value, done } = await reader.read();
@@ -447,11 +552,20 @@
         try {
           event = JSON.parse(line.slice(5).trim());
         } catch { continue; }
+        if (event && event.type === "TEXT_MESSAGE_CONTENT" && typeof event.delta === "string" && event.delta) {
+          clearThinkingPlaceholder();
+          receivedDelta = true;
+        } else if (event && (event.type === "TOOL_CALL_START" || event.type === "TOOL_CALL_RESULT" || event.type === "RUN_ERROR" || event.type === "RUN_FINISHED")) {
+          clearThinkingPlaceholder();
+        }
         handleEvent(event, body, assistantNode, outstanding);
       }
     }
-    if (!body.textContent.trim()) {
+    clearThinkingPlaceholder();
+    const hasTrace = Boolean(assistantNode.querySelector(".hr-trace"));
+    if (!body.textContent.trim() && !hasTrace) {
       assistantNode.remove();
+      syncWelcomeVisibility();
     }
   }
 
@@ -481,7 +595,7 @@
         const traceKind = result && result.authorized === false ? "deny"
           : result && result.authorized === true ? "allow" : "info";
         const tag = result && result.reason_code ? ` · ${result.reason_code}` : "";
-        appendTrace(assistantNode, traceKind, `result · ${name}${tag}`);
+        appendTrace(assistantNode, traceKind, `result · ${name}${tag}`, result);
         break;
       }
       case "TOOL_CALL_END": break;
@@ -636,10 +750,9 @@
     if (!state.pendingInterrupt || state.pendingInterrupt.kind !== "employee_confirm") return;
     const interruptId = state.pendingInterrupt._interruptId || null;
     const proposed = state.pendingInterrupt.arguments || state.pendingInterrupt.proposed || state.pendingInterrupt;
-    const nextStart = prompt("New start date (YYYY-MM-DD)", ctx.start_date || proposed.start_date || "");
-    if (nextStart == null) return;
-    const nextEnd = prompt("New end date (YYYY-MM-DD)", ctx.end_date || proposed.end_date || "");
-    if (nextEnd == null) return;
+    const nextStart = String(ctx.start_date || proposed.start_date || "").trim();
+    const nextEnd = String(ctx.end_date || proposed.end_date || "").trim();
+    const nextType = String(ctx.leave_type || proposed.leave_type || "annual").trim();
     const err = validateDateRange(nextStart, nextEnd);
     if (err) {
       appendMessage("error", err, "Invalid range");
@@ -647,6 +760,7 @@
     }
     const edited = {
       ...proposed,
+      leave_type: nextType,
       start_date: nextStart,
       end_date: nextEnd,
     };
@@ -736,20 +850,46 @@
 
   /* ------------------------------------------------------------- wire-up */
 
+  function autoResizeInput() {
+    const input = $("chatInput");
+    input.style.height = "auto";
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, 54), 180)}px`;
+  }
+
   $("signInBtn").addEventListener("click", async () => {
-    try { await beginSignIn(); }
-    catch (err) { appendMessage("error", err.message, "Sign-in error"); }
+    const btn = $("signInBtn");
+    const prevText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Redirecting…";
+    try {
+      await beginSignIn();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = prevText;
+      appendMessage("error", err.message, "Sign-in error");
+    }
   });
   $("signOutBtn").addEventListener("click", signOut);
+  if ($("newChatBtn")) {
+    $("newChatBtn").addEventListener("click", startNewChat);
+  }
   if ($("refreshReviewsBtn")) {
     $("refreshReviewsBtn").addEventListener("click", pollPendingReviews);
+  }
+  for (const chip of document.querySelectorAll(".hr-starter-chip")) {
+    chip.addEventListener("click", () => {
+      const promptText = chip.dataset.prompt || "";
+      if (promptText) sendMessage(promptText);
+    });
   }
   $("chatForm").addEventListener("submit", (e) => {
     e.preventDefault();
     sendMessage($("chatInput").value);
+    autoResizeInput();
   });
   $("chatInput").addEventListener("input", (e) => {
     $("chatCount").textContent = String(e.target.value.length);
+    autoResizeInput();
     updateControls();
   });
   $("chatInput").addEventListener("keydown", (e) => {
@@ -763,6 +903,7 @@
     state,
     sendMessage,
     sendResume,
+    startNewChat,
     handleRendererMessage,
     validateDateRange,
     reasonLabel: window.HrToolAdapter.reasonLabel,

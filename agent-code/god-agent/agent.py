@@ -608,9 +608,11 @@ async def invocations(payload: dict, context: RequestContext):
                 description="HR assistant router (god agent)",
                 graph=graph,
                 config={"configurable": {"actor_id": user_id}},
-                emit_interrupt_outcome=True,
-                emit_raw_events=False,
             )
+            # `copilotkit.LangGraphAGUIAgent.__init__` does not forward parent
+            # `ag_ui_langgraph.LangGraphAgent` flags; set them on the instance.
+            agui.emit_interrupt_outcome = True
+            agui.emit_raw_events = False
             try:
                 async for event in agui.run(input_data):
                     if event is None:

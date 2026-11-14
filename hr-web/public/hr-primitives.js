@@ -229,27 +229,70 @@
     card.append(el("p", "hr-note",
       "Confirming here submits one pending request. Your balance is not reduced "
       + "until your manager approves. Typing \u201capprove\u201d in the chat does nothing."));
+
+    // Inline date/type editor (replaces blocked window.prompt() dialogs).
+    const editBox = el("div", "hr-edit-box");
+    editBox.hidden = true;
+    const typeLabel = el("label", "hr-edit-field");
+    typeLabel.append(el("span", "hr-edit-label", "Leave type"));
+    const typeSelect = el("select", "hr-input hr-input--sm");
+    for (const optVal of ["annual", "sick"]) {
+      const opt = el("option", "", optVal);
+      opt.value = optVal;
+      if ((props.leaveType || "annual") === optVal) opt.selected = true;
+      typeSelect.append(opt);
+    }
+    typeLabel.append(typeSelect);
+
+    const startLabel = el("label", "hr-edit-field");
+    startLabel.append(el("span", "hr-edit-label", "Start date (YYYY-MM-DD)"));
+    const startInput = el("input", "hr-input hr-input--sm");
+    startInput.type = "date";
+    startInput.value = props.startDate || "";
+    startLabel.append(startInput);
+
+    const endLabel = el("label", "hr-edit-field");
+    endLabel.append(el("span", "hr-edit-label", "End date (YYYY-MM-DD)"));
+    const endInput = el("input", "hr-input hr-input--sm");
+    endInput.type = "date";
+    endInput.value = props.endDate || "";
+    endLabel.append(endInput);
+
+    editBox.append(typeLabel, startLabel, endLabel);
+    card.append(editBox);
+
     const actions = el("div", "hr-actions");
-    const ctxPayload = {
+    const buildPayload = () => ({
       kind: "employee_confirm",
-      leave_type: props.leaveType || "",
-      start_date: props.startDate || "",
-      end_date: props.endDate || "",
+      leave_type: typeSelect.value || props.leaveType || "",
+      start_date: startInput.value || props.startDate || "",
+      end_date: endInput.value || props.endDate || "",
       reason: props.reason || "",
-    };
-    const makeButton = (label, variant, actionName) => {
+    });
+    const makeButton = (label, variant, actionName, onClick) => {
       const btn = el("button",
         `hr-button${variant ? " hr-button--" + variant : ""}`, label);
       btn.type = "button";
       btn.dataset.action = actionName;
-      btn.addEventListener("click", () => ctx.emitAction(
-        { name: actionName, context: ctxPayload },
-      ));
+      btn.addEventListener("click", onClick);
       return btn;
     };
-    actions.append(makeButton("Reject", "ghost", "employee_reject_leave"));
-    actions.append(makeButton("Edit", "outline", "employee_edit_leave"));
-    actions.append(makeButton("Confirm", "", "employee_confirm_leave"));
+    const rejectBtn = makeButton("Reject", "ghost", "employee_reject_leave", () =>
+      ctx.emitAction({ name: "employee_reject_leave", context: buildPayload() }),
+    );
+    const editBtn = makeButton("Edit dates", "outline", "employee_edit_leave", () => {
+      if (editBox.hidden) {
+        editBox.hidden = false;
+        editBtn.textContent = "Submit edited";
+        startInput.focus();
+        return;
+      }
+      ctx.emitAction({ name: "employee_edit_leave", context: buildPayload() });
+    });
+    const confirmBtn = makeButton("Confirm", "", "employee_confirm_leave", () =>
+      ctx.emitAction({ name: "employee_confirm_leave", context: buildPayload() }),
+    );
+    actions.append(rejectBtn, editBtn, confirmBtn);
     card.append(actions);
     return card;
   }

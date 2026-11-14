@@ -71,6 +71,7 @@ RUNTIME_ARN_RE = re.compile(
     r"^arn:aws:bedrock-agentcore:([a-z]{2}(?:-[a-z]+)+-\d):\d{12}:runtime/.+$"
 )
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{33,128}$")
+XRAY_TRACE_ID_RE = re.compile(r"^1-[0-9a-f]{8}-[0-9a-fA-F-]{24,36}$")
 MAX_INVOKE_BODY_BYTES = 256 * 1024
 
 # The A2UI wire protocol version this UI speaks. Pinned so a mismatched
@@ -182,9 +183,8 @@ def load_config(
 
         ssm_client = boto3.client("ssm", region_name=resolved_region)
 
-        def _read(name: str) -> str:
-            full = f"{prefix}/{name}"
-            return ssm_client.get_parameter(Name=full)["Parameter"]["Value"]
+        def _read(full_name: str) -> str:
+            return ssm_client.get_parameter(Name=full_name)["Parameter"]["Value"]
 
         reader = _read
     else:
@@ -322,15 +322,20 @@ class HrWebHandler(SimpleHTTPRequestHandler):
                 f"https://bedrock-agentcore.{config.region}.amazonaws.com/runtimes/"
                 f"{quote(config.runtime_arn, safe='')}/invocations?qualifier=DEFAULT"
             )
+            upstream_headers = {
+                "Authorization": auth_header,
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
+            }
+            trace_id = self.headers.get("X-Amzn-Trace-Id", "").strip()
+            if trace_id and XRAY_TRACE_ID_RE.match(trace_id):
+                upstream_headers["X-Amzn-Trace-Id"] = trace_id
+
             upstream_req = Request(
                 upstream_url,
                 data=raw_body,
-                headers={
-                    "Authorization": auth_header,
-                    "Content-Type": "application/json",
-                    "Accept": "text/event-stream",
-                    "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
-                },
+                headers=upstream_headers,
                 method="POST",
             )
             try:
@@ -375,12 +380,36 @@ class HrWebHandler(SimpleHTTPRequestHandler):
             {"error": f"{method} is not supported on this server."},
         )
 
+    def _connect_src_origins(self) -> str:
+        """Build valid W3C CSP `connect-src` origins for the configured deployment.
+
+        W3C CSP host-source wildcards (`*`) are only valid as the leftmost
+        label (`https://*.amazoncognito.com`), NEVER mid-hostname
+        (`https://cognito-idp.*.amazonaws.com` is rejected by Chrome/Safari
+        and blocks OIDC discovery on Sign in). Derive the exact regional
+        origins from `PublicConfig` instead.
+        """
+        origins: list[str] = ["'self'", "https://*.amazoncognito.com"]
+        config: PublicConfig | None = getattr(self.server, "public_config", None)
+        if config is not None:
+            parsed_issuer = urlsplit(config.issuer_url)
+            if parsed_issuer.scheme == "https" and parsed_issuer.netloc:
+                issuer_origin = f"https://{parsed_issuer.netloc}"
+                if issuer_origin not in origins:
+                    origins.append(issuer_origin)
+            for regional_host in (
+                f"https://cognito-idp.{config.region}.amazonaws.com",
+                f"https://bedrock-agentcore.{config.region}.amazonaws.com",
+            ):
+                if regional_host not in origins:
+                    origins.append(regional_host)
+        origins.append("https://login.microsoftonline.com")
+        return " ".join(origins)
+
     def end_headers(self) -> None:
         # Hardening headers mirror ``dashboard/server.py`` so a review covers
-        # both loopback consoles the same way. ``connect-src`` must allow the
-        # Cognito token endpoint, Cognito's OIDC discovery (the issuer URL),
-        # and the AgentCore runtime so the AG-UI stream can run from the
-        # page.
+        # both loopback consoles the same way. ``connect-src`` allows exact
+        # regional Cognito/AgentCore origins plus Cognito hosted-UI domains.
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
@@ -388,10 +417,7 @@ class HrWebHandler(SimpleHTTPRequestHandler):
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data:; "
             "style-src 'self' 'unsafe-inline'; script-src 'self'; "
-            "connect-src 'self' https://*.amazoncognito.com "
-            "https://cognito-idp.*.amazonaws.com "
-            "https://login.microsoftonline.com "
-            "https://bedrock-agentcore.*.amazonaws.com; "
+            f"connect-src {self._connect_src_origins()}; "
             "base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
         )
         if self.path.startswith("/config.json"):
