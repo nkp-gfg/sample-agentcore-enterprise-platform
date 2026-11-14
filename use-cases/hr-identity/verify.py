@@ -107,10 +107,17 @@ def main() -> int:
             f"at {attached_arn!r}, not {function_arn!r} - another trigger is "
             "attached to the same pool"
         )
+    version = pretoken_config.get("LambdaVersion")
+    if version != "V3_0":
+        sys.exit(
+            f"FAIL: user pool {user_pool_id} PreTokenGenerationConfig version "
+            f"is {version!r}, expected 'V3_0' (required for M2M client_credentials "
+            "aws_client_metadata enrichment)"
+        )
 
     print(
         f"OK: hr-identity pretoken {function_arn} is Active and attached to "
-        f"user pool {user_pool_id}"
+        f"user pool {user_pool_id} (LambdaVersion=V3_0)"
     )
     return 0
 

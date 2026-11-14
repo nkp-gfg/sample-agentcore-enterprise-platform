@@ -50,7 +50,6 @@ import sys
 from pathlib import Path
 
 import aws_cdk as cdk
-from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
@@ -93,38 +92,11 @@ class HrIdentityStack(cdk.Stack):
         db_name = ssm.StringParameter.value_for_string_parameter(
             self, f"{ssm_prefix}/use-cases/hr-data/database-name"
         )
-        vpc_id = ssm.StringParameter.value_for_string_parameter(
-            self, f"{ssm_prefix}/networking/vpc-id"
-        )
         private_subnet_ids_param = ssm.StringParameter.value_for_string_parameter(
             self, f"{ssm_prefix}/networking/private-subnet-ids"
         )
         runtime_security_group_id = ssm.StringParameter.value_for_string_parameter(
             self, f"{ssm_prefix}/networking/runtime-security-group-id"
-        )
-
-        # Networking publishes exactly two private subnets (two AZs,
-        # docs/modules/networking.md). Fn::Select is a CloudFormation
-        # intrinsic — synth needs no AWS call to resolve it.
-        subnet_ids_list = cdk.Fn.split(",", private_subnet_ids_param)
-        private_subnet_ids = [
-            cdk.Fn.select(0, subnet_ids_list),
-            cdk.Fn.select(1, subnet_ids_list),
-        ]
-
-        # --------------------------------------------------------------
-        # Networking: the Lambda ENIs live in the module C private
-        # subnets, attached to the module C runtime security group. See
-        # the docstring for why a fresh SG would need extra plumbing
-        # into hr-data's DB SG that hr-data does not expose.
-        # --------------------------------------------------------------
-
-        runtime_security_group = ec2.SecurityGroup.from_security_group_id(
-            self,
-            "ImportedRuntimeSg",
-            runtime_security_group_id,
-            allow_all_outbound=False,
-            mutable=False,
         )
 
         # --------------------------------------------------------------
@@ -259,20 +231,6 @@ class HrIdentityStack(cdk.Stack):
             role=lambda_role,
             timeout=cdk.Duration.seconds(10),
             memory_size=256,
-            vpc=ec2.Vpc.from_vpc_attributes(
-                self,
-                "ImportedVpc",
-                vpc_id=vpc_id,
-                availability_zones=cdk.Fn.get_azs(),
-                private_subnet_ids=private_subnet_ids,
-            ),
-            vpc_subnets=ec2.SubnetSelection(
-                subnets=[
-                    ec2.Subnet.from_subnet_id(self, f"ImportedSubnet{i}", sid)
-                    for i, sid in enumerate(private_subnet_ids)
-                ],
-            ),
-            security_groups=[runtime_security_group],
             layers=[driver_layer],
             log_group=log_group,
             environment={
@@ -280,15 +238,21 @@ class HrIdentityStack(cdk.Stack):
                 "DB_PORT": "5432",
                 "DB_NAME": db_name,
                 "DB_USER": HR_IDENTITY_DB_USER,
-                # AWS_REGION is set automatically by the Lambda runtime;
-                # the handler reads it from os.environ either way.
             },
             description=(
-                "Cognito pre-token trigger: resolves the signed-in "
-                "employee in hr-data and adds employee_id, role, and "
-                "(when allowed) agent_id claims. See "
+                "Cognito pre-token V3_0 trigger: resolves the signed-in "
+                "employee in hr-data and adds employee_id, user_id, role, "
+                "and (when allowed) agent_id claims. See "
                 "docs/hr/modules.md § H3 claims."
             ),
+        )
+        cfn_pretoken = pretoken_function.node.default_child  # type: ignore[assignment]
+        cfn_pretoken.add_property_override(
+            "VpcConfig",
+            {
+                "SubnetIds": cdk.Fn.split(",", private_subnet_ids_param),
+                "SecurityGroupIds": [runtime_security_group_id],
+            },
         )
 
         # Cognito calls the Lambda through the same sourceArn the trigger
@@ -311,18 +275,15 @@ class HrIdentityStack(cdk.Stack):
         )
 
         # --------------------------------------------------------------
-        # Attach the trigger. Custom resource because the user pool lives
-        # in the auth stack and this stack reads only its id from SSM —
-        # `UserPool.from_lookup` would require an AWS call at synth, and
-        # `cognito.CfnUserPool` is a creator, not an importer.
-        #
-        # LambdaConfig.PreTokenGenerationConfig is the v2 trigger — it
-        # supports access-token claim overrides (v1 PreTokenGeneration is
-        # ID-token only). docs/hr/modules.md § H3 adds claims to the
-        # access token, so v2 is the required shape.
+        # Safely attach/detach the V3_0 pre-token trigger via a read-modify-
+        # write CustomResource (`trigger_manager/handler.py`). Preserves every
+        # existing UserPool attribute (DeletionProtection, AdminCreateUserConfig,
+        # Policies, other triggers) and ensures UserPoolTier is ESSENTIALS/PLUS
+        # so V3_0 `TokenGeneration_ClientCredentials` + `aws_client_metadata`
+        # is active for M2M gateway token exchanges.
         # --------------------------------------------------------------
 
-        attach_role = iam.Role(
+        trigger_manager_role = iam.Role(
             self,
             "TriggerUpdaterRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
@@ -332,106 +293,52 @@ class HrIdentityStack(cdk.Stack):
                 ),
             ],
             description=(
-                "UpdateUserPool permissions for the AwsCustomResource that "
-                "attaches/detaches the hr-identity pre-token trigger."
+                "DescribeUserPool + UpdateUserPool permissions for safely "
+                "attaching/detaching the hr-identity V3_0 pre-token trigger."
             ),
         )
-        attach_role.add_to_policy(
+        trigger_manager_role.add_to_policy(
             iam.PolicyStatement(
                 sid="UpdateUserPoolTrigger",
                 actions=[
-                    "cognito-idp:UpdateUserPool",
                     "cognito-idp:DescribeUserPool",
+                    "cognito-idp:UpdateUserPool",
                 ],
                 resources=[user_pool_arn],
             )
         )
 
-        attach_physical_id = cr.PhysicalResourceId.of(
-            f"{prefix}-uc-hr-identity-trigger-attach"
+        trigger_manager_fn = lambda_.Function(
+            self,
+            "TriggerManagerFunction",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            handler="handler.on_event",
+            code=lambda_.Code.from_asset(
+                str(Path(__file__).parent / "trigger_manager")
+            ),
+            role=trigger_manager_role,
+            timeout=cdk.Duration.minutes(2),
+            memory_size=256,
+            description=f"Attaches/detaches V3_0 pre-token trigger on {prefix} user pool",
         )
-        attach_payload = {
-            "UserPoolId": user_pool_id,
-            "LambdaConfig": {
-                "PreTokenGenerationConfig": {
-                    "LambdaArn": pretoken_function.function_arn,
-                    "LambdaVersion": "V2_0",
-                },
-            },
-        }
-        attach = cr.AwsCustomResource(
+
+        trigger_provider = cr.Provider(
+            self,
+            "TriggerManagerProvider",
+            on_event_handler=trigger_manager_fn,
+        )
+
+        attach = cdk.CustomResource(
             self,
             "AttachTrigger",
-            on_create=cr.AwsSdkCall(
-                service="CognitoIdentityServiceProvider",
-                action="updateUserPool",
-                parameters=attach_payload,
-                physical_resource_id=attach_physical_id,
-            ),
-            on_update=cr.AwsSdkCall(
-                service="CognitoIdentityServiceProvider",
-                action="updateUserPool",
-                parameters=attach_payload,
-                physical_resource_id=attach_physical_id,
-            ),
-            # DELETE is handled by a separate custom resource below so
-            # the detach step can re-fetch the user pool's current
-            # LambdaConfig and null out just the pre-token entry — never
-            # a blind wipe that would clobber other triggers.
-            policy=cr.AwsCustomResourcePolicy.from_statements(
-                [
-                    iam.PolicyStatement(
-                        actions=[
-                            "cognito-idp:UpdateUserPool",
-                            "cognito-idp:DescribeUserPool",
-                        ],
-                        resources=[user_pool_arn],
-                    ),
-                ]
-            ),
-            install_latest_aws_sdk=False,
-            role=attach_role,
-            timeout=cdk.Duration.minutes(2),
+            service_token=trigger_provider.service_token,
+            properties={
+                "UserPoolId": user_pool_id,
+                "LambdaArn": pretoken_function.function_arn,
+                "LambdaVersion": "V3_0",
+            },
         )
         attach.node.add_dependency(pretoken_function)
-
-        detach_payload = {
-            "UserPoolId": user_pool_id,
-            "LambdaConfig": {},
-        }
-        cr.AwsCustomResource(
-            self,
-            "DetachTriggerOnDelete",
-            on_create=cr.AwsSdkCall(
-                service="CognitoIdentityServiceProvider",
-                action="describeUserPool",
-                parameters={"UserPoolId": user_pool_id},
-                physical_resource_id=cr.PhysicalResourceId.of(
-                    f"{prefix}-uc-hr-identity-trigger-detach"
-                ),
-                # No-op on CREATE / UPDATE — this resource only exists
-                # for its DELETE handler.
-            ),
-            on_delete=cr.AwsSdkCall(
-                service="CognitoIdentityServiceProvider",
-                action="updateUserPool",
-                parameters=detach_payload,
-            ),
-            policy=cr.AwsCustomResourcePolicy.from_statements(
-                [
-                    iam.PolicyStatement(
-                        actions=[
-                            "cognito-idp:UpdateUserPool",
-                            "cognito-idp:DescribeUserPool",
-                        ],
-                        resources=[user_pool_arn],
-                    ),
-                ]
-            ),
-            install_latest_aws_sdk=False,
-            role=attach_role,
-            timeout=cdk.Duration.minutes(2),
-        )
 
         # --------------------------------------------------------------
         # Platform-interface output. One parameter — operators look up

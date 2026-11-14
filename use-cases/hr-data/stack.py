@@ -74,6 +74,9 @@ class HrDataStack(cdk.Stack):
         database_name = str(config.get("database_name", "hr"))
         retain_data = bool(config.get("retain_data", True))
         seed = bool(config.get("seed", False))
+        engine_version = config.get("engine_version")
+        if engine_version is not None:
+            engine_version = str(engine_version).strip() or None
 
         lifecycle = (
             cdk.RemovalPolicy.RETAIN if retain_data else cdk.RemovalPolicy.DESTROY
@@ -103,13 +106,44 @@ class HrDataStack(cdk.Stack):
             self, f"{ssm_prefix}/networking/runtime-security-group-id"
         )
 
-        # Security stack does not publish an SSM parameter; its KMS CMK is
-        # exposed only as a Python attribute. Use the deterministic alias
-        # (stacks/security_stack.py line 36). This produces a stable grant
-        # path for Aurora, the master secret, and the custom resource.
-        kms_alias = kms.Alias.from_alias_name(
-            self, "PlatformKey", f"alias/{prefix}-agentcore"
+        # Security stack exposes its CMK deterministically under
+        # `alias/{prefix}-agentcore`, but `kms.Alias.from_alias_name().key_arn`
+        # synthesizes an ALIAS ARN (`...:alias/...`), which AWS IAM rejects on
+        # `kms:Decrypt` (`AccessDeniedException`) and which causes drift on
+        # `AWS::RDS::DBCluster.KmsKeyId`. Resolve the alias to its real backing
+        # key ARN (`...:key/<uuid>`) at deploy time via `kms:DescribeKey`.
+        kms_alias_name = f"alias/{prefix}-agentcore"
+        kms_lookup = cr.AwsCustomResource(
+            self,
+            "ResolvePlatformKeyArn",
+            on_create=cr.AwsSdkCall(
+                service="KMS",
+                action="describeKey",
+                parameters={"KeyId": kms_alias_name},
+                physical_resource_id=cr.PhysicalResourceId.of(
+                    f"{prefix}-uc-hr-data-kms-lookup"
+                ),
+            ),
+            on_update=cr.AwsSdkCall(
+                service="KMS",
+                action="describeKey",
+                parameters={"KeyId": kms_alias_name},
+                physical_resource_id=cr.PhysicalResourceId.of(
+                    f"{prefix}-uc-hr-data-kms-lookup"
+                ),
+            ),
+            policy=cr.AwsCustomResourcePolicy.from_statements(
+                [
+                    iam.PolicyStatement(
+                        actions=["kms:DescribeKey"],
+                        resources=[f"arn:aws:kms:{self.region}:{self.account}:key/*"],
+                    )
+                ]
+            ),
+            install_latest_aws_sdk=False,
         )
+        resolved_key_arn = kms_lookup.get_response_field("KeyMetadata.Arn")
+        platform_kms_key = kms.Key.from_key_arn(self, "PlatformKey", resolved_key_arn)
 
         # --------------------------------------------------------------
         # Networking: dedicated DB security group and the one egress rule
@@ -163,7 +197,7 @@ class HrDataStack(cdk.Stack):
             self,
             "MasterSecret",
             description=f"HR data master credentials for {prefix}",
-            encryption_key=kms_alias,
+            encryption_key=platform_kms_key,
             generate_secret_string=secretsmanager.SecretStringGenerator(
                 secret_string_template=json.dumps({"username": "hr_master"}),
                 generate_string_key="password",
@@ -178,42 +212,44 @@ class HrDataStack(cdk.Stack):
         # VPC lookups; the platform interface forbids importing stacks/*).
         # --------------------------------------------------------------
 
-        cluster = rds.CfnDBCluster(
-            self,
-            "Cluster",
-            engine="aurora-postgresql",
-            engine_mode="provisioned",
-            # Aurora PostgreSQL 15.x is the current major on Serverless v2 in
-            # all AgentCore regions; Data API is supported since 15.3.
-            engine_version="15.5",
-            db_cluster_identifier=f"{prefix}-uc-hr-data",
-            db_subnet_group_name=db_subnet_group.ref,
-            vpc_security_group_ids=[db_security_group.attr_group_id],
-            master_username="hr_master",
+        cluster_kwargs: dict = {
+            "engine": "aurora-postgresql",
+            "engine_mode": "provisioned",
+            "db_cluster_identifier": f"{prefix}-uc-hr-data",
+            "db_subnet_group_name": db_subnet_group.ref,
+            "vpc_security_group_ids": [db_security_group.attr_group_id],
+            "master_username": "hr_master",
             # Dynamic reference; the value never appears in the synthesized
             # template or in cdk.out. Same pattern as stacks/auth_stack.py.
-            master_user_password=cdk.SecretValue.secrets_manager(
+            "master_user_password": cdk.SecretValue.secrets_manager(
                 master_secret.secret_name, json_field="password"
             ).unsafe_unwrap(),
-            database_name=database_name,
-            storage_encrypted=True,
-            kms_key_id=kms_alias.key_arn,
-            enable_iam_database_authentication=True,
-            deletion_protection=retain_data,
-            backup_retention_period=14,
-            # Data API: the provisioner Lambda and future admin tooling can
-            # run SQL without a VPC connection. Not reachable by the H4
-            # Lambdas: those connect on 5432 with RDS IAM tokens from inside
+            "database_name": database_name,
+            "storage_encrypted": True,
+            "kms_key_id": resolved_key_arn,
+            "enable_iam_database_authentication": True,
+            "deletion_protection": retain_data,
+            "backup_retention_period": 14,
+            # Data API: the provisioner Lambda and operator mapping can
+            # run SQL without a VPC connection. H3/H4 Lambdas and the
+            # god-agent runtime connect on 5432 with RDS IAM tokens inside
             # the VPC (docs/hr/modules.md).
-            enable_http_endpoint=True,
-            enable_cloudwatch_logs_exports=["postgresql"],
-            serverless_v2_scaling_configuration=(
+            "enable_http_endpoint": True,
+            "enable_cloudwatch_logs_exports": ["postgresql"],
+            "serverless_v2_scaling_configuration": (
                 rds.CfnDBCluster.ServerlessV2ScalingConfigurationProperty(
                     min_capacity=0.5,
                     max_capacity=2.0,
                 )
             ),
-        )
+        }
+        # Omit EngineVersion by default so AWS RDS selects the region's
+        # active default Aurora PostgreSQL version (avoiding deprecated minor
+        # versions like 15.5); allow optional override via platform.yaml.
+        if engine_version:
+            cluster_kwargs["engine_version"] = engine_version
+
+        cluster = rds.CfnDBCluster(self, "Cluster", **cluster_kwargs)
         cluster.apply_removal_policy(lifecycle)
 
         instance = rds.CfnDBInstance(
@@ -276,12 +312,12 @@ class HrDataStack(cdk.Stack):
             )
         )
         # The master secret is CMK-encrypted, so the provisioner needs
-        # Decrypt on the key, scoped via kms:ViaService to Secrets Manager
-        # so a compromised provisioner cannot abuse it elsewhere.
+        # Decrypt + DescribeKey on the resolved backing key ARN, scoped via
+        # kms:ViaService to Secrets Manager.
         provisioner_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["kms:Decrypt"],
-                resources=[kms_alias.key_arn],
+                actions=["kms:Decrypt", "kms:DescribeKey"],
+                resources=[resolved_key_arn],
                 conditions={
                     "StringEquals": {
                         "kms:ViaService": (

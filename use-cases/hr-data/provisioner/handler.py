@@ -77,15 +77,14 @@ def on_event(event: dict, _context) -> dict:
     seed = str(properties.get("Seed", "false")).lower() == "true"
 
     _wait_until_cluster_reachable(cluster_arn, secret_arn)
+    _ensure_database(cluster_arn, secret_arn, database)
     _ensure_database(cluster_arn, secret_arn, checkpoint_db)
     _apply_sql_file(cluster_arn, secret_arn, database, _SCHEMA_SQL)
     # `agent_checkpoint` is created in the agent_state database, not in hr —
     # the god agent's LangGraph checkpointer connects there and must own its
     # own tables. Without this role, PostgresSaver.setup() fails on the god
     # agent's very first invocation.
-    _apply_sql_file(
-        cluster_arn, secret_arn, checkpoint_db, _AGENT_STATE_SCHEMA_SQL
-    )
+    _apply_sql_file(cluster_arn, secret_arn, checkpoint_db, _AGENT_STATE_SCHEMA_SQL)
     if seed:
         _apply_sql_file(cluster_arn, secret_arn, database, _SEED_SQL)
 
