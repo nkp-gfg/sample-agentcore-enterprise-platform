@@ -22,6 +22,7 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           json: true
+          escape_json: false
           files: |
             **/*.py
 
@@ -37,10 +38,12 @@ jobs:
 
       - name: Run ruff check on changed files
         if: steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
         env:
           ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
-          mapfile -d '' -t files < <(printf '%s' "${ALL_CHANGED_FILES}" | jq -j '.[] + "\u0000"')
+          printf '%s' "${ALL_CHANGED_FILES}" | jq -e -j '.[] + "\u0000"' > /tmp/changed_files.nul
+          mapfile -d '' -t files < /tmp/changed_files.nul
           echo "Checking changed Python files:"
           printf '%s\n' "${files[@]}"
           if [ "${#files[@]}" -gt 0 ]; then
@@ -49,10 +52,12 @@ jobs:
 
       - name: Run ruff format check on changed files
         if: steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
         env:
           ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
-          mapfile -d '' -t files < <(printf '%s' "${ALL_CHANGED_FILES}" | jq -j '.[] + "\u0000"')
+          printf '%s' "${ALL_CHANGED_FILES}" | jq -e -j '.[] + "\u0000"' > /tmp/changed_files.nul
+          mapfile -d '' -t files < /tmp/changed_files.nul
           if [ "${#files[@]}" -gt 0 ]; then
             ruff format --check "${files[@]}"
           fi

@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 # is worse than naming the fixture properly once.
 STUB_RESPONSE_VALUE = "stub-value-from-fake-urlopen"
 STUB_CLIENT_CONFIG_VALUE = "stub-value-from-fake-secrets-manager"
+STUB_AUTH_INPUT = "stub-auth-input"
 STUB_SECRET_NAME = "agentcore/test/m2m"
 
 
@@ -198,12 +199,15 @@ def test_authenticate_cognito_decodes_urlsafe_jwt_payload(monkeypatch):
     # Includes '-' and '_' in base64url encoding (0xfb, 0xff bytes) where
     # standard base64.b64decode would fail, plus unpadded payload length % 4 != 0.
     sub_value = "user-???"
+    header_b64 = (
+        base64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode("ascii")
+    )
     payload_bytes = json.dumps({"sub": sub_value, "pad": "~?>?"}).encode("utf-8")
     b64url_payload = (
         base64.urlsafe_b64encode(payload_bytes).rstrip(b"=").decode("ascii")
     )
     assert "-" in b64url_payload or "_" in b64url_payload
-    id_token = f"eyJhbGciOiJub25lIn0.{b64url_payload}.sig"
+    id_token = f"{header_b64}.{b64url_payload}.sig"
 
     class CognitoStub:
         class exceptions:
@@ -219,7 +223,7 @@ def test_authenticate_cognito_decodes_urlsafe_jwt_payload(monkeypatch):
         def initiate_auth(self, **_kwargs):
             return {
                 "AuthenticationResult": {
-                    "AccessToken": "stub-access",
+                    "AccessToken": STUB_RESPONSE_VALUE,
                     "IdToken": id_token,
                 }
             }
@@ -228,8 +232,8 @@ def test_authenticate_cognito_decodes_urlsafe_jwt_payload(monkeypatch):
     monkeypatch.setattr(utils.boto3, "client", lambda *a, **kw: CognitoStub())
 
     access, returned_id, user_id = utils.authenticate_cognito(
-        "pool-1", "client-1", "alice", "pw"
+        "pool-1", "client-1", "alice", STUB_AUTH_INPUT
     )
-    assert access == "stub-access"
+    assert access == STUB_RESPONSE_VALUE
     assert returned_id == id_token
     assert user_id == sub_value

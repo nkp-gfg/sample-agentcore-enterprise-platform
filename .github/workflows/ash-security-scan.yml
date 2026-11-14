@@ -23,6 +23,7 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           json: true
+          escape_json: false
           files: |
             **/*.py
             **/*.yaml
@@ -44,19 +45,22 @@ jobs:
 
       - name: Create temp directory for changed files
         if: steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
         env:
           ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
           mkdir -p /tmp/ash-scan
           echo "Changed files for security scan:"
-          printf '%s\n' "${ALL_CHANGED_FILES}" | jq -r '.[]'
+          printf '%s\n' "${ALL_CHANGED_FILES}" | jq -e -r '.[]'
 
       - name: Copy changed files to temp directory
         if: steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
         env:
           ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
-          mapfile -d '' -t files < <(printf '%s' "${ALL_CHANGED_FILES}" | jq -j '.[] + "\u0000"')
+          printf '%s' "${ALL_CHANGED_FILES}" | jq -e -j '.[] + "\u0000"' > /tmp/changed_files.nul
+          mapfile -d '' -t files < /tmp/changed_files.nul
           for file in "${files[@]}"; do
             if [ -f "$file" ]; then
               mkdir -p "/tmp/ash-scan/$(dirname "$file")"
@@ -66,7 +70,9 @@ jobs:
 
       - name: Run ASH scan on changed files
         if: steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
         run: |
+          set -o pipefail
           cd /tmp/ash-scan
           cat > .ash_config.yaml << 'EOF'
           reporters:

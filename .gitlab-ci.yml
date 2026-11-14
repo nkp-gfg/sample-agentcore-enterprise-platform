@@ -128,7 +128,7 @@ pytest:
   <<: *pip-cache
   before_script:
     # boto3 + colorama: imported by scripts/utils.py, which the scripts tests import
-    - pip install -q pyyaml==6.0.3 pytest==9.1.1 boto3==1.44.3 colorama==0.4.6
+    - pip install -q pyyaml==6.0.3 pytest==9.2.0 boto3==1.44.3 colorama==0.4.6
   script:
     - python -m pytest tests/ -q
 
@@ -139,7 +139,7 @@ cdk-synth:
   before_script:
     - apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv > /dev/null
     - python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt
-    - npm install -g aws-cdk@2.1135.1 > /dev/null
+    - npm install -g aws-cdk@2.1148.1 > /dev/null
   script:
     # Synth with a placeholder account — validates all stacks assemble
     # without AWS credentials. Docker asset bundling is not exercised.
