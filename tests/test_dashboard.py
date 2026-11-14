@@ -207,7 +207,9 @@ class _DescribedStack:
 
 
 def test_cloudformation_outputs_are_allowlisted_before_serialization():
-    generated_secret = "generated-client-secret-must-never-serialize"
+    generated_secret = (
+        "generated-client-secret-must-never-serialize"  # pragma: allowlist secret
+    )
     outputs = [
         {"OutputKey": "GatewayUrl", "OutputValue": "https://gateway.example"},
         {"OutputKey": "FutureOutput", "OutputValue": "not-reviewed"},
@@ -245,14 +247,17 @@ def test_export_allowlist_adds_only_federated_replacement_references():
     ]
 
     assert safe_stack_outputs("auth", outputs) == {}
-    assert safe_stack_outputs(
-        "auth",
-        outputs,
-        allowlist=SAFE_EXPORT_STACK_OUTPUTS,
-    ) == {
-        "M2MClientIdV2Export": "replacement-client",
-        "M2MClientSecretNameV2Export": "replacement-secret-name",
-    }
+    assert (
+        safe_stack_outputs(
+            "auth",
+            outputs,
+            allowlist=SAFE_EXPORT_STACK_OUTPUTS,
+        )
+        == {
+            "M2MClientIdV2Export": "replacement-client",
+            "M2MClientSecretNameV2Export": "replacement-secret-name",  # pragma: allowlist secret
+        }
+    )
 
 
 def test_describe_stack_returns_only_reviewed_outputs():
@@ -302,7 +307,7 @@ def test_stack_resource_physical_ids_are_not_serialized():
 
 
 def test_ssm_parameters_are_allowlisted_before_serialization():
-    generated_secret = "ssm-secret-must-never-serialize"
+    generated_secret = "ssm-secret-must-never-serialize"  # pragma: allowlist secret
     ssm = _SSM(
         [
             {
@@ -534,7 +539,7 @@ def test_status_write_is_atomic_and_owner_only(tmp_path):
 
 
 def test_written_dashboard_artifact_excludes_unreviewed_secret_output(tmp_path):
-    generated_secret = "AKIA" + "1234567890ABCDEF"
+    generated_secret = "AKIA" + "1234567890ABCDEF"  # pragma: allowlist secret
     outputs = [
         {"OutputKey": "GatewayUrl", "OutputValue": "https://gateway.example"},
         {"OutputKey": "ClientSecret", "OutputValue": generated_secret},

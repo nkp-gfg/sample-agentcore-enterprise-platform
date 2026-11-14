@@ -18,7 +18,7 @@ from botocore.exceptions import ClientError
 STUB_RESPONSE_VALUE = "stub-value-from-fake-urlopen"
 STUB_CLIENT_CONFIG_VALUE = "stub-value-from-fake-secrets-manager"
 STUB_AUTH_INPUT = "stub-auth-input"
-STUB_SECRET_NAME = "agentcore/test/m2m"
+STUB_SECRET_NAME = "agentcore/test/m2m"  # pragma: allowlist secret
 
 
 class FakeAwsClient:
