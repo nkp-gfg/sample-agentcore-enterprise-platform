@@ -554,3 +554,293 @@ def test_serves_favicon_svg_asset_with_security_headers(running_server):
         assert m_status == HTTPStatus.METHOD_NOT_ALLOWED
         assert "error" in json.loads(m_body)
 
+
+# ------------------------------------ 5. Hardening & streaming regressions
+
+
+def test_host_header_requires_explicit_matching_port(running_server):
+    """Host headers omitting the port or naming a different port are rejected."""
+    for bad_host in (
+        "127.0.0.1",
+        "localhost",
+        f"127.0.0.1:{running_server.server_port + 1}",
+        "127.0.0.1:80",
+    ):
+        status, _, body = _request(
+            running_server.server_port,
+            "GET",
+            "/config.json",
+            host_header=bad_host,
+        )
+        assert status == HTTPStatus.FORBIDDEN, bad_host
+        assert "loopback" in json.loads(body)["error"].lower()
+
+
+def test_invocations_requires_exact_same_origin_when_origin_present(running_server):
+    """Origin must match Host (scheme=http, same loopback host and port)."""
+    port = running_server.server_port
+    base_headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+    }
+
+    # Cross-alias loopback (localhost vs 127.0.0.1) is refused.
+    status, _, _ = _request(
+        port,
+        "POST",
+        "/invocations",
+        body=b"{}",
+        host_header=f"127.0.0.1:{port}",
+        extra_headers={**base_headers, "Origin": f"http://localhost:{port}"},
+    )
+    assert status == HTTPStatus.FORBIDDEN
+
+    # Wrong scheme (https vs http) is refused.
+    status, _, _ = _request(
+        port,
+        "POST",
+        "/invocations",
+        body=b"{}",
+        host_header=f"127.0.0.1:{port}",
+        extra_headers={**base_headers, "Origin": f"https://127.0.0.1:{port}"},
+    )
+    assert status == HTTPStatus.FORBIDDEN
+
+
+def test_invocations_streams_sse_incrementally_via_read1(running_server, monkeypatch):
+    """_forward_invocations uses read1() so small SSE chunks flush immediately."""
+    first_chunk_sent = threading.Event()
+    release_second_chunk = threading.Event()
+
+    class FakeUpstreamResponse:
+        def __init__(self):
+            self.headers = {"Content-Type": "text/event-stream"}
+            self._step = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def read1(self, _n: int) -> bytes:
+            if self._step == 0:
+                self._step = 1
+                first_chunk_sent.set()
+                return b'data: {"type":"RUN_STARTED"}\n\n'
+            if self._step == 1:
+                assert release_second_chunk.wait(timeout=3)
+                self._step = 2
+                return b'data: {"type":"RUN_FINISHED"}\n\n'
+            return b""
+
+        def read(self, _n: int) -> bytes:
+            raise AssertionError("read1 should be preferred over buffered read()")
+
+    monkeypatch.setattr(server, "urlopen", lambda *_a, **_kw: FakeUpstreamResponse())
+
+    port = running_server.server_port
+    conn = HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request(
+            "POST",
+            "/invocations",
+            body=b'{"threadId":"t1"}',
+            headers={
+                "Host": f"127.0.0.1:{port}",
+                "Origin": f"http://127.0.0.1:{port}",
+                "Content-Type": "application/json",
+                "Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.sig",
+                "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": "session-" + ("a" * 32),
+            },
+        )
+        resp = conn.getresponse()
+        assert resp.status == HTTPStatus.OK
+        assert first_chunk_sent.wait(timeout=2)
+        chunk1 = resp.read1(4096)
+        assert b"RUN_STARTED" in chunk1
+        release_second_chunk.set()
+        rest = resp.read()
+        assert b"RUN_FINISHED" in rest
+    finally:
+        release_second_chunk.set()
+        conn.close()
+
+
+def test_main_accepts_region_cli_flag(monkeypatch):
+    """--region is parsed and forwarded to load_config()."""
+    captured: dict[str, object] = {}
+
+    def fake_load_config(
+        *, project=None, environment=None, region=None, ssm_reader=None
+    ):
+        captured["project"] = project
+        captured["environment"] = environment
+        captured["region"] = region
+        return _public_config()
+
+    class FakeServer:
+        def serve_forever(self):
+            raise KeyboardInterrupt()
+
+        def server_close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(server, "load_config", fake_load_config)
+    monkeypatch.setattr(server, "make_server", lambda *_a, **_kw: FakeServer())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "server.py",
+            "--project",
+            "agentcore-production",
+            "--environment",
+            "prod",
+            "--region",
+            "ap-southeast-1",
+            "--port",
+            "8899",
+        ],
+    )
+    server.main()
+    assert captured == {
+        "project": "agentcore-production",
+        "environment": "prod",
+        "region": "ap-southeast-1",
+        "closed": True,
+    }
+
+
+def test_app_js_client_security_invariants():
+    """app.js keeps tokens out of localStorage/window and enforces OIDC nonce/iss/aud."""
+    app_text = (HR_WEB / "public" / "app.js").read_text(encoding="utf-8")
+    assert "localStorage.setItem" not in app_text
+    assert "window.HrWeb" not in app_text
+    assert "revocation_endpoint" in app_text
+    assert "nonce: oidcNonce" in app_text
+    assert "ID token nonce mismatch" in app_text
+    assert "ID token issuer mismatch" in app_text
+    assert "ID token audience mismatch" in app_text
+    for dangerous_sink in (
+        ".innerHTML",
+        ".outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+    ):
+        assert dangerous_sink not in app_text
+
+
+def test_hr_adapter_and_primitives_days_and_multi_review_surfaces():
+    """Verify EmployeeConfirmForm days fallback and keyed manager_review surfaces in Node."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+
+    adapter_path = str(HR_WEB / "public" / "hr-tool-adapter.js")
+    primitives_path = str(HR_WEB / "public" / "hr-primitives.js")
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+
+function makeNode(tag) {
+  const node = {
+    tagName: tag.toUpperCase(),
+    className: "",
+    textContent: "",
+    children: [],
+    dataset: {},
+    attributes: {},
+    hidden: false,
+    classList: { add(c) { node.className = (node.className + " " + c).trim(); } },
+    setAttribute(k, v) { node.attributes[k] = String(v); },
+    addEventListener() {},
+    append(...items) {
+      for (const it of items) {
+        if (it && typeof it === "object") node.children.push(it);
+      }
+    },
+    focus() {},
+  };
+  return node;
+}
+
+const windowObj = {};
+const sandbox = {
+  window: windowObj,
+  document: { createElement: makeNode },
+  console,
+};
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), sandbox);
+
+const adapter = sandbox.window.HrToolAdapter;
+const catalog = sandbox.window.HrCatalog;
+
+// 1. Top-level days preserved when arguments lacks days; empty string falls back to deriveDays.
+const msgsTopDays = adapter.fromInterrupt({
+  kind: "employee_confirm",
+  days: 4,
+  arguments: {
+    leave_type: "annual",
+    start_date: "2026-12-01",
+    end_date: "2026-12-04",
+    reason: "Trip",
+  },
+});
+const topProps = msgsTopDays[1].createSurface.components[0];
+if (topProps.days !== 4) throw new Error("Expected top-level days 4, got " + topProps.days);
+
+const cardFromBlank = catalog.components.EmployeeConfirmForm(
+  { leaveType: "annual", startDate: "2026-12-01", endDate: "2026-12-03", days: "", reason: "Trip" },
+  { emitAction() {} },
+);
+const dlText = JSON.stringify(cardFromBlank);
+if (!dlText.includes('"Days"') || !dlText.includes('"3"')) {
+  throw new Error("Expected derived Days 3 when days is empty string: " + dlText);
+}
+
+// 2. Concurrent manager_review interrupts get distinct surfaces keyed by request_id.
+const rev1 = adapter.fromInterrupt({
+  kind: "manager_review",
+  request_id: "lr-111",
+  employee_id: "E1",
+  leave_type: "annual",
+  start_date: "2026-12-01",
+  end_date: "2026-12-03",
+  days: 3,
+  reason: "A",
+});
+const rev2 = adapter.fromInterrupt({
+  kind: "manager_review",
+  request_id: "lr-222",
+  employee_id: "E2",
+  leave_type: "sick",
+  start_date: "2026-12-05",
+  end_date: "2026-12-05",
+  days: 1,
+  reason: "B",
+});
+const s1 = rev1[1].createSurface.surfaceId;
+const s2 = rev2[1].createSurface.surfaceId;
+if (s1 === s2 || s1 !== "surface-manager-review-lr-111" || s2 !== "surface-manager-review-lr-222") {
+  throw new Error(`Expected distinct keyed surfaces, got ${s1} and ${s2}`);
+}
+
+const del1 = adapter.clearSurfacesFor("manager_review", "lr-111");
+if (del1[0].deleteSurface.surfaceId !== "surface-manager-review-lr-111") {
+  throw new Error("Unexpected delete surfaceId: " + JSON.stringify(del1));
+}
+"""
+    res = subprocess.run(
+        [node, "-e", script, adapter_path, primitives_path],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr or res.stdout

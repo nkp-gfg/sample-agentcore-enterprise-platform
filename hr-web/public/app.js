@@ -3,8 +3,9 @@
  * Responsibilities, in order:
  *   1. Load /config.json from the local server.
  *   2. Do the Cognito hosted-UI PKCE flow in the browser, with tokens held in
- *      memory and session envelope persisted in localStorage for silent renewal.
- *      Signing out clears them and ends the Cognito hosted-UI session.
+ *      closure-scoped memory only (never persisted to localStorage or exposed
+ *      on window). Signing out revokes the refresh token, purges local/session
+ *      storage, and ends the Cognito hosted-UI session.
  *   3. Open an AG-UI SSE stream to the module 6 runtime with that Bearer
  *      token, parse attributed subagent & root events, render assistant
  *      Markdown safely, update the live left-sidebar bot handover roster, and
@@ -38,8 +39,9 @@
   const STORAGE_KEYS = Object.freeze({
     verifier: "hr-web.pkce.verifier",
     state: "hr-web.pkce.state",
+    nonce: "hr-web.oidc.nonce",
     discovery: "hr-web.oidc.discovery",
-    session: "hr-web.oidc.session",
+    legacySession: "hr-web.oidc.session",
     thread: "hr-web.chat.threadId",
     historyPrefix: "hr-web.history.",
   });
@@ -271,8 +273,8 @@
     threadId: null,
     runId: null,
     busy: false,
-    pendingInterrupt: null,
-    pendingReviewQueue: [],
+    pendingEmployeeConfirm: null,
+    pendingManagerReviews: new Map(),
     sseController: null,
     processor: null,
     outboundErrors: [],
@@ -974,16 +976,19 @@
     await loadDiscovery();
     const verifier = b64urlEncode(window.crypto.getRandomValues(new Uint8Array(32)));
     const challenge = b64urlEncode(await sha256(verifier));
-    const nonce = b64urlEncode(window.crypto.getRandomValues(new Uint8Array(16)));
+    const oauthState = b64urlEncode(window.crypto.getRandomValues(new Uint8Array(16)));
+    const oidcNonce = b64urlEncode(window.crypto.getRandomValues(new Uint8Array(16)));
     sessionStorage.setItem(STORAGE_KEYS.verifier, verifier);
-    sessionStorage.setItem(STORAGE_KEYS.state, nonce);
+    sessionStorage.setItem(STORAGE_KEYS.state, oauthState);
+    sessionStorage.setItem(STORAGE_KEYS.nonce, oidcNonce);
 
     const query = new URLSearchParams({
       response_type: "code",
       client_id: state.config.web_client_id,
       redirect_uri: REDIRECT_URI,
       scope: SCOPES.join(" "),
-      state: nonce,
+      state: oauthState,
+      nonce: oidcNonce,
       code_challenge: challenge,
       code_challenge_method: "S256",
     });
@@ -999,6 +1004,70 @@
       const bin = atob(pad.replaceAll("-", "+").replaceAll("_", "/"));
       return JSON.parse(bin);
     } catch { return null; }
+  }
+
+  function _issuerMatches(actualIss) {
+    if (typeof actualIss !== "string" || !actualIss) return false;
+    const normActual = actualIss.replace(/\/$/, "");
+    const configIss = state.config.issuer_url.replace(/\/$/, "");
+    const discIss = state.discovery && typeof state.discovery.issuer === "string"
+      ? state.discovery.issuer.replace(/\/$/, "")
+      : "";
+    return normActual === configIss || (discIss !== "" && normActual === discIss);
+  }
+
+  function _audienceMatches(aud, azp, expectedClientId) {
+    if (Array.isArray(aud)) {
+      if (!aud.includes(expectedClientId)) return false;
+      if (aud.length > 1 && azp && azp !== expectedClientId) return false;
+      return true;
+    }
+    return aud === expectedClientId;
+  }
+
+  function validateOidcTokens(tokens, expectedNonce, { requireNonce = false } = {}) {
+    const accessToken = tokens.access_token || tokens.accessToken;
+    if (!accessToken) throw new Error("Token payload missing access_token.");
+    const idToken = tokens.id_token || tokens.idToken || null;
+    const accessClaims = decodeClaims(accessToken);
+    const idClaims = idToken ? decodeClaims(idToken) : null;
+    const clientId = state.config.web_client_id;
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    if (requireNonce) {
+      if (!idToken || !idClaims) {
+        throw new Error("Token exchange returned no valid id_token.");
+      }
+      if (!expectedNonce || typeof idClaims.nonce !== "string" || idClaims.nonce !== expectedNonce) {
+        throw new Error("ID token nonce mismatch.");
+      }
+    }
+
+    if (idClaims) {
+      if (!_issuerMatches(idClaims.iss)) {
+        throw new Error("ID token issuer mismatch.");
+      }
+      if (!_audienceMatches(idClaims.aud, idClaims.azp, clientId)) {
+        throw new Error("ID token audience mismatch.");
+      }
+      if (typeof idClaims.exp === "number" && idClaims.exp <= nowSec - 30) {
+        throw new Error("ID token is expired.");
+      }
+    }
+
+    if (accessClaims) {
+      if (accessClaims.iss && !_issuerMatches(accessClaims.iss)) {
+        throw new Error("Access token issuer mismatch.");
+      }
+      if (accessClaims.client_id && accessClaims.client_id !== clientId) {
+        throw new Error("Access token client_id mismatch.");
+      }
+      if (typeof accessClaims.exp === "number" && accessClaims.exp <= nowSec - 30) {
+        throw new Error("Access token is expired.");
+      }
+    }
+
+    return { accessToken, idToken, accessClaims, idClaims };
   }
 
   function ensureTabThreadId() {
@@ -1023,19 +1092,23 @@
     }, delay);
   }
 
-  function applyAuthenticatedTokens(tokens, fallbackRefreshToken) {
-    const accessToken = tokens.access_token || tokens.accessToken;
-    if (!accessToken) throw new Error("Token payload missing access_token.");
-    const idToken = tokens.id_token || tokens.idToken || null;
+  function applyAuthenticatedTokens(tokens, fallbackRefreshToken, validationOpts = {}) {
+    const {
+      accessToken,
+      idToken,
+      accessClaims,
+      idClaims,
+    } = validateOidcTokens(tokens, validationOpts.expectedNonce || null, {
+      requireNonce: Boolean(validationOpts.requireNonce),
+    });
     const refreshToken = tokens.refresh_token || tokens.refreshToken || fallbackRefreshToken || null;
-    const accessClaims = decodeClaims(accessToken);
-    const idClaims = decodeClaims(idToken || accessToken);
     const expiresAt = (accessClaims && typeof accessClaims.exp === "number")
       ? accessClaims.exp * 1000
       : (typeof tokens.expiresAt === "number"
         ? tokens.expiresAt
         : Date.now() + (Number(tokens.expires_in) || 3600) * 1000);
 
+    // Tokens live exclusively in closure memory for the life of the tab.
     state.accessToken = accessToken;
     state.idToken = idToken;
     state.refreshToken = refreshToken;
@@ -1046,26 +1119,17 @@
       || "Signed in";
     state.threadId = state.threadId || ensureTabThreadId();
 
-    const storedEnvelope = {
-      accessToken,
-      idToken,
-      refreshToken,
-      expiresAt,
-      clientId: state.config.web_client_id,
-      issuerUrl: state.config.issuer_url,
-    };
-    try {
-      localStorage.setItem(STORAGE_KEYS.session, JSON.stringify(storedEnvelope));
-    } catch { /* storage quota or private-mode restriction */ }
     scheduleSilentRenew(expiresAt);
   }
 
   async function completeSignIn(code, returnedState) {
     const verifier = sessionStorage.getItem(STORAGE_KEYS.verifier);
-    const expected = sessionStorage.getItem(STORAGE_KEYS.state);
+    const expectedState = sessionStorage.getItem(STORAGE_KEYS.state);
+    const expectedNonce = sessionStorage.getItem(STORAGE_KEYS.nonce);
     sessionStorage.removeItem(STORAGE_KEYS.verifier);
     sessionStorage.removeItem(STORAGE_KEYS.state);
-    if (!verifier || !expected || returnedState !== expected) {
+    sessionStorage.removeItem(STORAGE_KEYS.nonce);
+    if (!verifier || !expectedState || returnedState !== expectedState) {
       throw new Error("Sign-in state mismatch (possible forged redirect).");
     }
     await loadDiscovery();
@@ -1083,8 +1147,7 @@
     });
     if (!res.ok) throw new Error(`Token exchange failed (HTTP ${res.status}).`);
     const tokens = await res.json();
-    if (!tokens.access_token) throw new Error("Token exchange returned no access_token.");
-    applyAuthenticatedTokens(tokens, null);
+    applyAuthenticatedTokens(tokens, null, { expectedNonce, requireNonce: true });
   }
 
   async function refreshEstablishedSession(refreshToken) {
@@ -1105,54 +1168,36 @@
       return false;
     }
     const tokens = await res.json();
-    if (!tokens.access_token) {
+    try {
+      applyAuthenticatedTokens(tokens, refreshToken, { requireNonce: false });
+      return true;
+    } catch {
       clearStoredSessionOnly();
       return false;
     }
-    applyAuthenticatedTokens(tokens, refreshToken);
-    return true;
   }
 
-  async function restoreEstablishedSession() {
-    if (!state.config) return false;
-    let raw = null;
+  function purgePrefixedKeys(storage, prefixes) {
     try {
-      raw = localStorage.getItem(STORAGE_KEYS.session);
-    } catch {
-      return false;
-    }
-    if (!raw) return false;
-    let saved;
-    try {
-      saved = JSON.parse(raw);
-    } catch {
-      clearStoredSessionOnly();
-      return false;
-    }
-    if (
-      !saved
-      || typeof saved !== "object"
-      || saved.clientId !== state.config.web_client_id
-      || saved.issuerUrl !== state.config.issuer_url
-    ) {
-      clearStoredSessionOnly();
-      return false;
-    }
-    const now = Date.now();
-    if (saved.accessToken && typeof saved.expiresAt === "number" && saved.expiresAt > now + RENEW_SKEW_MS) {
-      applyAuthenticatedTokens(saved, saved.refreshToken || null);
-      return true;
-    }
-    if (saved.refreshToken) {
-      try {
-        return await refreshEstablishedSession(saved.refreshToken);
-      } catch {
-        clearStoredSessionOnly();
-        return false;
+      if (!storage) return;
+      const toDelete = [];
+      for (let i = 0; i < storage.length; i += 1) {
+        const k = storage.key(i);
+        if (k && prefixes.some((p) => k.startsWith(p))) {
+          toDelete.push(k);
+        }
       }
-    }
-    clearStoredSessionOnly();
-    return false;
+      for (const k of toDelete) storage.removeItem(k);
+    } catch { /* ignore */ }
+  }
+
+  function purgeLegacyPersistentStorage() {
+    purgePrefixedKeys(window.localStorage, [
+      "hr-web.oidc.",
+      "hr-web.pkce.",
+      "hr-web.history.",
+      "hr-web.chat.",
+    ]);
   }
 
   function clearStoredSessionOnly() {
@@ -1160,12 +1205,17 @@
       clearTimeout(state.renewTimer);
       state.renewTimer = null;
     }
-    try { localStorage.removeItem(STORAGE_KEYS.session); } catch { /* ignore */ }
-    try { sessionStorage.removeItem(STORAGE_KEYS.thread); } catch { /* ignore */ }
+    purgeLegacyPersistentStorage();
+    purgePrefixedKeys(window.sessionStorage, [
+      "hr-web.oidc.",
+      "hr-web.pkce.",
+      STORAGE_KEYS.thread,
+    ]);
   }
 
   function clearLocalState() {
     clearStoredSessionOnly();
+    purgePrefixedKeys(window.sessionStorage, [STORAGE_KEYS.historyPrefix]);
     state.accessToken = null;
     state.idToken = null;
     state.refreshToken = null;
@@ -1173,8 +1223,8 @@
     state.idClaims = null;
     state.userLabel = "";
     state.threadId = null;
-    state.pendingInterrupt = null;
-    state.pendingReviewQueue = [];
+    state.pendingEmployeeConfirm = null;
+    state.pendingManagerReviews.clear();
     state.currentMessages = [];
     state.botActivity = {};
     state.activeHandoverChain = [];
@@ -1193,13 +1243,38 @@
     updateControls();
   }
 
+  async function revokeRefreshTokenBestEffort(discovery, clientId, refreshToken) {
+    if (!discovery || !discovery.revocation_endpoint || !clientId || !refreshToken) return;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), 1200) : null;
+    try {
+      const body = new URLSearchParams({
+        token: refreshToken,
+        client_id: clientId,
+      });
+      await fetch(discovery.revocation_endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+        keepalive: true,
+        signal: controller ? controller.signal : undefined,
+      });
+    } catch {
+      /* best-effort revocation; never stall sign-out */
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async function signOut() {
     let discovery = state.discovery;
     const clientId = state.config && state.config.web_client_id;
+    const refreshToken = state.refreshToken;
     if (!discovery && state.config) {
       try { await loadDiscovery(); discovery = state.discovery; } catch { /* best effort */ }
     }
     clearLocalState();
+    await revokeRefreshTokenBestEffort(discovery, clientId, refreshToken);
 
     // Clear the Cognito hosted-UI session cookie too (mirrors FAST's
     // `signoutRedirect({ extraQueryParams: { client_id, logout_uri } })`) so a
@@ -1216,8 +1291,8 @@
   function startNewChat() {
     if (state.busy || !state.accessToken) return;
     if (state.sseController) state.sseController.abort();
-    state.pendingInterrupt = null;
-    state.pendingReviewQueue = [];
+    state.pendingEmployeeConfirm = null;
+    state.pendingManagerReviews.clear();
     state.outboundErrors = [];
     state.currentMessages = [];
     state.selectedBotId = null;
@@ -1253,7 +1328,7 @@
 
   function loadHistoryList() {
     try {
-      const raw = localStorage.getItem(getUserHistoryStorageKey());
+      const raw = sessionStorage.getItem(getUserHistoryStorageKey());
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed) ? parsed.filter((x) => x && typeof x === "object" && x.threadId) : [];
@@ -1266,11 +1341,11 @@
     const key = getUserHistoryStorageKey();
     const capped = items.slice(0, MAX_HISTORY_THREADS);
     try {
-      localStorage.setItem(key, JSON.stringify(capped));
+      sessionStorage.setItem(key, JSON.stringify(capped));
     } catch {
       // Retry with smaller cap if storage quota is tight.
       try {
-        localStorage.setItem(key, JSON.stringify(capped.slice(0, 10)));
+        sessionStorage.setItem(key, JSON.stringify(capped.slice(0, 10)));
       } catch { /* ignore */ }
     }
   }
@@ -1333,7 +1408,7 @@
 
   function clearAllHistory() {
     try {
-      localStorage.removeItem(getUserHistoryStorageKey());
+      sessionStorage.removeItem(getUserHistoryStorageKey());
     } catch { /* ignore */ }
     if (state.drawerOpen && state.drawerMode === "history") {
       renderDrawerBody();
@@ -1346,8 +1421,8 @@
     if (!item) return;
 
     if (state.sseController) state.sseController.abort();
-    state.pendingInterrupt = null;
-    state.pendingReviewQueue = [];
+    state.pendingEmployeeConfirm = null;
+    state.pendingManagerReviews.clear();
     state.outboundErrors = [];
     if (state.processor) state.processor.clear();
 
@@ -2257,7 +2332,7 @@
     return "/invocations";
   }
 
-  async function pollPendingReviews() {
+  async function pollPendingReviews({ manual = false } = {}) {
     if (state.busy || !state.accessToken || !state.threadId) return;
     state.busy = true;
     updateControls();
@@ -2273,8 +2348,10 @@
     };
     try {
       await streamAgent(input);
-    } catch {
-      /* non-fatal background review poll on sign-in */
+    } catch (err) {
+      if (manual && err && err.message !== "Session expired.") {
+        appendMessage("error", explainError(err), "Review check failed", { ephemeral: true });
+      }
     } finally {
       state.busy = false;
       updateControls();
@@ -2802,45 +2879,61 @@
     return [];
   }
 
+  function reviewKeyFor(payload, interruptId) {
+    const raw = (payload && payload.request_id) || interruptId || (payload && payload.interrupt_id) || "";
+    return String(raw).trim() || newId("rev");
+  }
+
   function handleRunFinished(event, isSilentPoll = false) {
     const entries = _extractInterruptEntries(event && event.outcome);
     if (entries.length === 0) {
       if (isSilentPoll) {
-        state.pendingReviewQueue = [];
-        updateReviewBadge(0);
-        if (state.pendingInterrupt && state.pendingInterrupt.kind === "manager_review") {
-          state.pendingInterrupt = null;
-          applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("manager_review"));
+        for (const [key] of [...state.pendingManagerReviews.entries()]) {
+          state.pendingManagerReviews.delete(key);
+          applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("manager_review", key));
         }
+        applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("manager_review"));
+        updateReviewBadge(0);
       }
       return false;
     }
 
     const reviewEntries = entries.filter((e) => e.payload && e.payload.kind === "manager_review");
-    if (reviewEntries.length > 0) {
-      state.pendingReviewQueue = reviewEntries.slice(1);
-      updateReviewBadge(reviewEntries.length);
-    } else if (isSilentPoll) {
-      state.pendingReviewQueue = [];
-      updateReviewBadge(0);
+    if (isSilentPoll) {
+      const activeKeys = new Set(
+        reviewEntries.map((e) => reviewKeyFor(e.payload, e.id)),
+      );
+      for (const [key] of [...state.pendingManagerReviews.entries()]) {
+        if (!activeKeys.has(key)) {
+          state.pendingManagerReviews.delete(key);
+          applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("manager_review", key));
+        }
+      }
     }
 
-    const primaryEntries = reviewEntries.length > 0
-      ? [reviewEntries[0], ...entries.filter((e) => !e.payload || e.payload.kind !== "manager_review")]
-      : entries;
-
-    for (const entry of primaryEntries) {
+    for (const entry of entries) {
       const payload = entry.payload;
-      state.pendingInterrupt = Object.assign({}, payload, { _interruptId: entry.id });
-      const messages = window.HrToolAdapter.fromInterrupt(payload);
-      if (messages.length === 0) {
+      if (payload.kind === "manager_review") {
+        const key = reviewKeyFor(payload, entry.id);
+        const stored = Object.assign({}, payload, {
+          _interruptId: entry.id || null,
+          _reviewKey: key,
+        });
+        state.pendingManagerReviews.set(key, stored);
+        applyA2uiMessages(window.HrToolAdapter.fromInterrupt(stored));
+      } else if (payload.kind === "employee_confirm") {
+        state.pendingEmployeeConfirm = Object.assign({}, payload, {
+          _interruptId: entry.id || null,
+        });
+        const messages = window.HrToolAdapter.fromInterrupt(payload);
+        if (messages.length > 0) applyA2uiMessages(messages);
+      } else {
         appendMessage("system",
           `Review pause received for ${String(payload.kind || "unknown")}. Use the card to decide.`,
           "Interrupt");
-      } else {
-        applyA2uiMessages(messages);
       }
     }
+    updateReviewBadge(state.pendingManagerReviews.size);
     return true;
   }
 
@@ -2893,15 +2986,15 @@
     return null;
   }
 
-  function restorePendingInterruptIfNeeded(savedInterrupt) {
-    if (!savedInterrupt || !state.accessToken || state.pendingInterrupt) return;
-    state.pendingInterrupt = savedInterrupt;
+  function restoreEmployeeConfirmIfNeeded(savedInterrupt) {
+    if (!savedInterrupt || !state.accessToken || state.pendingEmployeeConfirm) return;
+    state.pendingEmployeeConfirm = savedInterrupt;
     const messages = window.HrToolAdapter.fromInterrupt(savedInterrupt);
     if (messages.length > 0) applyA2uiMessages(messages);
   }
 
   async function onEmployeeConfirm(ctx) {
-    const interrupt = state.pendingInterrupt;
+    const interrupt = state.pendingEmployeeConfirm;
     if (!interrupt || interrupt.kind !== "employee_confirm") return;
     const proposed = interrupt.arguments || interrupt.proposed || interrupt;
     const merged = {
@@ -2921,7 +3014,7 @@
     }
     const interruptId = interrupt._interruptId || null;
     const savedInterrupt = interrupt;
-    state.pendingInterrupt = null;
+    state.pendingEmployeeConfirm = null;
     applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("employee_confirm"));
     const ok = await sendResume({
       decision: "approve",
@@ -2929,12 +3022,12 @@
       arguments: merged,
     }, interruptId);
     if (!ok) {
-      restorePendingInterruptIfNeeded(savedInterrupt);
+      restoreEmployeeConfirmIfNeeded(savedInterrupt);
     }
   }
 
   async function onEmployeeReject(_ctx) {
-    const interrupt = state.pendingInterrupt;
+    const interrupt = state.pendingEmployeeConfirm;
     if (!interrupt || interrupt.kind !== "employee_confirm") return;
     const interruptId = interrupt._interruptId || null;
     const savedInterrupt = interrupt;
@@ -2943,18 +3036,18 @@
     const idempotencyKey = proposed.idempotency_key || interrupt.idempotency_key;
     if (idempotencyKey) resumePayload.idempotency_key = idempotencyKey;
 
-    state.pendingInterrupt = null;
+    state.pendingEmployeeConfirm = null;
     applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("employee_confirm"));
     const ok = await sendResume(resumePayload, interruptId);
     if (ok) {
       appendMessage("system", "You declined to submit this request.", "No request");
     } else {
-      restorePendingInterruptIfNeeded(savedInterrupt);
+      restoreEmployeeConfirmIfNeeded(savedInterrupt);
     }
   }
 
   async function onEmployeeEdit(ctx) {
-    const interrupt = state.pendingInterrupt;
+    const interrupt = state.pendingEmployeeConfirm;
     if (!interrupt || interrupt.kind !== "employee_confirm") return;
     const interruptId = interrupt._interruptId || null;
     const savedInterrupt = interrupt;
@@ -2977,67 +3070,59 @@
     const idempotencyKey = proposed.idempotency_key || interrupt.idempotency_key;
     if (idempotencyKey) edited.idempotency_key = idempotencyKey;
 
-    state.pendingInterrupt = null;
+    state.pendingEmployeeConfirm = null;
     applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("employee_confirm"));
     const ok = await sendResume({ decision: "edit", kind: "employee_confirm", arguments: edited }, interruptId);
     if (!ok) {
-      restorePendingInterruptIfNeeded(savedInterrupt);
+      restoreEmployeeConfirmIfNeeded(savedInterrupt);
     }
   }
 
-  function advancePendingReviewQueue() {
-    if (state.pendingInterrupt) return;
-    if (state.pendingReviewQueue.length > 0) {
-      const next = state.pendingReviewQueue.shift();
-      updateReviewBadge(state.pendingReviewQueue.length + 1);
-      state.pendingInterrupt = Object.assign({}, next.payload, { _interruptId: next.id });
-      applyA2uiMessages(window.HrToolAdapter.fromInterrupt(next.payload));
-    } else {
-      updateReviewBadge(0);
+  async function submitManagerReviewDecision(ctx, decision) {
+    const requestId = ctx.request_id ? String(ctx.request_id) : "";
+    let reviewKey = requestId;
+    if (!reviewKey && state.pendingManagerReviews.size === 1) {
+      reviewKey = state.pendingManagerReviews.keys().next().value;
     }
-  }
-
-  async function onManagerApprove(ctx) {
-    const interrupt = state.pendingInterrupt;
+    let interrupt = reviewKey ? state.pendingManagerReviews.get(reviewKey) : null;
+    if (!interrupt && requestId) {
+      for (const [k, item] of state.pendingManagerReviews.entries()) {
+        if (item && (item.request_id === requestId || item._interruptId === requestId)) {
+          reviewKey = k;
+          interrupt = item;
+          break;
+        }
+      }
+    }
     if (!interrupt || interrupt.kind !== "manager_review") return;
-    const requestId = ctx.request_id || interrupt.request_id;
+
+    const effectiveRequestId = requestId || interrupt.request_id || "";
     const interruptId = interrupt._interruptId || null;
-    const savedInterrupt = interrupt;
-    state.pendingInterrupt = null;
-    applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("manager_review"));
+    const effectiveKey = interrupt._reviewKey || reviewKey;
+    state.pendingManagerReviews.delete(effectiveKey);
+    updateReviewBadge(state.pendingManagerReviews.size);
+    applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("manager_review", effectiveKey));
     // The runtime checks the reviewer's verified token against
     // reviewer_employee_id before recording the decision. A forged
     // resume from the dev console fails with NOT_REVIEWER.
     const ok = await sendResume({
-      decision: "approve",
+      decision,
       kind: "manager_review",
-      request_id: requestId,
+      request_id: effectiveRequestId,
     }, interruptId);
-    if (!ok) {
-      restorePendingInterruptIfNeeded(savedInterrupt);
-    } else {
-      advancePendingReviewQueue();
+    if (!ok && state.accessToken && !state.pendingManagerReviews.has(effectiveKey)) {
+      state.pendingManagerReviews.set(effectiveKey, interrupt);
+      updateReviewBadge(state.pendingManagerReviews.size);
+      applyA2uiMessages(window.HrToolAdapter.fromInterrupt(interrupt));
     }
   }
 
+  async function onManagerApprove(ctx) {
+    await submitManagerReviewDecision(ctx, "approve");
+  }
+
   async function onManagerReject(ctx) {
-    const interrupt = state.pendingInterrupt;
-    if (!interrupt || interrupt.kind !== "manager_review") return;
-    const requestId = ctx.request_id || interrupt.request_id;
-    const interruptId = interrupt._interruptId || null;
-    const savedInterrupt = interrupt;
-    state.pendingInterrupt = null;
-    applyA2uiMessages(window.HrToolAdapter.clearSurfacesFor("manager_review"));
-    const ok = await sendResume({
-      decision: "reject",
-      kind: "manager_review",
-      request_id: requestId,
-    }, interruptId);
-    if (!ok) {
-      restorePendingInterruptIfNeeded(savedInterrupt);
-    } else {
-      advancePendingReviewQueue();
-    }
+    await submitManagerReviewDecision(ctx, "reject");
   }
 
   /* ------------------------------------------------------------- init */
@@ -3056,6 +3141,7 @@
   }
 
   async function start() {
+    purgeLegacyPersistentStorage();
     injectFallbackStyles();
     const { MARKETPLACE_AGENTS } = getCatalog();
     if (MARKETPLACE_AGENTS.length > 0) {
@@ -3110,7 +3196,7 @@
         renderWelcomeForActiveAgent(null);
         updateControls();
         if ($("chatInput")) $("chatInput").focus();
-        await pollPendingReviews();
+        await pollPendingReviews({ manual: false });
         return;
       } catch (err) {
         history.replaceState(null, "", REDIRECT_URI);
@@ -3121,17 +3207,12 @@
       }
     }
 
-    // No OAuth callback in URL: if an established session is already active,
-    // route straight to the chatbot; otherwise show the Login screen.
-    const restored = await restoreEstablishedSession();
+    // No OAuth callback in URL: tokens are never persisted across restarts,
+    // so show the Login screen until the user signs in via PKCE.
     renderIdentity();
     renderBotRoster();
     renderWelcomeForActiveAgent(null);
     updateControls();
-    if (restored) {
-      if ($("chatInput")) $("chatInput").focus();
-      await pollPendingReviews();
-    }
   }
 
   /* ------------------------------------------------------------- wire-up */
@@ -3166,7 +3247,9 @@
     $("newChatBtn").addEventListener("click", startNewChat);
   }
   if ($("refreshReviewsBtn")) {
-    $("refreshReviewsBtn").addEventListener("click", pollPendingReviews);
+    $("refreshReviewsBtn").addEventListener("click", () => {
+      pollPendingReviews({ manual: true });
+    });
   }
   if ($("openMarketplaceFromLeft")) {
     $("openMarketplaceFromLeft").addEventListener("click", () => openDrawer("marketplace"));
@@ -3254,22 +3337,6 @@
     if (e.key === "Escape" && state.drawerOpen) {
       closeDrawer();
     }
-  });
-
-  window.HrWeb = Object.freeze({
-    state,
-    sendMessage,
-    sendResume,
-    startNewChat,
-    signOut,
-    restoreEstablishedSession,
-    handleRendererMessage,
-    validateDateRange,
-    reasonLabel: window.HrToolAdapter.reasonLabel,
-    PROMPT_MAX,
-    openDrawer,
-    closeDrawer,
-    selectMarketplaceAgent,
   });
 
   start();

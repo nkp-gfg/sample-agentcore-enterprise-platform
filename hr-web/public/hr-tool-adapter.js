@@ -26,6 +26,13 @@
     probation: "surface-probation",
     employeeConfirm: "surface-employee-confirm",
     managerReview: "surface-manager-review",
+    managerReviewFor: (key) => {
+      const slug = String(key || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-");
+      return slug ? `surface-manager-review-${slug}` : "surface-manager-review";
+    },
     notice: (slug) => `surface-notice-${slug}`,
   });
 
@@ -215,6 +222,9 @@
   function _recordLeaveDecision(result) {
     if (!result) return [];
     const messages = [_deleteOne(SURFACE_IDS.managerReview)];
+    if (result.data && result.data.request_id) {
+      messages.push(_deleteOne(SURFACE_IDS.managerReviewFor(result.data.request_id)));
+    }
     if (result.authorized === true && result.data) {
       const slug = result.data.request_id
         ? String(result.data.request_id).toLowerCase().replace(/[^a-z0-9]+/g, "-")
@@ -269,21 +279,36 @@
 
   /* ------------------------------------------------- interrupt mapping */
 
+  function _parseFiniteDays(rawDays) {
+    if (typeof rawDays === "number" && Number.isFinite(rawDays)) return rawDays;
+    if (typeof rawDays === "string") {
+      const trimmed = rawDays.trim();
+      if (trimmed !== "" && Number.isFinite(Number(trimmed))) {
+        return Number(trimmed);
+      }
+    }
+    return null;
+  }
+
   function _employeeConfirmFromInterrupt(payload) {
     const proposed = payload.arguments || payload.proposed || payload;
-    return _recreate(SURFACE_IDS.employeeConfirm, {
+    const days = _parseFiniteDays(proposed.days != null ? proposed.days : payload.days);
+    const props = {
       component: "EmployeeConfirmForm",
       interruptKind: "employee_confirm",
       leaveType: proposed.leave_type ? String(proposed.leave_type) : "",
       startDate: proposed.start_date ? String(proposed.start_date) : "",
       endDate: proposed.end_date ? String(proposed.end_date) : "",
-      days: proposed.days != null ? proposed.days : "",
       reason: proposed.reason ? String(proposed.reason) : "",
-    });
+    };
+    if (days !== null) props.days = days;
+    return _recreate(SURFACE_IDS.employeeConfirm, props);
   }
 
   function _managerReviewFromInterrupt(payload) {
-    return _recreate(SURFACE_IDS.managerReview, {
+    const key = payload.request_id || payload._interruptId || payload.interrupt_id || "";
+    const days = _parseFiniteDays(payload.days);
+    const props = {
       component: "ManagerReviewCard",
       interruptKind: "manager_review",
       requestId: payload.request_id ? String(payload.request_id) : "",
@@ -291,9 +316,10 @@
       leaveType: payload.leave_type ? String(payload.leave_type) : "",
       startDate: payload.start_date ? String(payload.start_date) : "",
       endDate: payload.end_date ? String(payload.end_date) : "",
-      days: payload.days != null ? payload.days : "",
       reason: payload.reason != null ? String(payload.reason) : "",
-    });
+    };
+    if (days !== null) props.days = days;
+    return _recreate(SURFACE_IDS.managerReviewFor(key), props);
   }
 
   /* ------------------------------------------------- public API */
@@ -323,9 +349,11 @@
     return [];
   }
 
-  function clearSurfacesFor(kind) {
+  function clearSurfacesFor(kind, key) {
     if (kind === "employee_confirm") return [_deleteOne(SURFACE_IDS.employeeConfirm)];
-    if (kind === "manager_review") return [_deleteOne(SURFACE_IDS.managerReview)];
+    if (kind === "manager_review") {
+      return [_deleteOne(key ? SURFACE_IDS.managerReviewFor(key) : SURFACE_IDS.managerReview)];
+    }
     return [];
   }
 

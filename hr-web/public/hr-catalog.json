@@ -134,7 +134,7 @@
       "required": ["component"]
     },
     "EmployeeConfirmForm": {
-      "description": "The employee's own second-person-click gate on submit_leave_request. The Confirm button is the only path that submits; the Edit button opens two prompts (start, end) and re-fires with corrected dates; the Reject button closes the surface and tells the agent no request was made.",
+      "description": "The employee's own second-person-click gate on submit_leave_request. The Confirm button is the only path that submits; the Edit dates button reveals an inline editor (leave type, start date, end date) and re-fires with corrected arguments; the Reject button closes the surface and tells the agent no request was made.",
       "type": "object",
       "properties": {
         "component": {"const": "EmployeeConfirmForm"},
