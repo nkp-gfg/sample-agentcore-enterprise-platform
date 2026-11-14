@@ -4,7 +4,7 @@ Part 1 is the platform. This file adds the HR assistant on top of it, in three l
 
 Do not run `./scripts/deploy.sh workshop`. Do not run `./scripts/deploy.sh destroy` without `--stack`. That deletes the whole platform. Do not run `./scripts/deploy.sh design --profile`. That rewrites `platform.yaml` from a preset. `design` on its own only prints the plan.
 
-All HR code lives on the `with-ui-godbot-v2` branch (the merged bundle of H1 through H3, H4, Layer 2 god-agent, and Layer 3 A2UI web). The folders below exist on that branch:
+All HR code lives on the `part2-with-opa-godbot-v2` branch (the merged bundle of H1 through H3, H4, Layer 2 god-agent, and Layer 3 A2UI web). The folders below exist on that branch:
 
 - `use-cases/hr-data/`
 - `use-cases/hr-identity/`
@@ -12,7 +12,7 @@ All HR code lives on the `with-ui-godbot-v2` branch (the merged bundle of H1 thr
 - `agent-code/god-agent/`
 - `hr-web/`
 
-If a folder in the step you are on is missing, you are on a branch without that phase. Stop and check out `with-ui-godbot-v2`.
+If a folder in the step you are on is missing, you are on a branch without that phase. Stop and check out `part2-with-opa-godbot-v2`.
 
 ## Before you start
 
@@ -217,7 +217,7 @@ Remove the `hr-tools` block from `platform.yaml`. The next deploy of the gateway
 
 Start this only after phase 4's verify exits 0.
 
-The code is `agent-code/god-agent/`, next to the other patterns. Change `agents.pattern` in `platform.yaml` to `god-agent`. Leave `model_id` and `allowed_models` as they are. If `god-agent` is not one of the choices the deploy script prints, this checkout is not `with-ui-godbot-v2` (or the merge bundle you are on misses Layer 2). Stop. Do not type the name anyway.
+The code is `agent-code/god-agent/`, next to the other patterns. Change `agents.pattern` in `platform.yaml` to `god-agent`. Leave `model_id` and `allowed_models` as they are. If `god-agent` is not one of the choices the deploy script prints, this checkout is not `part2-with-opa-godbot-v2` (or the merge bundle you are on misses Layer 2). Stop. Do not type the name anyway.
 
 ```yaml
 agents:
