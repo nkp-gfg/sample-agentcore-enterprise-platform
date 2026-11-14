@@ -34,7 +34,6 @@ import datetime as _dt
 import json
 import logging
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -45,6 +44,12 @@ import boto3
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field, ValidationError
+from shared.http_utils import (
+    no_redirect_opener as _no_redirect_opener,
+)
+from shared.http_utils import (
+    validate_https_url as _validate_https_url,
+)
 from shared.region import runtime_region
 from ssm_config import auth_m2m_config, gateway_config
 
@@ -141,28 +146,6 @@ def decode_jwt_claims_unverified(token: str) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.HTTPError(
-            req.full_url,
-            code,
-            f"HTTP redirects are disabled for {req.full_url}",
-            headers,
-            fp,
-        )
-
-
-def _no_redirect_opener() -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(_NoRedirectHandler())
-
-
-def _validate_https_url(url: str, label: str = "URL") -> str:
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme.lower() != "https" or not parsed.netloc:
-        raise ValueError(f"{label} must be an https:// URL with a host, got {url!r}")
-    return url
 
 
 def _discover_token_endpoint(issuer_url: str) -> str:

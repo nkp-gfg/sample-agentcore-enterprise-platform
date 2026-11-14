@@ -622,7 +622,7 @@ def test_god_agent_gateway_client_schemas_https_and_m2m_checks(monkeypatch):
         lambda: SimpleNamespace(
             issuer_url="https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test",
             client_id="m2m",
-            client_secret_name="sec",
+            client_secret_name="sec",  # pragma: allowlist secret
             scope="",
         ),
     )

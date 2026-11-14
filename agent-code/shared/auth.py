@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -18,6 +17,15 @@ import jwt
 from bedrock_agentcore.identity.auth import requires_access_token
 from bedrock_agentcore.runtime import RequestContext
 
+from shared.http_utils import (
+    NoRedirectHandler as _NoRedirectHandler,  # noqa: F401 — re-exported for tests
+)
+from shared.http_utils import (
+    no_redirect_opener as _no_redirect_opener,
+)
+from shared.http_utils import (
+    validate_https_url as _validate_https_url,
+)
 from shared.jwt_claims import (
     TokenRejected,
     gateway_token_scopes,
@@ -36,28 +44,6 @@ ALLOWED_CLIENTS = tuple(
 # JWKS is fetched once per container and cached by PyJWKClient, which also
 # refreshes when it sees an unknown key id (Cognito rotates signing keys).
 _jwks_client: jwt.PyJWKClient | None = None
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.HTTPError(
-            req.full_url,
-            code,
-            f"HTTP redirects are disabled for {req.full_url}",
-            headers,
-            fp,
-        )
-
-
-def _no_redirect_opener() -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(_NoRedirectHandler())
-
-
-def _validate_https_url(url: str, label: str = "URL") -> str:
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme.lower() != "https" or not parsed.netloc:
-        raise ValueError(f"{label} must be an https:// URL with a host, got {url!r}")
-    return url
 
 
 class _NoRedirectPyJWKClient(jwt.PyJWKClient):

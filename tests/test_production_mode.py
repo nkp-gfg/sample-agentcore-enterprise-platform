@@ -41,7 +41,7 @@ def test_auth_retains_identity_data_and_enables_deletion_protection() -> None:
             idp_config={
                 "tenant_id": "11111111-2222-3333-4444-555555555555",
                 "client_id": "client-id",
-                "client_secret_name": "agentcore/idp-client-secret",
+                "client_secret_name": "agentcore/idp-client-secret",  # pragma: allowlist secret
             },
             retain_data=True,
             env=ENV,
