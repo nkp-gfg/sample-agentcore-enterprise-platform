@@ -108,6 +108,7 @@ class NetworkingStack(cdk.Stack):
             traffic_type=ec2.FlowLogTrafficType.ALL,
         )
 
+        self.agentcore_data_plane_endpoint = None
         if enable_vpc_endpoints:
             self.vpc.add_interface_endpoint(
                 "BedrockEndpoint",
@@ -161,12 +162,18 @@ class NetworkingStack(cdk.Stack):
             # path. The org endpoint policy above is not reused here: it allows
             # only the invoke action set and would block Memory and Identity.
             # Access stays governed by the runtime role.
-            self.vpc.add_interface_endpoint(
+            self.agentcore_data_plane_endpoint = self.vpc.add_interface_endpoint(
                 "AgentCoreDataPlaneEndpoint",
                 service=ec2.InterfaceVpcEndpointService(
                     f"com.amazonaws.{self.region}.bedrock-agentcore", 443
                 ),
                 private_dns_enabled=True,
+            )
+            ssm.StringParameter(
+                self,
+                "SSMAgentCoreVpceId",
+                parameter_name=f"/{project_name}/{environment}/networking/agentcore-vpce-id",
+                string_value=self.agentcore_data_plane_endpoint.vpc_endpoint_id,
             )
 
         # Private subnets are the only valid placement for AgentCore ENIs: a
@@ -267,3 +274,9 @@ class NetworkingStack(cdk.Stack):
             "RuntimeSecurityGroupId",
             value=self.runtime_security_group.security_group_id,
         )
+
+    @property
+    def agentcore_vpce_id(self) -> str:
+        if self.agentcore_data_plane_endpoint is None:
+            return ""
+        return self.agentcore_data_plane_endpoint.vpc_endpoint_id

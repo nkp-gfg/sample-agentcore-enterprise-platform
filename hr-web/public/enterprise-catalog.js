@@ -9,7 +9,7 @@
   "use strict";
 
   const APP_TITLE = "AgentCore Enterprise";
-  const APP_SUBTITLE = "Unified Employee AI Workspace · 127.0.0.1 only";
+  const APP_SUBTITLE = "Unified Employee AI Workspace";
 
   const BOTS = Object.freeze([
     Object.freeze({
@@ -783,8 +783,8 @@
       summary:
         "Authenticate through Amazon Cognito PKCE (federated with Microsoft Entra ID when configured). Tokens stay on your local client and survive tab reloads via silent refresh until you Sign Out.",
       steps: Object.freeze([
-        "Click Sign in on the login screen to complete the Cognito / Entra PKCE flow.",
-        "Your verified JWT sub is sent as a Bearer token over same-origin POST /invocations on 127.0.0.1.",
+        "Click Sign in on the login screen to complete the corporate Cognito / Entra SSO flow.",
+        "Your verified JWT sub is sent as a Bearer token over same-origin POST /invocations via the server boundary.",
         "Reloading the tab restores an unexpired session automatically or silently refreshes it when a refresh token is present.",
         "To switch personas (for example, E1 to M1 for manager review), click Sign out to clear local state and the Cognito hosted-UI SSO cookie, then sign in as the next user.",
       ]),

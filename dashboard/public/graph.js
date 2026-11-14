@@ -15,6 +15,7 @@
     'auth',
     'identity',
     'gateway',
+    'frontend',
     'memory',
     'runtime-orchestrator',
     'runtime-code-agent',

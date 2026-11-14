@@ -1,0 +1,46 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowInvokeFromApprovedVpce",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": [
+        "bedrock-agentcore:InvokeAgentRuntime",
+        "bedrock-agentcore:InvokeAgentRuntimeForUser",
+        "bedrock-agentcore:InvokeAgentRuntimeWithWebSocketStream",
+        "bedrock-agentcore:InvokeAgentRuntimeWithWebSocketStreamForUser",
+        "bedrock-agentcore:StopRuntimeSession",
+        "bedrock-agentcore:GetAgentCard"
+      ],
+      "Resource": "<<runtime_arn>>",
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceVpce": "<<vpce_id>>"
+        }
+      }
+    },
+    {
+      "Sid": "DenyDirectRuntimeInvokeOutsideVpce",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "bedrock-agentcore:InvokeAgentRuntime",
+        "bedrock-agentcore:InvokeAgentRuntimeForUser",
+        "bedrock-agentcore:InvokeAgentRuntimeWithWebSocketStream",
+        "bedrock-agentcore:InvokeAgentRuntimeWithWebSocketStreamForUser",
+        "bedrock-agentcore:StopRuntimeSession",
+        "bedrock-agentcore:GetAgentCard"
+      ],
+      "Resource": "<<runtime_arn>>",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:SourceVpce": "<<vpce_id>>"
+        },
+        "Bool": {
+          "aws:ViaAWSService": "false"
+        }
+      }
+    }
+  ]
+}

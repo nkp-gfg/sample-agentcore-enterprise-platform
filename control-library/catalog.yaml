@@ -53,6 +53,27 @@ controls:
         description: AWS Organizations ID (o-xxxx) used in the aws:PrincipalOrgID deny guard.
     validate: [checkov, access-analyzer]
 
+  # ── Resource-based policy — Runtime VPCE-only (BFF-only, workload scope, CDK) ──
+  - id: resource-policy.runtime.vpce-only
+    file: resource-policies/runtime/vpce-only.json
+    type: RESOURCE_POLICY
+    scope: workload
+    attach_to: [RUNTIME]
+    engine: [cdk]
+    default_mode: enforce
+    params:
+      runtime_arn:
+        required: true
+        description: >-
+          Exact ARN of the AgentCore Runtime resource. AgentCore resource-based policies
+          do not support "*" in the Resource field.
+      vpce_id:
+        required: true
+        description: >-
+          VPC Interface Endpoint ID (com.amazonaws.<region>.bedrock-agentcore) through
+          which the ECS BFF invokes the runtime inside the VPC.
+    validate: [checkov, access-analyzer]
+
   # ── Items 5+6: Bedrock Guardrails config for the egress interceptor (workload scope, CDK) ──
   # CloudFormation PascalCase shape (AWS::Bedrock::Guardrail properties). Applied to the
   # Gateway egress interceptor Lambda via ApplyGuardrail. Not an IAM policy document, so it
