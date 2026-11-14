@@ -787,3 +787,106 @@ def test_default_cedar_read_policy_constrains_principal_to_oauth_user():
     )
     assert "principal is AgentCore::OAuthUser" in permit
     assert "forbid(" not in permit
+
+
+def test_god_agent_non_reviewer_guard_in_source():
+    src = (REPO / "agent-code" / "god-agent" / "agent.py").read_text()
+    assert 'if caller_emp and caller_emp == stored["reviewer_employee_id"]:' in src
+
+
+def test_god_agent_manager_review_does_not_leak_pending_card_to_non_reviewer(
+    monkeypatch,
+):
+    if importlib.util.find_spec("ag_ui") is None:
+        pytest.skip("god-agent dependencies not installed in host venv")
+
+    monkeypatch.syspath_prepend(str(REPO / "agent-code"))
+    monkeypatch.syspath_prepend(str(REPO / "agent-code" / "god-agent"))
+    for name in (
+        "agent",
+        "checkpointer",
+        "filesystem",
+        "gateway_client",
+        "guardrail",
+        "leaves",
+        "rate_limit",
+        "review",
+        "ssm_config",
+        "subagents",
+    ):
+        sys.modules.pop(name, None)
+
+    monkeypatch.setenv("PROJECT_NAME", "test")
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("GUARDRAIL_ID", "gr-1")
+    monkeypatch.setenv("AWS_REGION_NAME", "us-east-1")
+
+    agent_mod = _load_module(
+        "god_agent_non_reviewer_test", REPO / "agent-code" / "god-agent" / "agent.py"
+    )
+    try:
+        stored_card = {
+            "kind": "manager_review",
+            "request_id": "lr-secret-1",
+            "employee_id": "E1",
+            "reviewer_employee_id": "M1",
+            "leave_type": "sick",
+            "start_date": "2026-12-01",
+            "end_date": "2026-12-02",
+            "days": 2,
+            "reason": "confidential medical appointment",
+        }
+
+        async def _fake_get_review(_req_id):
+            return dict(stored_card)
+
+        async def _fake_resolve_emp(_sub):
+            return "E2"
+
+        monkeypatch.setattr(
+            agent_mod, "extract_user_id_from_context", lambda _ctx: "sub-e2"
+        )
+        monkeypatch.setattr(agent_mod, "hr_tools_enabled", lambda: True)
+        monkeypatch.setattr(agent_mod, "get_pending_manager_review", _fake_get_review)
+        monkeypatch.setattr(agent_mod, "resolve_employee_id_for_sub", _fake_resolve_emp)
+        monkeypatch.setattr(
+            agent_mod,
+            "review_limiter",
+            lambda: SimpleNamespace(
+                check_and_record=lambda _u: SimpleNamespace(
+                    allowed=True, turns_in_window=1
+                )
+            ),
+        )
+
+        async def _collect():
+            events = []
+            async for ev in agent_mod.invocations(
+                {
+                    "threadId": "thread-" + ("z" * 32),
+                    "runId": "run-unauth-1",
+                    "messages": [],
+                    "forwardedProps": {
+                        "resume": [
+                            {
+                                "kind": "manager_review",
+                                "request_id": "lr-secret-1",
+                                "decision": "approve",
+                            }
+                        ]
+                    },
+                },
+                SimpleNamespace(),
+            ):
+                events.append(ev)
+            return events
+
+        events = asyncio.run(_collect())
+        serialized = json.dumps(events)
+        assert "confidential medical appointment" not in serialized
+        assert "lr-secret-1" not in serialized
+        finished = [ev for ev in events if ev.get("type") == "RUN_FINISHED"]
+        assert len(finished) == 1
+        assert "outcome" not in finished[0] or finished[0]["outcome"] != "interrupt"
+    finally:
+        sys.modules.pop("god_agent_non_reviewer_test", None)

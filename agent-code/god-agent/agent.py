@@ -604,7 +604,19 @@ async def invocations(payload: dict, context: RequestContext):
                     "You are not authorised to review this leave request."
                 ):
                     yield ev
-                yield _interrupt_finish_event(thread_id, run_id, [stored])
+                if caller_emp and caller_emp == stored["reviewer_employee_id"]:
+                    # Re-open the card only for the assigned reviewer (e.g.
+                    # INVALID_DECISION); never leak another employee's pending
+                    # leave details to an unauthorized caller.
+                    yield _interrupt_finish_event(thread_id, run_id, [stored])
+                else:
+                    yield _dump(
+                        RunFinishedEvent(
+                            type=EventType.RUN_FINISHED,
+                            thread_id=thread_id,
+                            run_id=run_id,
+                        )
+                    )
             else:
                 for ev in _text_events(
                     f"Could not record leave decision ({outcome.reason_code})."
