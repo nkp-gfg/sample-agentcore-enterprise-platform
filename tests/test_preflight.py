@@ -321,4 +321,3 @@ def test_preflight_explains_when_cdk_on_path_but_missing_from_node_prefix(
     assert result == 1
     assert "cdk is on PATH, but `npx --no-install cdk` could not resolve" in output
     assert "npm install -g aws-cdk" in output
-

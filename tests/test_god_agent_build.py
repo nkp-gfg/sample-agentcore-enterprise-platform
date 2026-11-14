@@ -19,6 +19,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import importlib
+import importlib.util
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,48 @@ from pydantic import BaseModel
 REPO = Path(__file__).resolve().parents[1]
 GOD_AGENT_DIR = REPO / "agent-code" / "god-agent"
 AGENT_CODE_DIR = REPO / "agent-code"
+
+_AGENT_RUNTIME_DEPS = (
+    "ag_ui",
+    "bedrock_agentcore",
+    "copilotkit",
+    "deepagents",
+    "jwt",
+    "langchain_aws",
+    "langchain_core",
+    "langchain_mcp_adapters",
+    "langgraph",
+    "mcp",
+    "psycopg",
+)
+
+
+def _require_runtime_deps(*modules: str) -> None:
+    """Skip container-runtime tests in host/CI venvs lacking god-agent deps."""
+
+    if os.environ.get("GOD_AGENT_REQUIRE_RUNTIME_TESTS") == "1":
+        return
+    missing: list[str] = []
+    for mod in modules:
+        top = mod.split(".", 1)[0]
+        existing = sys.modules.get(top)
+        if existing is not None and getattr(existing, "__spec__", None) is None:
+            missing.append(mod)
+            continue
+        try:
+            if (
+                importlib.util.find_spec(top) is None
+                or importlib.util.find_spec(mod) is None
+            ):
+                missing.append(mod)
+        except (ImportError, ValueError):
+            missing.append(mod)
+    if missing:
+        pytest.skip(
+            "god-agent container dependencies not installed in host venv "
+            f"({', '.join(missing)}); install agent-code/god-agent/requirements.txt "
+            "or set GOD_AGENT_REQUIRE_RUNTIME_TESTS=1"
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -93,6 +137,7 @@ def _stub_tool(name: str):
 
 
 async def _build_god_graph_with_stub_tools():
+    _require_runtime_deps(*_AGENT_RUNTIME_DEPS)
     gateway_client = importlib.import_module("gateway_client")
     leaves_module = importlib.import_module("leaves")
     agent_module = importlib.import_module("agent")
@@ -195,6 +240,7 @@ def test_every_chatbedrock_carries_the_guardrail_block():
     runtime. We assert at build time instead of waiting for deploy.
     """
 
+    _require_runtime_deps("langchain_aws")
     guardrail = importlib.import_module("guardrail")
     block = guardrail.guardrail_block_for_tests()
     assert block == {
@@ -217,6 +263,7 @@ def test_every_chatbedrock_carries_the_guardrail_block():
 def test_guardrail_build_fails_without_an_identifier(monkeypatch):
     """A missing identifier is a boot-time failure, not a silent skip."""
 
+    _require_runtime_deps("langchain_aws", "jwt")
     monkeypatch.delenv("GUARDRAIL_ID", raising=False)
     # Also stub SSM so it cannot provide one either.
     from shared import ssm
@@ -242,6 +289,7 @@ def test_guardrail_build_fails_without_an_identifier(monkeypatch):
 def test_checkpointer_wires_postgres_saver_not_memory_saver():
     """(d) The entry point opens a `PostgresSaver`, never a `MemorySaver`."""
 
+    _require_runtime_deps("langgraph.checkpoint.postgres", "psycopg")
     checkpointer = importlib.import_module("checkpointer")
     from langgraph.checkpoint.postgres import PostgresSaver
 
@@ -339,6 +387,7 @@ def test_checkpointer_wires_postgres_saver_not_memory_saver():
 def test_recursion_limits_match_the_spec():
     """God agent run config = 40; department compiled graphs = 25."""
 
+    _require_runtime_deps(*_AGENT_RUNTIME_DEPS)
     agent_module = importlib.import_module("agent")
     assert agent_module.GOD_RECURSION_LIMIT == 40, (
         "god agent recursion_limit must be 40 (god-agent.md § Limits)"
@@ -351,6 +400,9 @@ def test_recursion_limits_match_the_spec():
 def test_leaf_middleware_pins_the_call_limits():
     """Each leaf has ModelCallLimitMiddleware(4, end) and ToolCallLimit(2)."""
 
+    _require_runtime_deps(
+        "deepagents", "jwt", "langchain", "langchain_aws", "langchain_core"
+    )
     import leaves as leaves_module
 
     tool = _stub_tool("stub-tool")
@@ -413,6 +465,9 @@ def _collect_middleware(obj: Any) -> list[Any]:
 
 
 def test_six_leaves_mapped_to_three_departments():
+    _require_runtime_deps(
+        "deepagents", "jwt", "langchain", "langchain_aws", "langchain_core"
+    )
     leaves_module = importlib.import_module("leaves")
     grouped = leaves_module.leaf_specs_for_department()
     assert sorted(grouped) == ["finance-payroll", "hr-operations", "hr-payroll"]
@@ -431,6 +486,14 @@ def test_six_leaves_mapped_to_three_departments():
 def test_calling_agent_names_match_the_spec():
     """The six leaf calling_agent names are fixed — Cedar binds each."""
 
+    _require_runtime_deps(
+        "bedrock_agentcore",
+        "jwt",
+        "langchain_core",
+        "langchain_mcp_adapters",
+        "langgraph",
+        "mcp",
+    )
     gateway_client = importlib.import_module("gateway_client")
     assert set(gateway_client.LEAF_TOOL_MAP) == {
         "leave-balance",
@@ -481,6 +544,7 @@ def test_rate_limiter_recovers_after_the_window():
 
 
 def test_kill_switch_caches_30_seconds(monkeypatch):
+    _require_runtime_deps("jwt")
     import ssm_config
 
     calls: list[str] = []
@@ -504,6 +568,7 @@ def test_kill_switch_caches_30_seconds(monkeypatch):
 def test_kill_switch_refuses_on_a_missing_parameter(monkeypatch):
     """A deleted parameter is `SERVICE_DISABLED`, not an allow."""
 
+    _require_runtime_deps("jwt")
     import ssm_config
 
     def fake_get_parameter(name: str) -> str:
@@ -520,6 +585,14 @@ def test_kill_switch_refuses_on_a_missing_parameter(monkeypatch):
 def test_review_node_approve_calls_record_leave_decision_once():
     """`approve` resume → one `record_leave_decision` call with review-node."""
 
+    _require_runtime_deps(
+        "bedrock_agentcore",
+        "jwt",
+        "langchain_core",
+        "langchain_mcp_adapters",
+        "langgraph",
+        "mcp",
+    )
     import gateway_client
     import review as review_module
 
@@ -573,6 +646,14 @@ def test_review_node_approve_calls_record_leave_decision_once():
 def test_review_node_refuses_a_non_reviewer_without_calling_the_tool():
     """E1 trying to approve E1's own pending request → NOT_REVIEWER."""
 
+    _require_runtime_deps(
+        "bedrock_agentcore",
+        "jwt",
+        "langchain_core",
+        "langchain_mcp_adapters",
+        "langgraph",
+        "mcp",
+    )
     import review as review_module
 
     called: list[Any] = []
@@ -611,6 +692,14 @@ def test_review_node_refuses_a_non_reviewer_without_calling_the_tool():
 def test_review_node_rejects_respond_and_edit_for_the_manager_card():
     """Only `approve` and `reject` are valid decisions on the manager card."""
 
+    _require_runtime_deps(
+        "bedrock_agentcore",
+        "jwt",
+        "langchain_core",
+        "langchain_mcp_adapters",
+        "langgraph",
+        "mcp",
+    )
     import review as review_module
 
     request = review_module.PendingLeaveRequest(
@@ -642,6 +731,7 @@ def test_review_node_rejects_respond_and_edit_for_the_manager_card():
 
 
 def test_filesystem_denies_every_write():
+    _require_runtime_deps("deepagents")
     import filesystem
 
     perm = filesystem.write_deny_permission()
@@ -651,6 +741,7 @@ def test_filesystem_denies_every_write():
 
 
 def test_harness_profile_disables_general_purpose():
+    _require_runtime_deps("deepagents")
     import subagents
 
     cfg = subagents.harness_profile()
@@ -674,6 +765,7 @@ def test_harness_profile_disables_general_purpose():
 def test_default_model_is_the_in_region_bedrock_profile():
     """`openai.gpt-oss-120b-1:0` with no `eu.` or `us.` cross-region profile."""
 
+    _require_runtime_deps("langchain_aws")
     import guardrail
 
     model = guardrail.build_model()
@@ -748,6 +840,14 @@ def test_leave_submit_tool_treats_agui_cancelled_sentinel_as_reject(monkeypatch)
     """AG-UI `ResumeEntry(status='cancelled')` becomes `{'__agui_cancelled__': True}`
     and must cancel cleanly instead of returning `INVALID_DECISION`."""
 
+    _require_runtime_deps(
+        "bedrock_agentcore",
+        "jwt",
+        "langchain_core",
+        "langchain_mcp_adapters",
+        "langgraph",
+        "mcp",
+    )
     gateway_client = importlib.import_module("gateway_client")
     tool = gateway_client.build_local_leaf_tool("leave-submit")
 

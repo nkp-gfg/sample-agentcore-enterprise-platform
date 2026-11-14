@@ -29,6 +29,7 @@ import contextlib
 import datetime as _dt
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,46 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
+
+_GOD_AGENT_RUNTIME_DEPS = (
+    "ag_ui",
+    "bedrock_agentcore",
+    "copilotkit",
+    "deepagents",
+    "jwt",
+    "langchain_aws",
+    "langchain_core",
+    "langchain_mcp_adapters",
+    "langgraph",
+    "mcp",
+    "psycopg",
+)
+
+
+def _require_runtime_deps(*modules: str) -> None:
+    if os.environ.get("GOD_AGENT_REQUIRE_RUNTIME_TESTS") == "1":
+        return
+    missing: list[str] = []
+    for mod in modules:
+        top = mod.split(".", 1)[0]
+        existing = sys.modules.get(top)
+        if existing is not None and getattr(existing, "__spec__", None) is None:
+            missing.append(mod)
+            continue
+        try:
+            if (
+                importlib.util.find_spec(top) is None
+                or importlib.util.find_spec(mod) is None
+            ):
+                missing.append(mod)
+        except (ImportError, ValueError):
+            missing.append(mod)
+    if missing:
+        pytest.skip(
+            "god-agent container dependencies not installed in host venv "
+            f"({', '.join(missing)}); install agent-code/god-agent/requirements.txt "
+            "or set GOD_AGENT_REQUIRE_RUNTIME_TESTS=1"
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -445,6 +486,7 @@ def test_hr_tools_dispatcher_and_handlers_enforce_two_phase_read_and_idempotency
 
 
 def test_god_agent_normalises_both_cli_and_agui_payloads(monkeypatch):
+    _require_runtime_deps(*_GOD_AGENT_RUNTIME_DEPS)
     for mod_name in list(sys.modules):
         if mod_name == "shared" or mod_name.startswith("shared."):
             sys.modules.pop(mod_name, None)
@@ -497,6 +539,7 @@ def test_god_agent_normalises_both_cli_and_agui_payloads(monkeypatch):
 
 
 def test_god_agent_normalises_resume_status_and_snake_case_interrupt_id(monkeypatch):
+    _require_runtime_deps(*_GOD_AGENT_RUNTIME_DEPS)
     for mod_name in list(sys.modules):
         if mod_name == "shared" or mod_name.startswith("shared."):
             sys.modules.pop(mod_name, None)
@@ -626,6 +669,7 @@ def test_god_agent_sets_subagent_attribution_flags_in_source():
 def test_god_agent_invocations_deduplicates_streamed_tool_results(monkeypatch):
     import asyncio
 
+    _require_runtime_deps(*_GOD_AGENT_RUNTIME_DEPS)
     for mod_name in list(sys.modules):
         if mod_name == "shared" or mod_name.startswith("shared."):
             sys.modules.pop(mod_name, None)
@@ -767,6 +811,14 @@ def test_god_agent_invocations_deduplicates_streamed_tool_results(monkeypatch):
 def test_gateway_client_leave_submit_handles_agui_cancelled(monkeypatch):
     import asyncio
 
+    _require_runtime_deps(
+        "bedrock_agentcore",
+        "jwt",
+        "langchain_core",
+        "langchain_mcp_adapters",
+        "langgraph",
+        "mcp",
+    )
     for mod_name in list(sys.modules):
         if mod_name == "shared" or mod_name.startswith("shared."):
             sys.modules.pop(mod_name, None)

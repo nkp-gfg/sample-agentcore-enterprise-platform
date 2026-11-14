@@ -23,9 +23,7 @@ from typing import Any
 
 POLICY_VERSION = "2026-11-14.1"
 
-_LEAVE_MUTATION_ACTIONS = frozenset(
-    {"check_leave_eligibility", "submit_leave_request"}
-)
+_LEAVE_MUTATION_ACTIONS = frozenset({"check_leave_eligibility", "submit_leave_request"})
 
 
 def _non_empty_str(value: Any) -> str | None:

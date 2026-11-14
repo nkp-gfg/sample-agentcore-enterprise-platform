@@ -2806,8 +2806,8 @@ def resolve_region(root: Path | None = None) -> str:
 def resolve_project_and_env(root: Path | None = None) -> tuple[str, str]:
     """Resolve `(project, environment)` with the same precedence as `deploy.sh`:
 
-        env PROJECT_NAME/ENVIRONMENT > platform.yaml > workshop.env
-        > ("agentcore-workshop", "dev")
+    env PROJECT_NAME/ENVIRONMENT > platform.yaml > workshop.env
+    > ("agentcore-workshop", "dev")
     """
     project = os.environ.get("PROJECT_NAME")
     env = os.environ.get("ENVIRONMENT")

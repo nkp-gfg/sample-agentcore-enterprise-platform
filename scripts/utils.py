@@ -9,7 +9,6 @@ Uses /{project}/{env}/ SSM parameter path convention.
 
 import base64
 import json
-import os
 import sys
 import urllib.parse
 import urllib.request

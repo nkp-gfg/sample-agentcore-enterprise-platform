@@ -1115,6 +1115,7 @@
     state.expiresAt = expiresAt;
     state.idClaims = idClaims || accessClaims;
     state.userLabel = (idClaims && (idClaims.email || idClaims["cognito:username"]))
+      || state.userLabel
       || (accessClaims && (accessClaims.username || accessClaims.sub))
       || "Signed in";
     state.threadId = state.threadId || ensureTabThreadId();
@@ -1423,6 +1424,7 @@
     if (state.sseController) state.sseController.abort();
     state.pendingEmployeeConfirm = null;
     state.pendingManagerReviews.clear();
+    updateReviewBadge(0);
     state.outboundErrors = [];
     if (state.processor) state.processor.clear();
 

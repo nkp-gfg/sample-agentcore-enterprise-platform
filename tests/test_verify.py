@@ -222,4 +222,3 @@ def test_resolve_project_and_env_reads_platform_yaml_with_env_override(
 
     monkeypatch.setenv("PROJECT_NAME", "env-proj")
     assert resolve_project_and_env(tmp_path) == ("env-proj", "stage")
-
