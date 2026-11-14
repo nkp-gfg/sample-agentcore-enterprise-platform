@@ -6,7 +6,7 @@ import json
 import logging
 import os
 
-from agents.subagents import get_subagent_definitions
+from agents.subagents import DISALLOWED_TOOLS, get_subagent_definitions
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from claude_agent_sdk import (
     AssistantMessage,
@@ -35,9 +35,9 @@ app = BedrockAgentCoreApp()
 DEFAULT_MODEL_ID = "eu.anthropic.claude-opus-4-6-v1"
 MODEL_ID = os.environ.get("MODEL_ID", DEFAULT_MODEL_ID)
 
-# Maps runtimeSessionId -> claude_session_id for conversation resumption.
+# Maps (user_id, runtimeSessionId) -> claude_session_id for conversation resumption.
 # Both are lost if the container restarts, so in-memory storage is sufficient.
-_session_map: dict[str, str] = {}
+_session_map: dict[tuple[str, str], str] = {}
 
 
 def _gateway_url_ssm_path() -> str | None:
@@ -100,7 +100,6 @@ async def main(payload, context: RequestContext):
         return
 
     _code_int_session_id = payload.get("code_int_session_id", "")
-    claude_session_id = _session_map.get(runtime_session_id)
 
     # Extract user ID securely from validated JWT token
     try:
@@ -111,6 +110,8 @@ async def main(payload, context: RequestContext):
         logger.warning("Rejected unverified caller: %s", e)
         yield {"status": "error", "error": "Unauthorized"}
         return
+
+    claude_session_id = _session_map.get((user_id, runtime_session_id))
     logger.info("[AGENT] User: %s, Session: %s", user_id, runtime_session_id)
 
     # Get Gateway URL and access token
@@ -160,22 +161,7 @@ async def main(payload, context: RequestContext):
             mcp_servers=mcp_servers,
             model=MODEL_ID,
             allowed_tools=allowed_tools,
-            disallowed_tools=[
-                "Bash",
-                "Write",
-                "NotebookEdit",
-                "Edit",
-                "WebFetch",
-                "Read",
-                "Glob",
-                "Grep",
-                "EnterWorktree",
-                "Skill",
-                "TodoWrite",
-                "CronCreate",
-                "CronDelete",
-                "CronList",
-            ],
+            disallowed_tools=list(DISALLOWED_TOOLS),
             agents=subagents,
             resume=resume_id,
             thinking={"type": "adaptive"},
@@ -254,7 +240,7 @@ Your response should:
                 elif isinstance(msg, ResultMessage):
                     logger.info("ResultMessage received, session_id=%s", msg.session_id)
                     if msg.session_id:
-                        _session_map[runtime_session_id] = msg.session_id
+                        _session_map[(user_id, runtime_session_id)] = msg.session_id
                     yield {"claude_session_id": msg.session_id}
 
     try:

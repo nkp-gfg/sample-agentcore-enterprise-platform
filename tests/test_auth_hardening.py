@@ -59,6 +59,14 @@ def test_cognito_only_preserves_workshop_signup_and_native_auth() -> None:
     user_pool = _resources(template, "AWS::Cognito::UserPool")[0]["Properties"]
 
     assert user_pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is False
+    password_policy = user_pool["Policies"]["PasswordPolicy"]
+    assert password_policy["MinimumLength"] == 12
+    assert password_policy["RequireLowercase"] is True
+    assert password_policy["RequireUppercase"] is True
+    assert password_policy["RequireNumbers"] is True
+    assert password_policy["RequireSymbols"] is True
+    assert user_pool["MfaConfiguration"] == "OPTIONAL"
+    assert user_pool["EnabledMfas"] == ["SOFTWARE_TOKEN_MFA"]
 
     app_client = _user_client(template, "agentcore-test-app-client")
     web_client = _user_client(template, "agentcore-test-web-client")
@@ -78,7 +86,7 @@ def test_cognito_only_preserves_workshop_signup_and_native_auth() -> None:
             {
                 "tenant_id": "22222222-3333-4444-5555-666666666666",
                 "client_id": "entra-client",
-                "client_secret_name": "agentcore/entra-secret",
+                "client_secret_name": "agentcore/entra-secret",  # pragma: allowlist secret
             },
             "EntraID",
         ),
@@ -87,7 +95,7 @@ def test_cognito_only_preserves_workshop_signup_and_native_auth() -> None:
             {
                 "issuer_url": "https://example.okta.com/oauth2/default",
                 "client_id": "okta-client",
-                "client_secret_name": "agentcore/okta-secret",
+                "client_secret_name": "agentcore/okta-secret",  # pragma: allowlist secret
             },
             "Okta",
         ),
@@ -96,7 +104,7 @@ def test_cognito_only_preserves_workshop_signup_and_native_auth() -> None:
             {
                 "issuer_url": "https://auth.example.com",
                 "client_id": "ping-client",
-                "client_secret_name": "agentcore/ping-secret",
+                "client_secret_name": "agentcore/ping-secret",  # pragma: allowlist secret
             },
             "PingIdentity",
         ),
@@ -130,7 +138,7 @@ def test_brokered_enterprise_idp_is_the_only_user_sign_in_provider(
             "entra_id",
             {
                 "client_id": "entra-client",
-                "client_secret_name": "agentcore/entra-secret",
+                "client_secret_name": "agentcore/entra-secret",  # pragma: allowlist secret
             },
             "idp_tenant_id",
         ),
@@ -138,7 +146,7 @@ def test_brokered_enterprise_idp_is_the_only_user_sign_in_provider(
             "okta",
             {
                 "client_id": "okta-client",
-                "client_secret_name": "agentcore/okta-secret",
+                "client_secret_name": "agentcore/okta-secret",  # pragma: allowlist secret
             },
             "idp_issuer_url",
         ),
@@ -146,7 +154,7 @@ def test_brokered_enterprise_idp_is_the_only_user_sign_in_provider(
             "ping",
             {
                 "client_id": "ping-client",
-                "client_secret_name": "agentcore/ping-secret",
+                "client_secret_name": "agentcore/ping-secret",  # pragma: allowlist secret
             },
             "idp_issuer_url",
         ),
@@ -170,17 +178,17 @@ def test_public_web_client_uses_authorization_code_flow_for_pkce(
         "entra_id": {
             "tenant_id": "22222222-3333-4444-5555-666666666666",
             "client_id": "entra-client",
-            "client_secret_name": "agentcore/entra-secret",
+            "client_secret_name": "agentcore/entra-secret",  # pragma: allowlist secret
         },
         "okta": {
             "issuer_url": "https://example.okta.com/oauth2/default",
             "client_id": "okta-client",
-            "client_secret_name": "agentcore/okta-secret",
+            "client_secret_name": "agentcore/okta-secret",  # pragma: allowlist secret
         },
         "ping": {
             "issuer_url": "https://auth.example.com",
             "client_id": "ping-client",
-            "client_secret_name": "agentcore/ping-secret",
+            "client_secret_name": "agentcore/ping-secret",  # pragma: allowlist secret
         },
     }
     template = _synth_auth(idp_type, configs[idp_type])

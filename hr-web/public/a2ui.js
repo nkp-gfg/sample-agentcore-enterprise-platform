@@ -50,6 +50,23 @@
 
   /* ------------------------------------------------- data model helpers */
 
+  const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+  function _isSafeKey(key) {
+    return typeof key === "string" && key.length > 0 && !FORBIDDEN_KEYS.has(key);
+  }
+
+  function _sanitizeClone(value) {
+    if (value === null || typeof value !== "object") return value;
+    if (Array.isArray(value)) return value.map((item) => _sanitizeClone(item));
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (!_isSafeKey(k)) continue;
+      out[k] = _sanitizeClone(v);
+    }
+    return out;
+  }
+
   function _splitPointer(pointer) {
     if (typeof pointer !== "string" || pointer.length === 0 || pointer === "/") {
       return [];
@@ -65,6 +82,7 @@
     let node = root;
     for (const p of parts) {
       if (node == null || typeof node !== "object") return undefined;
+      if (!_isSafeKey(p) || !Object.prototype.hasOwnProperty.call(node, p)) return undefined;
       node = node[p];
     }
     return node;
@@ -74,21 +92,26 @@
     const parts = _splitPointer(pointer);
     if (parts.length === 0) {
       return value && typeof value === "object" && !Array.isArray(value)
-        ? JSON.parse(JSON.stringify(value))
+        ? _sanitizeClone(value)
         : {};
     }
     const clone = root && typeof root === "object" && !Array.isArray(root)
-      ? JSON.parse(JSON.stringify(root))
+      ? _sanitizeClone(root)
       : {};
+    for (const seg of parts) {
+      if (!_isSafeKey(seg)) return clone;
+    }
     let node = clone;
     for (let i = 0; i < parts.length - 1; i += 1) {
       const key = parts[i];
-      if (node[key] == null || typeof node[key] !== "object") node[key] = {};
+      if (!Object.prototype.hasOwnProperty.call(node, key) || node[key] == null || typeof node[key] !== "object") {
+        node[key] = {};
+      }
       node = node[key];
     }
     const last = parts[parts.length - 1];
     if (value === null) delete node[last];
-    else node[last] = value;
+    else node[last] = _sanitizeClone(value);
     return clone;
   }
 
@@ -101,12 +124,19 @@
       return _getAtPath(model, value["@path"]);
     }
     if (typeof value["@call"] === "string") {
-      const impl = functions && functions[value["@call"]];
+      const fnName = value["@call"];
+      if (!_isSafeKey(fnName) || !functions || !Object.prototype.hasOwnProperty.call(functions, fnName)) {
+        return undefined;
+      }
+      const impl = functions[fnName];
       if (typeof impl !== "function") return undefined;
-      const args = (value.args && typeof value.args === "object")
-        ? Object.fromEntries(Object.entries(value.args).map(([k, v]) =>
-          [k, resolveBinding(v, model, functions)]))
-        : {};
+      const args = {};
+      if (value.args && typeof value.args === "object") {
+        for (const [k, v] of Object.entries(value.args)) {
+          if (!_isSafeKey(k)) continue;
+          args[k] = resolveBinding(v, model, functions);
+        }
+      }
       try {
         return impl(args);
       } catch (_err) {
@@ -115,6 +145,7 @@
     }
     const out = {};
     for (const [k, v] of Object.entries(value)) {
+      if (!_isSafeKey(k)) continue;
       out[k] = resolveBinding(v, model, functions);
     }
     return out;
@@ -270,7 +301,7 @@
       const model = new SurfaceModel(id, payload.catalogId);
       model.sendDataModel = Boolean(payload.sendDataModel);
       if (payload.dataModel && typeof payload.dataModel === "object") {
-        model.dataModel = JSON.parse(JSON.stringify(payload.dataModel));
+        model.dataModel = _sanitizeClone(payload.dataModel);
       }
       if (Array.isArray(payload.components)) {
         model.setComponents(payload.components);

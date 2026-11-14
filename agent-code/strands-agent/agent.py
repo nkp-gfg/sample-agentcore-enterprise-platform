@@ -129,9 +129,12 @@ async def invocations(payload, context: RequestContext):
         async for event in agent.stream_async(user_query):
             yield json.loads(json.dumps(dict(event), default=str))
 
-    except Exception as e:
+    except Exception:
         logger.exception("Agent run failed")
-        yield {"status": "error", "error": str(e)}
+        yield {
+            "status": "error",
+            "error": "An internal error occurred. Please try again.",
+        }
 
 
 if __name__ == "__main__":

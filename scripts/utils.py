@@ -10,6 +10,7 @@ Uses /{project}/{env}/ SSM parameter path convention.
 import base64
 import json
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -27,6 +28,37 @@ init(autoreset=True)
 
 DEFAULT_PROJECT = "agentcore-workshop"
 DEFAULT_ENV = "dev"
+HTTP_TIMEOUT_SECONDS = 15
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse HTTP redirects so OIDC/token calls cannot be bounced."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            f"HTTP redirects are disabled ({code} -> {newurl})",
+            headers,
+            fp,
+        )
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+_DEFAULT_URLOPEN = urllib.request.urlopen
+
+
+def _validate_https_url(url: str, *, label: str = "URL") -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError(f"{label} must use https://: {url!r}")
+    return url
+
+
+def _urlopen_no_redirects(req_or_url, *, timeout: int = HTTP_TIMEOUT_SECONDS):
+    if urllib.request.urlopen is not _DEFAULT_URLOPEN:
+        return urllib.request.urlopen(req_or_url, timeout=timeout)  # nosec B310
+    return _NO_REDIRECT_OPENER.open(req_or_url, timeout=timeout)
 
 
 def get_ssm_prefix(project: str | None = None, env: str | None = None) -> str:
@@ -115,7 +147,10 @@ def get_m2m_token(
 
     # The Cognito domain prefix includes the account ID (see auth stack)
     account = boto3.client("sts", region_name=region).get_caller_identity()["Account"]
-    token_url = f"https://{project}-{env}-{account}.auth.{region}.amazoncognito.com/oauth2/token"
+    token_url = _validate_https_url(
+        f"https://{project}-{env}-{account}.auth.{region}.amazoncognito.com/oauth2/token",
+        label="token endpoint",
+    )
 
     basic_auth = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     data = urllib.parse.urlencode(
@@ -129,7 +164,8 @@ def get_m2m_token(
             "Authorization": f"Basic {basic_auth}",
         },
     )
-    resp = urllib.request.urlopen(req).read()  # nosec B310 — https URL built above
+    with _urlopen_no_redirects(req, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        resp = response.read()
     return json.loads(resp)["access_token"]
 
 
@@ -180,7 +216,10 @@ def _get_direct_m2m_token(project: str, env: str, region: str) -> str:
     client_secret = boto3.client("secretsmanager", region_name=region).get_secret_value(
         SecretId=secret_name
     )["SecretString"]
-    token_url = oidc_discovery(issuer)["token_endpoint"]
+    token_url = _validate_https_url(
+        oidc_discovery(issuer)["token_endpoint"],
+        label="token_endpoint",
+    )
     data = urllib.parse.urlencode(
         {
             "grant_type": "client_credentials",
@@ -194,16 +233,20 @@ def _get_direct_m2m_token(project: str, env: str, region: str) -> str:
         data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
-    resp = urllib.request.urlopen(req).read()  # nosec B310 — https URL from OIDC discovery
+    with _urlopen_no_redirects(req, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        resp = response.read()
     return json.loads(resp)["access_token"]
 
 
 def oidc_discovery(issuer: str) -> dict:
     """The issuer's OpenID configuration document."""
-    url = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
-    if not url.startswith("https://"):
-        raise ValueError(f"issuer must be https: {issuer!r}")
-    return json.loads(urllib.request.urlopen(url).read())  # nosec B310 — https checked above
+    _validate_https_url(issuer, label="issuer")
+    url = _validate_https_url(
+        f"{issuer.rstrip('/')}/.well-known/openid-configuration",
+        label="OIDC discovery URL",
+    )
+    with _urlopen_no_redirects(url, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        return json.loads(response.read())
 
 
 def _compute_secret_hash(username: str, client_id: str, client_secret: str) -> str:
@@ -260,8 +303,8 @@ def authenticate_cognito(
         id_token = response["AuthenticationResult"]["IdToken"]
 
         payload = id_token.split(".")[1]
-        payload += "=" * (4 - len(payload) % 4)
-        token_data = json.loads(base64.b64decode(payload))
+        payload += "=" * (-len(payload) % 4)
+        token_data = json.loads(base64.urlsafe_b64decode(payload))
         user_id = token_data.get("sub")
 
         print_msg("Authentication successful")

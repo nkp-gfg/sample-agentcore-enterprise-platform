@@ -7,4 +7,4 @@
 # docs/hr/modules.md § Database roles: the driver opens the connection
 # with an RDS IAM auth token (valid 15 min), not with the master
 # cluster secret.
-psycopg[binary]>=3.2.3,<4
+psycopg[binary]==3.2.13

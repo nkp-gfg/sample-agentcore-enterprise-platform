@@ -69,6 +69,25 @@ def _wrap(response: dict[str, Any]) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": json.dumps(response)}]}
 
 
+def _extract_audit_identity(event: dict) -> tuple[str, str, str]:
+    caller_id = (
+        event.get("caller_employee_id")
+        if isinstance(event, dict) and isinstance(event.get("caller_employee_id"), str)
+        else ""
+    )
+    agent_id = (
+        event.get("agent_id")
+        if isinstance(event, dict) and isinstance(event.get("agent_id"), str)
+        else ""
+    )
+    session_id = (
+        event.get("session_id")
+        if isinstance(event, dict) and isinstance(event.get("session_id"), str)
+        else ""
+    )
+    return caller_id.strip() or "unmapped", agent_id, session_id
+
+
 def handler(event: dict, context: Any) -> dict[str, Any]:
     """Dispatch by tool name. Every failure becomes a normal tool result."""
     try:
@@ -91,25 +110,10 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
         logger.warning(
             "tool %s raised HRToolError reason_code=%s", tool_name, exc.reason_code
         )
-        caller_id = (
-            event.get("caller_employee_id")
-            if isinstance(event, dict)
-            and isinstance(event.get("caller_employee_id"), str)
-            else ""
-        )
-        agent_id = (
-            event.get("agent_id")
-            if isinstance(event, dict) and isinstance(event.get("agent_id"), str)
-            else ""
-        )
-        session_id = (
-            event.get("session_id")
-            if isinstance(event, dict) and isinstance(event.get("session_id"), str)
-            else ""
-        )
+        caller_id, agent_id, session_id = _extract_audit_identity(event)
         log_decision(
             action=tool_name,
-            caller_employee_id=caller_id.strip() or "unmapped",
+            caller_employee_id=caller_id,
             target_employee_id=None,
             allow=False,
             reason_code=exc.reason_code,
@@ -121,11 +125,35 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
         return _wrap(build_response(authorized=False, reason_code=exc.reason_code))
     except Exception:
         logger.exception("tool %s raised unexpectedly", tool_name)
+        caller_id, agent_id, session_id = _extract_audit_identity(event)
+        log_decision(
+            action=tool_name,
+            caller_employee_id=caller_id,
+            target_employee_id=None,
+            allow=False,
+            reason_code=DataUnavailable.reason_code,
+            agent_id=agent_id,
+            session_id=session_id,
+            policy_version="",
+            decided_by_layer="tool",
+        )
         return _wrap(
             build_response(authorized=False, reason_code=DataUnavailable.reason_code)
         )
 
     if not isinstance(response, dict) or "authorized" not in response:
         logger.error("tool %s returned bad shape: %r", tool_name, response)
+        caller_id, agent_id, session_id = _extract_audit_identity(event)
+        log_decision(
+            action=tool_name,
+            caller_employee_id=caller_id,
+            target_employee_id=None,
+            allow=False,
+            reason_code="DATA_UNAVAILABLE",
+            agent_id=agent_id,
+            session_id=session_id,
+            policy_version="",
+            decided_by_layer="tool",
+        )
         return _wrap(build_response(authorized=False, reason_code="DATA_UNAVAILABLE"))
     return _wrap(response)

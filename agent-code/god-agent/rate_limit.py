@@ -23,6 +23,8 @@ from dataclasses import dataclass
 
 DEFAULT_MAX_TURNS = 20
 DEFAULT_WINDOW_SECONDS = 10 * 60
+REVIEW_MAX_TURNS = 30
+REVIEW_WINDOW_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -75,10 +77,16 @@ class TurnRateLimiter:
         window_start = current_time - self._window_seconds
 
         with self._lock:
-            events = self._events[key]
-            while events and events[0] <= window_start:
-                events.popleft()
+            expired_keys: list[str] = []
+            for existing_key, existing_events in self._events.items():
+                while existing_events and existing_events[0] <= window_start:
+                    existing_events.popleft()
+                if not existing_events and existing_key != key:
+                    expired_keys.append(existing_key)
+            for expired_key in expired_keys:
+                del self._events[expired_key]
 
+            events = self._events[key]
             if len(events) >= self._max_turns:
                 oldest = events[0]
                 retry_after = max(0.0, (oldest + self._window_seconds) - current_time)
@@ -103,7 +111,15 @@ class TurnRateLimiter:
 
 
 _DEFAULT_LIMITER = TurnRateLimiter()
+_REVIEW_LIMITER = TurnRateLimiter(
+    max_turns=REVIEW_MAX_TURNS,
+    window_seconds=REVIEW_WINDOW_SECONDS,
+)
 
 
 def default_limiter() -> TurnRateLimiter:
     return _DEFAULT_LIMITER
+
+
+def review_limiter() -> TurnRateLimiter:
+    return _REVIEW_LIMITER

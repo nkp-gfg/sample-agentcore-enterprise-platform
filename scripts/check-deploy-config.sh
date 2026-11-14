@@ -188,21 +188,35 @@ eval "$(sed -n '/^upsert_oauth_secret()/,/^}/p; /^upsert_idp_secret()/,/^}/p; /^
 # eval'd function, and the aws stub is invoked from inside it — both invisible
 # to shellcheck's static view.
 # shellcheck disable=SC2034,SC2329
-aws() { printf '%s\n' "$*" >> "$TMP/aws.args"; return 0; }
+aws() {
+    printf '%s\n' "$*" >> "$TMP/aws.args"
+    if [[ " $* " == *" file:///dev/stdin "* ]]; then
+        printf '[%s]\n' "$(cat)" >> "$TMP/aws.stdin"
+    fi
+    return 0
+}
 # shellcheck disable=SC2034
 PREFIX="check-prefix"; AWS_REGION="us-east-1"
 
-: > "$TMP/aws.args"
+: > "$TMP/aws.args"; : > "$TMP/aws.stdin"
 IDP_CLIENT_SECRET=$'sekret-value\n'          # trailing newline, as pasted/piped
 upsert_idp_secret >/dev/null 2>&1 || true
-grep -q -- "--secret-string sekret-value " "$TMP/aws.args" \
-    || fail "newline not stripped before Secrets Manager: $(cat "$TMP/aws.args")"
+grep -q -- "--secret-string file:///dev/stdin " "$TMP/aws.args" \
+    || fail "secret not piped via file:///dev/stdin: $(cat "$TMP/aws.args")"
+! grep -q "sekret-value" "$TMP/aws.args" \
+    || fail "secret leaked into aws argv: $(cat "$TMP/aws.args")"
+grep -qx '\[sekret-value\]' "$TMP/aws.stdin" \
+    || fail "newline not stripped before Secrets Manager: $(cat "$TMP/aws.stdin")"
 
-: > "$TMP/aws.args"
+: > "$TMP/aws.args"; : > "$TMP/aws.stdin"
 IDP_CLIENT_SECRET="  padded  "
 upsert_idp_secret >/dev/null 2>&1 || true
-grep -q -- "--secret-string padded " "$TMP/aws.args" \
-    || fail "surrounding spaces not stripped: $(cat "$TMP/aws.args")"
+grep -q -- "--secret-string file:///dev/stdin " "$TMP/aws.args" \
+    || fail "secret not piped via file:///dev/stdin: $(cat "$TMP/aws.args")"
+! grep -q "padded" "$TMP/aws.args" \
+    || fail "secret leaked into aws argv: $(cat "$TMP/aws.args")"
+grep -qx '\[padded\]' "$TMP/aws.stdin" \
+    || fail "surrounding spaces not stripped: $(cat "$TMP/aws.stdin")"
 
 # All-whitespace must stop the run rather than store an empty secret.
 # shellcheck disable=SC2034
@@ -221,7 +235,7 @@ eval "$(sed -n '/^prompt_idp()/,/^}/p;
 log_error() { printf '%s\n' "$*" >&2; }
 # shellcheck disable=SC2034,SC2329  # read by the eval'd functions, not statically
 NON_INTERACTIVE=0
-IDP_CLIENT_SECRET_NAME="my-corp/entra-secret"
+IDP_CLIENT_SECRET_NAME="my-corp/entra-secret" # pragma: allowlist secret
 IDP_TYPE="entra_id"
 unset IDP_CLIENT_SECRET
 
@@ -248,8 +262,7 @@ grep -q -- "get-secret-value --secret-id my-corp/entra-secret" "$TMP/aws.args" \
     || fail "configured secret value not validated: $(cat "$TMP/aws.args")"
 ! grep -q -- "Client Secret:" <<<"$prompt_out" \
     || fail "configured secret unexpectedly caused a plaintext prompt: $prompt_out"
-[ "$IDP_CLIENT_SECRET_NAME" = "my-corp/entra-secret" ] \
-    || fail "configured secret name overwritten: $IDP_CLIENT_SECRET_NAME"
+[ "${IDP_CLIENT_SECRET_NAME}" = "my-corp/entra-secret" ] || fail "configured secret name overwritten: $IDP_CLIENT_SECRET_NAME" # pragma: allowlist secret
 
 # A valid identity for another account must stop before any deployment-side
 # operation, even in --yes/non-interactive modes.
@@ -294,9 +307,9 @@ grep -q 'empty IdP client secret' <<<"$empty_out" \
 aws() { printf '%s\n' "$*" >> "$TMP/aws.args"; return 0; }
 : > "$TMP/aws.args"
 # shellcheck disable=SC2034  # read by the eval'd upsert_idp_secret
-IDP_CLIENT_SECRET_NAME="my-corp/entra-secret"
+IDP_CLIENT_SECRET_NAME="my-corp/entra-secret" # pragma: allowlist secret
 # shellcheck disable=SC2034  # read by the eval'd upsert_idp_secret
-IDP_CLIENT_SECRET="rotated-value"
+IDP_CLIENT_SECRET="rotated-value" # pragma: allowlist secret
 upsert_idp_secret >/dev/null 2>&1 || true
 grep -q -- "put-secret-value --secret-id my-corp/entra-secret" "$TMP/aws.args" \
     || fail "rotation did not target the configured secret: $(cat "$TMP/aws.args")"
@@ -309,25 +322,34 @@ echo "PASS: a configured IdP secret name is reused, not duplicated"
 # prefixed name (or a configured one), plaintext unset afterwards. These used
 # to be rendered verbatim into the synthesized template via cdk context.
 # shellcheck disable=SC2329
-aws() { printf '%s\n' "$*" >> "$TMP/aws.args"; return 0; }
-: > "$TMP/aws.args"
+aws() {
+    printf '%s\n' "$*" >> "$TMP/aws.args"
+    if [[ " $* " == *" file:///dev/stdin "* ]]; then
+        printf '[%s]\n' "$(cat)" >> "$TMP/aws.stdin"
+    fi
+    return 0
+}
+: > "$TMP/aws.args"; : > "$TMP/aws.stdin"
 # shellcheck disable=SC2034  # read via indirection in the eval'd functions
 GOOGLE_CLIENT_SECRET=$'g-sekret\n'
 # shellcheck disable=SC2034
 GITHUB_CLIENT_SECRET="  gh-sekret  "
 # shellcheck disable=SC2034
-NOTION_CLIENT_SECRET_NAME="my-corp/notion"   # bring-your-own name
+NOTION_CLIENT_SECRET_NAME="my-corp/notion"   # pragma: allowlist secret — bring-your-own name
 # shellcheck disable=SC2034
-NOTION_CLIENT_SECRET="n-sekret"
+NOTION_CLIENT_SECRET="n-sekret" # pragma: allowlist secret
 upsert_3lo_secrets >/dev/null 2>&1 || true
-grep -q -- "--secret-string g-sekret " "$TMP/aws.args" \
-    || fail "google secret newline not stripped: $(cat "$TMP/aws.args")"
-grep -q -- "--secret-string gh-sekret " "$TMP/aws.args" \
-    || fail "github secret padding not stripped: $(cat "$TMP/aws.args")"
+grep -q -- "--secret-string file:///dev/stdin " "$TMP/aws.args" \
+    || fail "3LO secret not piped via file:///dev/stdin: $(cat "$TMP/aws.args")"
+! grep -qE "g-sekret|gh-sekret|n-sekret" "$TMP/aws.args" \
+    || fail "3LO secret leaked into aws argv: $(cat "$TMP/aws.args")"
+grep -qx '\[g-sekret\]' "$TMP/aws.stdin" \
+    || fail "google secret newline not stripped: $(cat "$TMP/aws.stdin")"
+grep -qx '\[gh-sekret\]' "$TMP/aws.stdin" \
+    || fail "github secret padding not stripped: $(cat "$TMP/aws.stdin")"
 grep -q -- "--secret-id my-corp/notion" "$TMP/aws.args" \
     || fail "notion bring-your-own name ignored: $(cat "$TMP/aws.args")"
-[ "$GOOGLE_CLIENT_SECRET_NAME" = "check-prefix-google-oauth-secret" ] \
-    || fail "google secret name not defaulted: ${GOOGLE_CLIENT_SECRET_NAME:-unset}"
+[ "${GOOGLE_CLIENT_SECRET_NAME}" = "check-prefix-google-oauth-secret" ] || fail "google secret name not defaulted: ${GOOGLE_CLIENT_SECRET_NAME:-unset}" # pragma: allowlist secret
 [ -z "${GOOGLE_CLIENT_SECRET:-}${GITHUB_CLIENT_SECRET:-}${NOTION_CLIENT_SECRET:-}" ] \
     || fail "a 3LO plaintext survived the upsert"
 unset -f aws
@@ -568,7 +590,7 @@ run_migrate() {
 out=$(run_migrate plan 2>&1) || fail "migrate plan failed: $out"
 grep -q "POST /invocations -> http://127.0.0.1:8000/run" <<<"$out" \
     || fail "adapter mapping not printed: $out"
-grep -q "mig-check/dev/migration/JIRA_TOKEN" <<<"$out" || fail "secret name not printed: $out"
+grep -q "mig-check/dev/migration/JIRA_TOKEN" <<<"$out" || fail "secret name not printed: $out" # pragma: allowlist secret
 grep -q "found:.*JIRA_TOKEN" <<<"$out"   || fail "existing secret not reported found: $out"
 grep -q "missing:.*GIT_TOKEN" <<<"$out"  || fail "absent secret not reported missing: $out"
 grep -q "arm64" <<<"$out"                || fail "arm64 warning missing for a pre-built image: $out"
@@ -705,7 +727,7 @@ echo "PASS: brokered → direct switch deploys auth consumers first; idp_mode re
 # enough to move Identity away from it. CDK prints outputs after deployment;
 # prove the stream filter removes a seeded value before it reaches logs.
 eval "$(sed -n '/^redact_legacy_m2m_output()/,/^}/p' "$SCRIPT_DIR/deploy.sh")"
-seeded_secret="seeded-secret-that-must-not-reach-logs"
+seeded_secret="seeded-secret-that-must-not-reach-logs" # pragma: allowlist secret
 filtered="$(printf '%s\n' \
     "stack.ExportsOutputFnGetAttUserPoolM2MClientDescribeCognitoUserPoolClientABCUserPoolClientClientSecretXYZ = $seeded_secret" \
     | redact_legacy_m2m_output)"

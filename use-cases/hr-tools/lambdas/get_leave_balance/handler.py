@@ -91,23 +91,45 @@ def handler(event: dict, context) -> dict:
         }
     )
     reason_code = decision["reason_code"]
+    if not decision["allow"]:
+        log_decision(
+            action=_ACTION,
+            caller_employee_id=caller,
+            target_employee_id=caller,
+            allow=False,
+            reason_code=reason_code,
+            agent_id=agent_id,
+            session_id=session_id,
+            policy_version=decision["policy_version"],
+            decided_by_layer="policy",
+        )
+        return build_response(authorized=False, reason_code=reason_code)
+
+    if employee_row is None:
+        log_decision(
+            action=_ACTION,
+            caller_employee_id=caller,
+            target_employee_id=caller,
+            allow=False,
+            reason_code="DATA_UNAVAILABLE",
+            agent_id=agent_id,
+            session_id=session_id,
+            policy_version="",
+            decided_by_layer="tool",
+        )
+        return build_response(authorized=False, reason_code="DATA_UNAVAILABLE")
+
     log_decision(
         action=_ACTION,
         caller_employee_id=caller,
         target_employee_id=caller,
-        allow=decision["allow"],
+        allow=True,
         reason_code=reason_code,
         agent_id=agent_id,
         session_id=session_id,
         policy_version=decision["policy_version"],
         decided_by_layer="policy",
     )
-
-    if not decision["allow"]:
-        return build_response(authorized=False, reason_code=reason_code)
-
-    if employee_row is None:
-        return build_response(authorized=False, reason_code="DATA_UNAVAILABLE")
 
     _status, probation_end = employee_row
     balances: dict[str, float] = {"annual": 0.0, "sick": 0.0}

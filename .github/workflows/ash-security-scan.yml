@@ -3,9 +3,9 @@ name: ASH Security Scan
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, part2-without-opa-godbot-v3 ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, part2-without-opa-godbot-v3 ]
 
 permissions:
   contents: read
@@ -14,14 +14,17 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Get changed files
         id: changed-files
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
+          json: true
+          escape_json: false
           files: |
             **/*.py
             **/*.yaml
@@ -33,29 +36,49 @@ jobs:
 
       - name: Set up Python
         if: steps.changed-files.outputs.any_changed == 'true'
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.10'
+          python-version: '3.12'
+
+      - name: Set up uv
+        if: steps.changed-files.outputs.any_changed == 'true'
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          version: latest
 
       - name: Install ASH
         if: steps.changed-files.outputs.any_changed == 'true'
-        run: pip install git+https://github.com/awslabs/automated-security-helper.git@v3.2.2
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          uv tool install "automated-security-helper @ git+https://github.com/awslabs/automated-security-helper.git@f356ca77388a4c58bcf25d904a21121ab8872a66"
+          uv tool dir --bin >> "${GITHUB_PATH}"
+
+      - name: Install ASH binary dependencies
+        if: steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: ash dependencies install --tool actionlint --tool cfn-guard --tool gitleaks --tool opengrep --tool trivy
 
       - name: Create temp directory for changed files
         if: steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
         env:
           ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
           mkdir -p /tmp/ash-scan
           echo "Changed files for security scan:"
-          echo "${ALL_CHANGED_FILES}" | tr ' ' '\n'
+          printf '%s\n' "${ALL_CHANGED_FILES}" | jq -e -r '.[]'
 
       - name: Copy changed files to temp directory
         if: steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
         env:
           ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
-          for file in ${ALL_CHANGED_FILES}; do
+          printf '%s' "${ALL_CHANGED_FILES}" | jq -e -j '.[] + "\u0000"' > /tmp/changed_files.nul
+          mapfile -d '' -t files < /tmp/changed_files.nul
+          for file in "${files[@]}"; do
             if [ -f "$file" ]; then
               mkdir -p "/tmp/ash-scan/$(dirname "$file")"
               cp "$file" "/tmp/ash-scan/$file"
@@ -64,9 +87,16 @@ jobs:
 
       - name: Run ASH scan on changed files
         if: steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
         run: |
+          set -o pipefail
           cd /tmp/ash-scan
           cat > .ash_config.yaml << 'EOF'
+          global_settings:
+            suppressions:
+              - path: ".github/workflows/ash-security-comment.yml"
+                rule_id: "zizmor/dangerous-triggers"
+                reason: "Same-repo PR comment workflow reads artifacts without checking out PR code."
           reporters:
             markdown:
               enabled: true
@@ -74,34 +104,40 @@ jobs:
                 include_detailed_findings: true
                 max_detailed_findings: 1000
           EOF
-          ash --mode container --config .ash_config.yaml 2>&1 | tee /tmp/ash-output.log
-        continue-on-error: true
+          ash scan --mode local --no-progress --config .ash_config.yaml --fail-on-findings --fail-on-incomplete-scanners --no-allow-stale-content-db --exclude-scanners cfn-nag --exclude-scanners cdk-nag --exclude-scanners npm-audit --exclude-scanners grype --exclude-scanners syft 2>&1 | tee /tmp/ash-output.log
 
       - name: Process scan results
-        if: steps.changed-files.outputs.any_changed == 'true'
+        if: (success() || failure()) && steps.changed-files.outputs.any_changed == 'true'
         id: process-results
+        shell: bash
         run: |
           SUMMARY_FILE="/tmp/pr_comment.md"
-          if [ -f "/tmp/ash-output.log" ]; then
-            TABLE_START=$(grep -n "ASH Scan Results Summary" /tmp/ash-output.log | head -1 | cut -d: -f1 || echo "0")
-            TABLE_END=$(grep -n "source-dir:" /tmp/ash-output.log | head -1 | cut -d: -f1 || echo "0")
-            echo "## Security Scan Results" > "$SUMMARY_FILE"
-            echo "" >> "$SUMMARY_FILE"
+          ASH_SUMMARY="/tmp/ash-scan/.ash/ash_output/reports/ash.summary.md"
+          echo "## Security Scan Results" > "$SUMMARY_FILE"
+          echo "" >> "$SUMMARY_FILE"
+          if [ -f "$ASH_SUMMARY" ]; then
+            cat "$ASH_SUMMARY" >> "$SUMMARY_FILE"
+          elif [ -f "/tmp/ash-output.log" ]; then
+            TABLE_START="$(grep -n "ASH Scan Results Summary" /tmp/ash-output.log | head -1 | cut -d: -f1 || echo "0")"
+            TABLE_END="$(grep -n "source-dir:" /tmp/ash-output.log | head -1 | cut -d: -f1 || echo "0")"
+            TABLE_START="${TABLE_START:-0}"
+            TABLE_END="${TABLE_END:-0}"
             if [ "$TABLE_START" != "0" ] && [ "$TABLE_END" != "0" ] && [ "$TABLE_END" -gt "$TABLE_START" ]; then
               echo "| Scanner | S | C | H | M | L | I | Time | Action | Result | Thresh |" >> "$SUMMARY_FILE"
               echo "|---------|---|---|---|---|---|---|------|--------|--------|--------|" >> "$SUMMARY_FILE"
               sed -n "${TABLE_START},${TABLE_END}p" /tmp/ash-output.log | \
               sed 's/\x1b\[[0-9;]*m//g' | grep "^│" | sed 's/│/|/g' >> "$SUMMARY_FILE"
             fi
-            if grep -q "Actionable findings detected!" /tmp/ash-output.log; then
-              echo "has_findings=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "has_findings=false" >> "$GITHUB_OUTPUT"
-            fi
+          fi
+          if [ -f "/tmp/ash-output.log" ] && grep -qE "Actionable findings detected!|ASH scan completed with findings" /tmp/ash-output.log; then
+            echo "has_findings=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_findings=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Prepare artifacts
-        if: steps.changed-files.outputs.any_changed == 'true'
+        if: (success() || failure()) && steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_SHA: ${{ github.event.pull_request.head.sha }}
@@ -114,7 +150,7 @@ jobs:
 
       - name: Upload ASH results
         if: steps.changed-files.outputs.any_changed == 'true' && always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ash-security-results
           path: /tmp/ash-artifacts/

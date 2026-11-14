@@ -73,7 +73,7 @@ from guardrail import build_model
 from langgraph.errors import GraphRecursionError
 from langgraph.graph.state import CompiledStateGraph
 from leaves import LEAF_SPECS, LeafSpec, build_leaf
-from rate_limit import default_limiter
+from rate_limit import default_limiter, review_limiter
 from review import PendingLeaveRequest, run_manager_review
 from shared.auth import extract_user_id_from_context
 from ssm_config import hr_tools_enabled
@@ -495,6 +495,18 @@ async def invocations(payload: dict, context: RequestContext):
 
     # Lightweight manager sign-in poll: emit any open manager_review cards for this reviewer.
     if check_pending:
+        review_gate = review_limiter().check_and_record(user_id)
+        if not review_gate.allowed:
+            logger.info(
+                "[RATE-LIMIT] refused pending-review poll for %s (seen %d in window)",
+                user_id,
+                review_gate.turns_in_window,
+            )
+            yield _refusal_event(
+                "Too many review requests. Please try again shortly.",
+                "RATE_LIMITED",
+            )
+            return
         try:
             caller_emp = await resolve_employee_id_for_sub(user_id)
             reviews = await list_pending_manager_reviews(caller_emp)
@@ -511,24 +523,28 @@ async def invocations(payload: dict, context: RequestContext):
                         type=EventType.RUN_FINISHED, thread_id=thread_id, run_id=run_id
                     )
                 )
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed checking pending manager reviews")
-            yield _refusal_event(str(exc) or "Check failed", "ReviewPollError")
+            yield _refusal_event(
+                "Unable to check pending reviews. Please try again later.",
+                "ReviewPollError",
+            )
         return
 
-    # (4) Per-employee rate limit on the verified sub.
-    gate = default_limiter().check_and_record(user_id)
-    if not gate.allowed:
-        logger.info(
-            "[RATE-LIMIT] refused turn for %s (seen %d in window)",
-            user_id,
-            gate.turns_in_window,
-        )
-        yield _refusal_event(RATE_LIMITED_TEXT, "RATE_LIMITED")
-        return
-
-    # (5) Manager-review decision resume path.
+    # (4) Manager-review decision resume path (higher-threshold review limiter).
     if resume_dict is not None and resume_dict.get("kind") == "manager_review":
+        review_gate = review_limiter().check_and_record(user_id)
+        if not review_gate.allowed:
+            logger.info(
+                "[RATE-LIMIT] refused manager review for %s (seen %d in window)",
+                user_id,
+                review_gate.turns_in_window,
+            )
+            yield _refusal_event(
+                "Too many review requests. Please try again shortly.",
+                "RATE_LIMITED",
+            )
+            return
         try:
             yield _dump(
                 RunStartedEvent(
@@ -588,16 +604,42 @@ async def invocations(payload: dict, context: RequestContext):
                     "You are not authorised to review this leave request."
                 ):
                     yield ev
-                yield _interrupt_finish_event(thread_id, run_id, [stored])
+                if caller_emp and caller_emp == stored["reviewer_employee_id"]:
+                    # Re-open the card only for the assigned reviewer (e.g.
+                    # INVALID_DECISION); never leak another employee's pending
+                    # leave details to an unauthorized caller.
+                    yield _interrupt_finish_event(thread_id, run_id, [stored])
+                else:
+                    yield _dump(
+                        RunFinishedEvent(
+                            type=EventType.RUN_FINISHED,
+                            thread_id=thread_id,
+                            run_id=run_id,
+                        )
+                    )
             else:
                 for ev in _text_events(
                     f"Could not record leave decision ({outcome.reason_code})."
                 ):
                     yield ev
                 yield _interrupt_finish_event(thread_id, run_id, [stored])
-        except Exception as exc:
+        except Exception:
             logger.exception("Manager review resume failed")
-            yield _refusal_event(str(exc) or "Review failed", "ReviewError")
+            yield _refusal_event(
+                "Unable to record leave review. Please try again later.",
+                "ReviewError",
+            )
+        return
+
+    # (5) Per-employee rate limit on the verified sub.
+    gate = default_limiter().check_and_record(user_id)
+    if not gate.allowed:
+        logger.info(
+            "[RATE-LIMIT] refused turn for %s (seen %d in window)",
+            user_id,
+            gate.turns_in_window,
+        )
+        yield _refusal_event(RATE_LIMITED_TEXT, "RATE_LIMITED")
         return
 
     # (6) Build the god graph and stream, enforcing per-user thread ownership.
@@ -682,13 +724,11 @@ async def invocations(payload: dict, context: RequestContext):
             except GraphRecursionError:
                 logger.warning(RECURSION_LOG_CODE)
                 yield _refusal_event(RECURSION_FALLBACK_TEXT, RECURSION_LOG_CODE)
-    except Exception as exc:
+    except Exception:
         logger.exception("God agent run failed")
-        yield _dump(
-            RunErrorEvent(
-                message=str(exc) or type(exc).__name__,
-                code=type(exc).__name__,
-            )
+        yield _refusal_event(
+            "An internal error occurred. Please try again.",
+            "AgentError",
         )
 
 

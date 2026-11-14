@@ -17,12 +17,16 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import contextmanager
+from pathlib import Path
 
 from .errors import DataUnavailable
 
 logger = logging.getLogger(__name__)
 
 RDS_PORT = 5432
+_BUNDLE_PARENTS = Path(__file__).resolve().parents[1] / "global-bundle.pem"
+_BUNDLE_SIBLING = Path(__file__).resolve().with_name("global-bundle.pem")
+_RDS_CA_BUNDLE = _BUNDLE_PARENTS if _BUNDLE_PARENTS.is_file() else _BUNDLE_SIBLING
 
 # docs/hr/modules.md § Database roles — the four role names H1 creates.
 # A role that H1 did not create is refused here instead of silently
@@ -73,6 +77,8 @@ def connect(role: str):
         token = _generate_iam_token(host, role, region)
     except Exception as exc:
         raise DataUnavailable(f"could not mint RDS IAM token for {role}") from exc
+    if not _RDS_CA_BUNDLE.is_file():
+        raise DataUnavailable("RDS CA bundle missing")
     try:
         connection = psycopg.connect(
             host=host,
@@ -80,7 +86,8 @@ def connect(role: str):
             dbname=db_name,
             user=role,
             password=token,
-            sslmode="require",
+            sslmode="verify-full",
+            sslrootcert=str(_RDS_CA_BUNDLE),
             connect_timeout=5,
         )
     except Exception as exc:
