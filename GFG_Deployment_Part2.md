@@ -4,7 +4,7 @@ Part 1 is the platform. This file adds the HR assistant on top of it, in three l
 
 Do not run `./scripts/deploy.sh workshop`. Do not run `./scripts/deploy.sh destroy` without `--stack` or `--team hr`. A bare `destroy` deletes the whole platform. Do not run `./scripts/deploy.sh design --profile`. That rewrites `platform.yaml` from a preset. `design` on its own only prints the plan.
 
-All HR code lives on the `v3` branch:
+All HR code lives on the `part2-without-opa-godbot-v3` branch:
 
 - `use-cases/hr-data/`
 - `use-cases/hr-identity/`
@@ -12,7 +12,7 @@ All HR code lives on the `v3` branch:
 - `agent-code/god-agent/`
 - `hr-web/`
 
-Confirm you are on `v3` (`git checkout v3`) before starting.
+Confirm you are on `part2-without-opa-godbot-v3` (`git checkout part2-without-opa-godbot-v3`) before starting.
 
 ## Before you start
 
@@ -320,7 +320,7 @@ Set back to `true` to resume.
 | What you see | Why | What to do |
 |---|---|---|
 | `FAIL: gateway ... has PassRequestHeaders=false` in `hr-tools/verify.py` | `$PREFIX-gateway` was not redeployed after adding `hr-tools` to `platform.yaml` | Run `./scripts/deploy.sh deploy --stack "$PREFIX-gateway"`, then re-run `verify.py` |
-| `redirect_uri_mismatch` when clicking Sign in on `http://127.0.0.1:8899/` | `$PREFIX-auth` has not been updated from `v3` yet | Run `./scripts/deploy.sh deploy --stack "$PREFIX-auth"` so `:8899` callbacks are on the web client |
+| `redirect_uri_mismatch` when clicking Sign in on `http://127.0.0.1:8899/` | `$PREFIX-auth` has not been updated from `part2-without-opa-godbot-v3` yet | Run `./scripts/deploy.sh deploy --stack "$PREFIX-auth"` so `:8899` callbacks are on the web client |
 | `Runtime HTTP 401` or `403` in `hr-web` after signing in | `$PREFIX-runtime-orchestrator` has not been updated with `agents.pattern: god-agent` | Set `agents.pattern: god-agent` and run `./scripts/deploy.sh deploy --stack "$PREFIX-runtime-orchestrator"` |
 | Sign-in succeeds, but every HR question answers not allowed / `NOT_MAPPED` | That user's Cognito `sub` UUID is not mapped in `employees.cognito_sub` | Run the "Map Cognito users to employees" block in Phase 3 using `Attributes[?Name=='sub']` (not `EntraID_...` `Username`) |
 | Seed exits because another employee id exists | The database already holds non-demo rows | Set `seed: false` |
