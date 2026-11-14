@@ -48,14 +48,14 @@ DESCRIPTIONS: dict[str, str] = {
     "deployment.federation.gateway_url": "Platform-account gateway MCP endpoint a workload account calls (an output of the platform gateway stack).",
     "deployment.federation.issuer_url": "Platform Cognito issuer; the OIDC discovery URL is derived from it.",
     "deployment.federation.m2m_client_id": "Platform Cognito M2M client id the workload's token vault exchanges for a JWT. Not secret.",
-    "deployment.federation.m2m_client_secret_name": "Secrets Manager NAME in the workload account holding the M2M client secret. The secret itself never goes in this file.",
+    "deployment.federation.m2m_client_secret_name": "Secrets Manager NAME in the workload account holding the M2M client secret. The secret itself never goes in this file.",  # pragma: allowlist secret
     # identity
     "identity.idp": "Who authenticates users. `cognito` is self-contained; the others federate Cognito to your enterprise IdP (docs/ENTERPRISE_IDP.md).",
     "identity.mode": "Who issues the tokens. `brokered`: Cognito issues them and the IdP only signs users in — works with no IdP at all. `direct`: the IdP issues them and no Cognito user pool is deployed; `entra_id` only, and the app registration needs a service principal and v2 access tokens (docs/ENTERPRISE_IDP.md, Direct mode).",
     "identity.tenant_id": "Entra ID tenant. Required when `idp: entra_id`.",
     "identity.client_id": "App registration / OIDC client id at your IdP.",
     "identity.issuer_url": "OIDC issuer of your IdP. Required for `okta` and `ping` (Entra derives it from the tenant).",
-    "identity.client_secret_name": "Secrets Manager NAME holding the IdP client secret. Required for any non-Cognito IdP; the value never goes in this file.",
+    "identity.client_secret_name": "Secrets Manager NAME holding the IdP client secret. Required for any non-Cognito IdP; the value never goes in this file.",  # pragma: allowlist secret
     # agents
     "agents.pattern": "Which agent container the runtime stack builds (docs/ARCHITECTURE.md). Ignored for the image once `migration:` is set, but still exported so verify and invoke behave.",
     "agents.model_id": "Bedrock model or cross-region inference profile injected as `MODEL_ID` into every agent. Empty = each pattern's baked-in default.",
@@ -104,19 +104,19 @@ DESCRIPTIONS: dict[str, str] = {
     "migration.source.build": "Build the image here from the customer's Dockerfile. Yields arm64 by construction, which is why the shipped preset uses it. Exactly one of `image` or `build`.",
     "migration.source.build.context": "Docker build context, relative to the repo root.",
     "migration.source.build.dockerfile": "Dockerfile path, relative to `context`.",
-    "migration.source.registry_secret_name": "Secrets Manager NAME holding docker-login credentials for a private registry.",
+    "migration.source.registry_secret_name": "Secrets Manager NAME holding docker-login credentials for a private registry.",  # pragma: allowlist secret
     "migration.source.port": "What the container listens on. Required by the supported `adapter` mode.",
     "migration.source.invoke_path": "Where the container takes a request. Required by the supported adapter mode, which forwards `POST /invocations` there.",
     "migration.source.health_path": "What the adapter polls to answer `GET /ping`.",
     "migration.source.trigger": "How work arrives today. Discovery metadata only: trigger and cutover infrastructure are external and are not deployed.",
     "migration.source.env": "Plain configuration for the container. Secret-shaped keys (`*_SECRET`, `*_TOKEN`, `*_KEY`, …) are refused because env values render in clear.",
-    "migration.source.secrets": "Environment variable NAMES only. Each value lives in Secrets Manager under `<project>/<environment>/migration/<NAME>`; the plan lists what to create.",
+    "migration.source.secrets": "Environment variable NAMES only. Each value lives in Secrets Manager under `<project>/<environment>/migration/<NAME>`; the plan lists what to create.",  # pragma: allowlist secret
     "migration.target.runtime": "Only `agentcore` is currently deployable (arm64, the 8080 `/invocations` contract). `ec2` is reserved for a future ECS-on-EC2 implementation and fails validation.",
     "migration.target.mode": "Only `adapter` is currently deployable; it wraps the container so it speaks the AgentCore contract. `native` is reserved for a future implementation and fails validation.",
     "migration.network.private_dependencies": "Up to 25 unique customer-side hostnames (3,000 encoded bytes) the agent must still reach. Needs `security.networking` and a `connectivity` other than `none`; verification runs a fixed allow-list TLS probe from the runtime VPC.",
     "migration.network.connectivity": "Records the existing external path from the platform VPC to the customer network. The accelerator does not provision VPN or Transit Gateway resources.",
     "migration.network.dns_forwarders": "Records externally managed IPv4 resolvers for private hostnames. The accelerator does not create resolver endpoints or rules.",
-    "migration.network.ca_bundle_secret_name": "Secrets Manager NAME of a private CA bundle used by the network probe. The bundle is read in memory and is not injected into the customer image or returned as evidence.",
+    "migration.network.ca_bundle_secret_name": "Secrets Manager NAME of a private CA bundle used by the network probe. The bundle is read in memory and is not injected into the customer image or returned as evidence.",  # pragma: allowlist secret
     "migration.network.receipt.vpc_id": "Deployed target VPC ID containing the runtime and fixed dependency probe. Required before private-network approval.",
     "migration.network.receipt.private_subnet_ids": "Deployed private subnet IDs used by the dependency probe; the digest sorts them because order has no meaning.",
     "migration.network.receipt.security_group_ids": "Deployed security group IDs used by the dependency probe; the digest sorts them because order has no meaning.",
@@ -181,7 +181,7 @@ ENV: dict[str, str] = {
     "identity.tenant_id": "IDP_TENANT_ID",
     "identity.client_id": "IDP_CLIENT_ID",
     "identity.issuer_url": "IDP_ISSUER_URL",
-    "identity.client_secret_name": "IDP_CLIENT_SECRET_NAME",
+    "identity.client_secret_name": "IDP_CLIENT_SECRET_NAME",  # pragma: allowlist secret
     "agents.pattern": "AGENT_PATTERN",
     "agents.model_id": "MODEL_ID",
     "agents.allowed_models": "ALLOWED_MODELS",
@@ -222,19 +222,19 @@ ENV: dict[str, str] = {
     "migration.source.image": "MIGRATION_SOURCE_IMAGE",
     "migration.source.build.context": "MIGRATION_BUILD_CONTEXT",
     "migration.source.build.dockerfile": "MIGRATION_BUILD_DOCKERFILE",
-    "migration.source.registry_secret_name": "MIGRATION_REGISTRY_SECRET_NAME",
+    "migration.source.registry_secret_name": "MIGRATION_REGISTRY_SECRET_NAME",  # pragma: allowlist secret
     "migration.source.port": "MIGRATION_PORT",
     "migration.source.invoke_path": "MIGRATION_INVOKE_PATH",
     "migration.source.health_path": "MIGRATION_HEALTH_PATH",
     "migration.source.trigger": "MIGRATION_TRIGGER",
     "migration.source.env": "MIGRATION_ENV_JSON",
-    "migration.source.secrets": "MIGRATION_SECRETS",
+    "migration.source.secrets": "MIGRATION_SECRETS",  # pragma: allowlist secret
     "migration.target.runtime": "MIGRATION_TARGET_RUNTIME",
     "migration.target.mode": "MIGRATION_TARGET_MODE",
     "migration.network.private_dependencies": "MIGRATION_PRIVATE_DEPENDENCIES",
     "migration.network.connectivity": "MIGRATION_CONNECTIVITY",
     "migration.network.dns_forwarders": "MIGRATION_DNS_FORWARDERS",
-    "migration.network.ca_bundle_secret_name": "MIGRATION_CA_BUNDLE_SECRET_NAME",
+    "migration.network.ca_bundle_secret_name": "MIGRATION_CA_BUNDLE_SECRET_NAME",  # pragma: allowlist secret
 }
 
 # Temporarily emitted for app.py/runtime_stack.py compatibility, but omitted
@@ -267,7 +267,7 @@ _FULL = {
         "tenant_id": "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
         "client_id": "9a8b7c6d-1234-4abc-9def-000111222333",
         "issuer_url": "https://login.microsoftonline.com/3f2b1c4d/v2.0",
-        "client_secret_name": "agentcore/idp-client-secret",
+        "client_secret_name": "agentcore/idp-client-secret",  # pragma: allowlist secret
     },
     "agents": {
         "model_id": "us.anthropic.claude-sonnet-4-6",
@@ -302,7 +302,7 @@ _FULL = {
             "private_dependencies": ["jira.corp.internal"],
             "connectivity": "vpn",
             "dns_forwarders": ["10.0.0.2"],
-            "ca_bundle_secret_name": "ca",
+            "ca_bundle_secret_name": "ca",  # pragma: allowlist secret
         },
     },
 }
