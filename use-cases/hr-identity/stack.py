@@ -75,8 +75,6 @@ class HrIdentityStack(cdk.Stack):
 
         prefix = ctx["prefix"]
         ssm_prefix = ctx["ssm_prefix"]
-        project = ctx["project"]
-        environment = ctx["environment"]
 
         # --------------------------------------------------------------
         # Platform inputs via SSM (deploy-time resolution; no AWS calls
@@ -116,8 +114,7 @@ class HrIdentityStack(cdk.Stack):
             ],
             description=(
                 f"Execution role for {prefix}-uc-hr-identity-pretoken. "
-                "RDS IAM auth as the hr_identity database user, "
-                "SSM read on the hr-identity inputs, VPC + Logs."
+                "RDS IAM auth as the hr_identity database user, VPC + Logs."
             ),
         )
         # rds-db:connect targets a virtual resource that names the
@@ -135,37 +132,6 @@ class HrIdentityStack(cdk.Stack):
                         resource="dbuser",
                         resource_name=f"*/{HR_IDENTITY_DB_USER}",
                         arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
-                    ),
-                ],
-            )
-        )
-        # SSM reads for the four inputs the handler needs at cold start.
-        # Narrow to this project/environment namespace so the Lambda can
-        # never reach another deployment's parameters.
-        lambda_role.add_to_policy(
-            iam.PolicyStatement(
-                sid="SsmReadPlatformInputs",
-                actions=["ssm:GetParameter", "ssm:GetParameters"],
-                resources=[
-                    self.format_arn(
-                        service="ssm",
-                        resource="parameter",
-                        resource_name=f"{project}/{environment}/auth/*",
-                        arn_format=cdk.ArnFormat.SLASH_RESOURCE_NAME,
-                    ),
-                    self.format_arn(
-                        service="ssm",
-                        resource="parameter",
-                        resource_name=f"{project}/{environment}/use-cases/hr-data/*",
-                        arn_format=cdk.ArnFormat.SLASH_RESOURCE_NAME,
-                    ),
-                    self.format_arn(
-                        service="ssm",
-                        resource="parameter",
-                        resource_name=(
-                            f"{project}/{environment}/use-cases/hr-identity/*"
-                        ),
-                        arn_format=cdk.ArnFormat.SLASH_RESOURCE_NAME,
                     ),
                 ],
             )

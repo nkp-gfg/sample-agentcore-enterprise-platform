@@ -23,8 +23,8 @@ Handles two token-generation paths on the module 3 Cognito user pool:
      external provider username such as `EntraID_...`, NOT the Cognito
      `sub` UUID stored in `employees.cognito_sub`).
    - Enriches both `accessTokenGeneration` and `idTokenGeneration` with
-     `employee_id` and `role = 'employee'` (and `agent_id` if present and
-     allowed).
+     `employee_id`, `user_id`, and `role = 'employee'` (never `agent_id`
+     on human auth triggers).
 
 A `cognito_sub` with no active row in `employees` returns the event
 unchanged, with no claims added. The gateway / tool layer maps that to
@@ -39,7 +39,10 @@ import logging
 import os
 import ssl
 import time
+from pathlib import Path
 from typing import Any
+
+_RDS_CA_BUNDLE = Path(__file__).resolve().with_name("global-bundle.pem")
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -96,13 +99,11 @@ def _connect(cfg: dict[str, str]):
         DBUsername=cfg["DB_USER"],
         Region=cfg["AWS_REGION"],
     )
-    ssl_ctx = ssl.create_default_context()
-    # Aurora writer endpoints present RDS CA certificates whose chain may
-    # outlive the base OS CA bundle across rotations; keep TLS encryption
-    # mandatory inside the private VPC subnet while avoiding brittle CA-pin
-    # failures on Cognito sign-in.
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE
+    if not _RDS_CA_BUNDLE.is_file():
+        raise RuntimeError(f"RDS CA bundle not found at {_RDS_CA_BUNDLE}")
+    ssl_ctx = ssl.create_default_context(cafile=str(_RDS_CA_BUNDLE))
+    ssl_ctx.check_hostname = True
+    ssl_ctx.verify_mode = ssl.CERT_REQUIRED
     return pg8000.native.Connection(
         user=cfg["DB_USER"],
         host=host,
@@ -187,6 +188,8 @@ def _resolve_cognito_sub(event: dict) -> str | None:
 
 
 def _calling_agent(event: dict) -> str | None:
+    if event.get("triggerSource") != CLIENT_CREDENTIALS_TRIGGER:
+        return None
     metadata = (event.get("request") or {}).get("clientMetadata") or {}
     value = metadata.get("calling_agent")
     if isinstance(value, str) and value in ALLOWED_CALLING_AGENTS:
@@ -260,9 +263,10 @@ def handler(event: dict, context) -> dict:
         "user_id": cognito_sub,
         "role": "employee",
     }
-    agent_id = _calling_agent(event)
-    if agent_id is not None:
-        claims["agent_id"] = agent_id
+    if trigger == CLIENT_CREDENTIALS_TRIGGER:
+        agent_id = _calling_agent(event)
+        if agent_id is not None:
+            claims["agent_id"] = agent_id
 
     logger.info(
         "hr-identity: added claims %s for trigger %s",

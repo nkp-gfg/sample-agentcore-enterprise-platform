@@ -21,6 +21,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import boto3
@@ -61,6 +62,9 @@ CREATE INDEX IF NOT EXISTS hr_pending_reviews_reviewer_idx
 """
 
 
+_RDS_CA_BUNDLE = Path(__file__).resolve().with_name("global-bundle.pem")
+
+
 def _agent_checkpoint_conn_string() -> str:
     """RDS IAM authentication for the `agent_checkpoint` role on `agent_state`."""
     cfg = hr_data_config()
@@ -72,7 +76,8 @@ def _agent_checkpoint_conn_string() -> str:
         dbname=cfg.checkpoint_database,
         user="agent_checkpoint",
         password=token,
-        sslmode="require",
+        sslmode="verify-full",
+        sslrootcert=str(_RDS_CA_BUNDLE),
     )
 
 

@@ -38,7 +38,7 @@ class GatewayStack(cdk.Stack):
         enable_egress_filter: bool = False,
         enable_cedar: bool = False,
         cedar_mode: str = "LOG_ONLY",
-        debug_exceptions: bool = True,
+        debug_exceptions: bool = False,
         kms_key_arn: str = "",
         pass_request_headers: bool = False,
         **kwargs,
@@ -277,21 +277,19 @@ class GatewayStack(cdk.Stack):
                 source_arn=self._gateway.attr_gateway_arn,
             )
 
-        # Lambda tool role
-        lambda_role = iam.Role(
-            self,
-            "LambdaToolRole",
-            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name(
-                    "service-role/AWSLambdaBasicExecutionRole"
-                ),
-            ],
-        )
-
-        # Deploy Lambda tools and register as gateway targets
+        # Deploy Lambda tools and register as gateway targets (one role per tool)
         targets: list[agentcore.CfnGatewayTarget] = []
         for tool_name, config in (tool_configs or {}).items():
+            tool_role = iam.Role(
+                self,
+                f"ToolRole-{tool_name}",
+                assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+                managed_policies=[
+                    iam.ManagedPolicy.from_aws_managed_policy_name(
+                        "service-role/AWSLambdaBasicExecutionRole"
+                    ),
+                ],
+            )
             fn = _lambda.Function(
                 self,
                 f"Tool-{tool_name}",
@@ -301,7 +299,7 @@ class GatewayStack(cdk.Stack):
                 code=_lambda.Code.from_asset(config["source_dir"]),
                 architecture=_lambda.Architecture.ARM_64,
                 timeout=cdk.Duration.seconds(30),
-                role=lambda_role,
+                role=tool_role,
                 environment=config.get("env_vars", {}),
             )
             fn.add_permission(

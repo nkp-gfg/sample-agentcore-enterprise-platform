@@ -42,6 +42,7 @@ COPY god-agent/rate_limit.py .
 COPY god-agent/ssm_config.py .
 COPY god-agent/gateway_client.py .
 COPY god-agent/checkpointer.py .
+COPY god-agent/global-bundle.pem .
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/ping', timeout=2)" || exit 1

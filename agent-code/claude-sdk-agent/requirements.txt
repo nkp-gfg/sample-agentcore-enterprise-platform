@@ -2,11 +2,11 @@
 # Claude Agent SDK dependencies
 claude-agent-sdk==0.2.139
 mcp==1.29.0
-bedrock-agentcore
-bedrock-agentcore-starter-toolkit
-botocore
-boto3
-aws-opentelemetry-distro>=0.19.0
-requests>=2.34.2
-pydantic>=2.13.4
-PyJWT[crypto]>=2.13.0
+bedrock-agentcore==1.26.0
+bedrock-agentcore-starter-toolkit==0.3.14
+botocore==1.43.127
+boto3==1.43.127
+aws-opentelemetry-distro==0.16.0
+requests==2.34.2
+pydantic==2.13.4
+PyJWT[crypto]==2.13.0

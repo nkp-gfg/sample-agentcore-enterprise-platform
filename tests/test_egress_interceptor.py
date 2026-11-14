@@ -416,3 +416,16 @@ def test_identity_promotion_runs_for_each_hr_target(hr_interceptor, prefix):
         None,
     )
     assert _arguments_after(out)["caller_employee_id"] == "E1"
+
+
+def test_guardrail_api_error_fails_closed_with_jsonrpc_error(interceptor):
+    interceptor._bedrock.apply_guardrail.side_effect = RuntimeError(
+        "bedrock unavailable"
+    )
+    out = interceptor.handler(_event(TOOLS_CALL), None)
+    assert "transformedGatewayRequest" not in out["mcp"]
+    blocked = out["mcp"]["transformedGatewayResponse"]
+    assert blocked["statusCode"] == 200
+    assert blocked["body"]["id"] == 7
+    assert blocked["body"]["result"]["isError"] is True
+    assert "unavailable" in blocked["body"]["result"]["content"][0]["text"].lower()

@@ -40,28 +40,40 @@ class TokenRejected(ValueError):
     """The token was well-formed and signed but must not be trusted."""
 
 
-def _client_id(claims: dict) -> str | None:
-    """The OAuth client the token was issued to.
+def _matches_allowed_client(claims: dict, allowed_clients: tuple[str, ...]) -> bool:
+    """Return True if the token's client/audience matches `allowed_clients`.
 
-    Cognito puts it in `aud` for user-pool ID/access tokens obtained by a user,
-    and in `client_id` for client_credentials (M2M) access tokens. Checking only
-    `aud` silently accepts every M2M token in the account.
+    Cognito puts the client in `aud` for user-pool ID/access tokens and in
+    `client_id` for client_credentials (M2M) access tokens. When `aud` is a
+    list, any matching element suffices; if there are multiple audiences, OIDC
+    requires `azp` to identify an authorized party in `allowed_clients`.
     """
     audience = claims.get("aud")
     if isinstance(audience, list):
-        return audience[0] if audience else None
-    return audience or claims.get("client_id")
+        if not any(isinstance(a, str) and a in allowed_clients for a in audience):
+            return False
+        if len(audience) > 1:
+            azp = claims.get("azp")
+            return isinstance(azp, str) and azp in allowed_clients
+        return True
+    if audience:
+        return isinstance(audience, str) and audience in allowed_clients
+    client_id = claims.get("client_id")
+    return isinstance(client_id, str) and client_id in allowed_clients
 
 
 def validate_claims(
-    claims: dict, expected_issuer: str, allowed_clients: tuple[str, ...] = ()
+    claims: dict,
+    expected_issuer: str,
+    allowed_clients: tuple[str, ...] = (),
+    *,
+    allow_any_client: bool = False,
 ) -> str:
     """Return the subject of an acceptable token, or raise TokenRejected.
 
-    allowed_clients empty means "any client from the expected issuer", which is
-    the issuer's own trust boundary — narrower than accepting any issuer, wider
-    than pinning to our clients. Callers that know their client IDs should pass
-    them.
+    Non-empty `allowed_clients` is required by default so an unconfigured
+    runtime fails closed; callers that intentionally trust any client from the
+    issuer must pass `allow_any_client=True`.
     """
     issuer = claims.get("iss")
     if not expected_issuer:
@@ -74,11 +86,16 @@ def validate_claims(
         raise TokenRejected(f"Token issuer {issuer!r} is not {expected_issuer!r}")
 
     if allowed_clients:
-        client_id = _client_id(claims)
-        if client_id not in allowed_clients:
+        if not _matches_allowed_client(claims, allowed_clients):
+            client_id = claims.get("aud") or claims.get("client_id")
             raise TokenRejected(
                 f"Token client {client_id!r} is not one of this deployment's clients"
             )
+    elif not allow_any_client:
+        raise TokenRejected(
+            "No allowed_clients configured; refusing to accept arbitrary clients "
+            "without allow_any_client=True."
+        )
 
     # token_use tells a Cognito access token from an ID token; both carry sub,
     # and either is fine for identifying the caller. Refresh tokens are not JWTs.

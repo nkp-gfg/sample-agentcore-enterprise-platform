@@ -688,6 +688,11 @@ def _build_lambda_asset(target_name: str, tool_names: list[str]) -> str:
     # `handler="handler.handler"` so Lambda imports this one file.
     shutil.copy(HERE / "lambdas" / "dispatcher.py", bundle / "handler.py")
 
+    # RDS global CA bundle → /var/task/global-bundle.pem for verify-full TLS.
+    ca_bundle = HERE / "lambdas" / "global-bundle.pem"
+    if ca_bundle.is_file():
+        shutil.copy2(ca_bundle, bundle / "global-bundle.pem")
+
     # per-tool handler packages — one per tool_name.
     for tool in tool_names:
         shutil.copytree(HERE / "lambdas" / tool, bundle / tool, dirs_exist_ok=True)

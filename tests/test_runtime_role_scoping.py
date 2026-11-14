@@ -185,3 +185,16 @@ def test_ssm_reads_are_scoped_to_the_project_path():
     assert "arn:aws:ssm:*:*:parameter/{project_name}/*" in source, (
         "SSM reads must be scoped to this project's parameter path"
     )
+
+
+def test_credential_vault_actions_are_scoped_not_on_star():
+    statements = {statement["sid"]: statement for statement in _policy_statements()}
+    broad_actions = statements["AgentCoreAccess"]["actions"]
+    for action in (
+        "bedrock-agentcore:GetResourceOauth2Token",
+        "bedrock-agentcore:GetWorkloadAccessToken",
+        "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+    ):
+        assert action not in broad_actions
+    source = RUNTIME_STACK.read_text()
+    assert '"iam.identity-credential-provider-scoped"' in source

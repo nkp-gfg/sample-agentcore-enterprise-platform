@@ -75,12 +75,52 @@ def test_token_without_subject_is_rejected():
         validate_claims(claims, ISSUER, CLIENTS)
 
 
-def test_no_allowed_clients_still_pins_the_issuer():
-    """Empty allowlist widens to 'any client of our pool', not 'any token'."""
+def test_empty_allowed_clients_rejected_by_default():
     claims = {"iss": ISSUER, "client_id": "anything", "sub": "user-1"}
-    assert validate_claims(claims, ISSUER, ()) == "user-1"
+    with pytest.raises(TokenRejected, match="allowed_clients"):
+        validate_claims(claims, ISSUER, ())
+
+
+def test_no_allowed_clients_still_pins_the_issuer():
+    """Explicit opt-in widens to 'any client of our pool', not 'any token'."""
+    claims = {"iss": ISSUER, "client_id": "anything", "sub": "user-1"}
+    assert validate_claims(claims, ISSUER, (), allow_any_client=True) == "user-1"
     with pytest.raises(TokenRejected, match="issuer"):
-        validate_claims({**claims, "iss": "https://evil.example.com"}, ISSUER, ())
+        validate_claims(
+            {**claims, "iss": "https://evil.example.com"},
+            ISSUER,
+            (),
+            allow_any_client=True,
+        )
+
+
+def test_multi_audience_matches_any_element_and_checks_azp():
+    claims = {
+        "iss": ISSUER,
+        "aud": ["other-api", APP_CLIENT],
+        "azp": APP_CLIENT,
+        "sub": "user-1",
+    }
+    assert validate_claims(claims, ISSUER, CLIENTS) == "user-1"
+
+    with pytest.raises(TokenRejected, match="client"):
+        validate_claims(
+            {"iss": ISSUER, "aud": ["other-api", APP_CLIENT], "sub": "user-1"},
+            ISSUER,
+            CLIENTS,
+        )
+
+    with pytest.raises(TokenRejected, match="client"):
+        validate_claims(
+            {
+                "iss": ISSUER,
+                "aud": ["other-api", APP_CLIENT],
+                "azp": "untrusted-party",
+                "sub": "user-1",
+            },
+            ISSUER,
+            CLIENTS,
+        )
 
 
 def test_empty_claims_are_rejected():

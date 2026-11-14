@@ -34,16 +34,17 @@ import datetime as _dt
 import json
 import logging
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 import boto3
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import interrupt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from shared.region import runtime_region
 from ssm_config import auth_m2m_config, gateway_config
 
@@ -142,18 +143,44 @@ def decode_jwt_claims_unverified(token: str) -> dict[str, Any]:
         return {}
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            f"HTTP redirects are disabled for {req.full_url}",
+            headers,
+            fp,
+        )
+
+
+def _no_redirect_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_NoRedirectHandler())
+
+
+def _validate_https_url(url: str, label: str = "URL") -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError(f"{label} must be an https:// URL with a host, got {url!r}")
+    return url
+
+
 def _discover_token_endpoint(issuer_url: str) -> str:
-    cached = _TOKEN_ENDPOINT_CACHE.get(issuer_url)
+    issuer = _validate_https_url(issuer_url.rstrip("/"), "cfg.issuer_url")
+    cached = _TOKEN_ENDPOINT_CACHE.get(issuer)
     if cached:
         return cached
-    discovery_url = f"{issuer_url.rstrip('/')}/.well-known/openid-configuration"
+    discovery_url = _validate_https_url(
+        f"{issuer}/.well-known/openid-configuration", "OIDC discovery URL"
+    )
     req = urllib.request.Request(discovery_url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310 — https
+    with _no_redirect_opener().open(req, timeout=10) as resp:  # nosec B310 — https validated
         doc = json.loads(resp.read())
     endpoint = str(doc.get("token_endpoint") or "").strip()
     if not endpoint:
         raise RuntimeError(f"OIDC discovery at {discovery_url} missing token_endpoint")
-    _TOKEN_ENDPOINT_CACHE[issuer_url] = endpoint
+    _validate_https_url(endpoint, "token_endpoint")
+    _TOKEN_ENDPOINT_CACHE[issuer] = endpoint
     return endpoint
 
 
@@ -188,7 +215,7 @@ def _mint_token_sync(verified_user_sub: str, calling_agent: str) -> str:
     body = urllib.parse.urlencode(form_fields).encode()
     basic = base64.b64encode(f"{cfg.client_id}:{client_secret}".encode()).decode()
     req = urllib.request.Request(
-        token_endpoint,
+        _validate_https_url(token_endpoint, "token_endpoint"),
         data=body,
         headers={
             "Authorization": f"Basic {basic}",
@@ -196,7 +223,7 @@ def _mint_token_sync(verified_user_sub: str, calling_agent: str) -> str:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310 — https
+    with _no_redirect_opener().open(req, timeout=15) as resp:  # nosec B310 — https validated
         payload = json.loads(resp.read())
     token = str(payload.get("access_token") or "")
     if not token:
@@ -209,10 +236,39 @@ async def mint_leaf_gateway_token(verified_user_sub: str, calling_agent: str) ->
     return await asyncio.to_thread(_mint_token_sync, verified_user_sub, calling_agent)
 
 
+def _verify_m2m_claims(
+    claims: dict[str, Any], *, expected_issuer: str, expected_user_sub: str
+) -> None:
+    iss = str(claims.get("iss") or "").rstrip("/")
+    if not iss or iss != expected_issuer.rstrip("/"):
+        raise ValueError("M2M token issuer mismatch")
+    sub = claims.get("sub")
+    if not isinstance(sub, str) or not sub.strip():
+        raise ValueError("M2M token missing sub claim")
+    exp = claims.get("exp")
+    if isinstance(exp, bool) or exp is None:
+        raise ValueError("M2M token missing valid exp claim")
+    try:
+        exp_ts = float(exp)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("M2M token missing valid exp claim") from exc
+    if exp_ts <= time.time():
+        raise ValueError("M2M token expired")
+    token_user_id = claims.get("user_id")
+    if token_user_id is not None and token_user_id != expected_user_sub:
+        raise ValueError("M2M token user_id mismatch")
+
+
 async def resolve_employee_id_for_sub(verified_user_sub: str) -> str:
     """Resolve `employee_id` for `verified_user_sub` via a review-node token exchange."""
+    cfg = auth_m2m_config()
     token = await mint_leaf_gateway_token(verified_user_sub, REVIEW_NODE_CALLING_AGENT)
     claims = decode_jwt_claims_unverified(token)
+    _verify_m2m_claims(
+        claims,
+        expected_issuer=cfg.issuer_url,
+        expected_user_sub=verified_user_sub,
+    )
     return str(claims.get("employee_id") or "").strip()
 
 
@@ -247,8 +303,13 @@ def _invoke_gateway_mcp_sync(
     }
     if session_id:
         headers["runtimeSessionId"] = session_id
-    req = urllib.request.Request(gw.url, data=rpc_body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 — https
+    req = urllib.request.Request(
+        _validate_https_url(gw.url, "gateway_url"),
+        data=rpc_body,
+        headers=headers,
+        method="POST",
+    )
+    with _no_redirect_opener().open(req, timeout=30) as resp:  # nosec B310 — https validated
         raw_text = resp.read().decode("utf-8", errors="replace").strip()
 
     # Streamable HTTP MCP may return plain JSON or `data: {...}` SSE lines.
@@ -309,6 +370,10 @@ async def call_gateway_tool(
 # ── Tool argument schemas (docs/hr/tools.md § Arguments) ───────────────────
 
 
+_ISO_DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+_PERIOD_PATTERN = r"^\d{4}-\d{2}$"
+
+
 class _NoArgs(BaseModel):
     pass
 
@@ -316,41 +381,70 @@ class _NoArgs(BaseModel):
 class _CompensationArgs(BaseModel):
     employee_id: str | None = Field(
         default=None,
+        max_length=64,
         description="Optional target employee_id. Omit to read the caller's own compensation.",
     )
 
 
 class _AllowanceArgs(BaseModel):
-    item_type: str = Field(
+    item_type: Literal["telephone"] = Field(
         default="telephone",
         description="Allowance item type. v1 accepts 'telephone' only.",
     )
     period: str | None = Field(
         default=None,
+        pattern=_PERIOD_PATTERN,
         description="Optional YYYY-MM period. Defaults to previous UTC month.",
     )
 
 
 class _LeaveCheckArgs(BaseModel):
-    leave_type: str = Field(description="Leave type: 'annual' or 'sick'.")
-    start_date: str = Field(description="Inclusive ISO start date YYYY-MM-DD.")
-    end_date: str = Field(description="Inclusive ISO end date YYYY-MM-DD.")
+    leave_type: Literal["annual", "sick"] = Field(
+        description="Leave type: 'annual' or 'sick'."
+    )
+    start_date: str = Field(
+        pattern=_ISO_DATE_PATTERN,
+        description="Inclusive ISO start date YYYY-MM-DD.",
+    )
+    end_date: str = Field(
+        pattern=_ISO_DATE_PATTERN,
+        description="Inclusive ISO end date YYYY-MM-DD.",
+    )
 
 
 class _LeaveSubmitArgs(BaseModel):
-    leave_type: str = Field(description="Leave type: 'annual' or 'sick'.")
-    start_date: str = Field(description="Inclusive ISO start date YYYY-MM-DD.")
-    end_date: str = Field(description="Inclusive ISO end date YYYY-MM-DD.")
-    reason: str = Field(default="", description="Plain-text reason for the request.")
+    leave_type: Literal["annual", "sick"] = Field(
+        description="Leave type: 'annual' or 'sick'."
+    )
+    start_date: str = Field(
+        pattern=_ISO_DATE_PATTERN,
+        description="Inclusive ISO start date YYYY-MM-DD.",
+    )
+    end_date: str = Field(
+        pattern=_ISO_DATE_PATTERN,
+        description="Inclusive ISO end date YYYY-MM-DD.",
+    )
+    reason: str = Field(
+        default="",
+        max_length=500,
+        description="Plain-text reason for the request.",
+    )
     idempotency_key: str | None = Field(
         default=None,
+        max_length=128,
         description="Optional idempotency key; generated deterministically if omitted.",
     )
 
 
 class _RecordDecisionArgs(BaseModel):
-    request_id: str = Field(description="Pending leave request_id.")
-    decision: str = Field(description="Decision: 'approve' or 'reject'.")
+    request_id: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Pending leave request_id.",
+    )
+    decision: Literal["approve", "reject"] = Field(
+        description="Decision: 'approve' or 'reject'."
+    )
 
 
 def _compute_inclusive_days(start_date: str, end_date: str) -> int | str:
@@ -504,6 +598,14 @@ def build_local_leaf_tool(calling_agent: str) -> BaseTool:
             for k in ("leave_type", "start_date", "end_date", "reason"):
                 if k in edited_args and edited_args[k] is not None:
                     final_args[k] = edited_args[k]
+            try:
+                validated = _LeaveSubmitArgs.model_validate(final_args)
+            except ValidationError:
+                return {"authorized": False, "reason_code": "INVALID_RANGE"}
+            final_args["leave_type"] = validated.leave_type
+            final_args["start_date"] = validated.start_date
+            final_args["end_date"] = validated.end_date
+            final_args["reason"] = validated.reason
             if (
                 final_args["start_date"] != start_date
                 or final_args["end_date"] != end_date

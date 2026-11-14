@@ -56,9 +56,7 @@ class SecurityStack(cdk.Stack):
                     ],
                     actions=["kms:Decrypt", "kms:GenerateDataKey*"],
                     resources=["*"],
-                    conditions={
-                        "StringEquals": {"aws:SourceAccount": self.account}
-                    },
+                    conditions={"StringEquals": {"aws:SourceAccount": self.account}},
                 )
             )
 
@@ -77,14 +75,50 @@ class SecurityStack(cdk.Stack):
                 ),
                 encryption_key=self.kms_key if retain_data else None,
                 enforce_ssl=True,
+                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
                 versioned=retain_data,
+            )
+            trail_access_logs_bucket = s3.Bucket(
+                self,
+                "TrailAccessLogsBucket",
+                bucket_name=f"{prefix}-cloudtrail-access-logs-{self.account}",
+                removal_policy=lifecycle_policy,
+                auto_delete_objects=not retain_data,
+                encryption=s3.BucketEncryption.S3_MANAGED,
+                enforce_ssl=True,
+                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+                versioned=retain_data,
+            )
+            trail_access_logs_bucket.add_to_resource_policy(
+                iam.PolicyStatement(
+                    sid="AllowS3ServerAccessLogs",
+                    principals=[iam.ServicePrincipal("logging.s3.amazonaws.com")],
+                    actions=["s3:PutObject"],
+                    resources=[
+                        trail_access_logs_bucket.arn_for_objects("access-logs/*")
+                    ],
+                    conditions={
+                        "StringEquals": {"aws:SourceAccount": self.account},
+                        "ArnLike": {"aws:SourceArn": trail_bucket.bucket_arn},
+                    },
+                )
+            )
+            cfn_trail_bucket = trail_bucket.node.default_child  # type: ignore[assignment]
+            cfn_trail_bucket.logging_configuration = (
+                s3.CfnBucket.LoggingConfigurationProperty(
+                    destination_bucket_name=trail_access_logs_bucket.bucket_name,
+                    log_file_prefix="access-logs/",
+                )
+            )
+            cfn_trail_bucket.add_dependency(
+                trail_access_logs_bucket.node.default_child  # type: ignore[arg-type]
             )
             cloudtrail.Trail(
                 self,
                 "AgentCoreTrail",
                 trail_name=f"{prefix}-agentcore-trail",
                 bucket=trail_bucket,
-                enable_file_validation=retain_data,
+                enable_file_validation=True,
                 is_multi_region_trail=retain_data,
             )
 

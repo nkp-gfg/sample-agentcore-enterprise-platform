@@ -167,6 +167,23 @@ def test_gateway_sanitizes_production_errors_and_uses_the_cmk() -> None:
     assert gateway["KmsKeyArn"] == kms_key_reference
 
     app = cdk.App()
+    default_gateway = synth(
+        GatewayStack(
+            app,
+            "DefaultGateway",
+            project_name="workshoptest",
+            environment="dev",
+            cognito_issuer_url=issuer,
+            cognito_allowed_clients=["client"],
+            env=ENV,
+        )
+    )
+    default_props = resources(default_gateway, "AWS::BedrockAgentCore::Gateway")[0][
+        "Properties"
+    ]
+    assert "ExceptionLevel" not in default_props
+
+    app = cdk.App()
     workshop = synth(
         GatewayStack(
             app,
@@ -175,6 +192,7 @@ def test_gateway_sanitizes_production_errors_and_uses_the_cmk() -> None:
             environment="dev",
             cognito_issuer_url=issuer,
             cognito_allowed_clients=["client"],
+            debug_exceptions=True,
             env=ENV,
         )
     )

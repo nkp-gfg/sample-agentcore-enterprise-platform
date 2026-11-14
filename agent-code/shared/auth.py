@@ -6,8 +6,13 @@ Provides secure user identity extraction from JWT tokens in the AgentCore Runtim
 RequestContext (prevents impersonation via prompt injection).
 """
 
+import json
 import logging
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any
 
 import jwt
 from bedrock_agentcore.identity.auth import requires_access_token
@@ -33,29 +38,84 @@ ALLOWED_CLIENTS = tuple(
 _jwks_client: jwt.PyJWKClient | None = None
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            f"HTTP redirects are disabled for {req.full_url}",
+            headers,
+            fp,
+        )
+
+
+def _no_redirect_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_NoRedirectHandler())
+
+
+def _validate_https_url(url: str, label: str = "URL") -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError(f"{label} must be an https:// URL with a host, got {url!r}")
+    return url
+
+
+class _NoRedirectPyJWKClient(jwt.PyJWKClient):
+    """PyJWKClient that enforces https:// and disables HTTP redirects."""
+
+    def fetch_data(self) -> Any:
+        _validate_https_url(self.uri, "JWKS URL")
+        try:
+            req = urllib.request.Request(url=self.uri, headers=self.headers)
+            with _no_redirect_opener().open(req, timeout=self.timeout) as response:
+                jwk_set = json.load(response)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                exc.close()
+            raise jwt.PyJWKClientConnectionError(
+                f'Fail to fetch data from the url, err: "{exc}"'
+            ) from exc
+
+        if self.jwk_set_cache is not None:
+            self.jwk_set_cache.put(jwk_set)
+        return jwk_set
+
+
 def _signing_key(token: str) -> str:
     """Public key for this token, from the issuer's published JWKS."""
     global _jwks_client
-    if _jwks_client is None:
-        # The JWKS location comes from the issuer's discovery document: Cognito
-        # and Entra publish their keys at different paths (see jwks_uri).
-        discovery = None
-        try:
-            import json
-            import urllib.request
+    if _jwks_client is not None:
+        return _jwks_client.get_signing_key_from_jwt(token).key
 
-            with urllib.request.urlopen(  # nosec B310 — https issuer from the deployment
-                f"{COGNITO_ISSUER_URL}/.well-known/openid-configuration", timeout=5
-            ) as resp:
-                discovery = json.load(resp)
-        except Exception as exc:  # noqa: BLE001 — fall back to the Cognito layout
-            logger.warning(
-                "OIDC discovery failed (%s); assuming Cognito JWKS path", exc
-            )
-        _jwks_client = jwt.PyJWKClient(
-            jwks_uri(COGNITO_ISSUER_URL, discovery), cache_keys=True
+    issuer = _validate_https_url(COGNITO_ISSUER_URL, "COGNITO_ISSUER_URL")
+    discovery = None
+    discovery_ok = False
+    try:
+        discovery_url = _validate_https_url(
+            f"{issuer}/.well-known/openid-configuration", "OIDC discovery URL"
         )
-    return _jwks_client.get_signing_key_from_jwt(token).key
+        req = urllib.request.Request(
+            discovery_url, headers={"Accept": "application/json"}
+        )
+        with _no_redirect_opener().open(req, timeout=5) as resp:  # nosec B310 — https validated
+            discovery = json.load(resp)
+            discovery_ok = isinstance(discovery, dict) and bool(
+                discovery.get("jwks_uri")
+            )
+    except Exception as exc:  # noqa: BLE001 — fall back without locking in cache
+        logger.warning(
+            "OIDC discovery failed (%s); using transient Cognito JWKS fallback", exc
+        )
+
+    resolved_jwks_url = _validate_https_url(jwks_uri(issuer, discovery), "JWKS URL")
+    if discovery_ok:
+        # Cache permanently only when OIDC discovery succeeded; transient
+        # discovery failures stay uncached so the next call retries discovery.
+        _jwks_client = _NoRedirectPyJWKClient(resolved_jwks_url, cache_keys=True)
+        return _jwks_client.get_signing_key_from_jwt(token).key
+
+    transient_client = _NoRedirectPyJWKClient(resolved_jwks_url, cache_keys=False)
+    return transient_client.get_signing_key_from_jwt(token).key
 
 
 def extract_user_id_from_context(context: RequestContext) -> str:
@@ -93,20 +153,25 @@ def extract_user_id_from_context(context: RequestContext) -> str:
             "that includes the Authorization header."
         )
 
-    auth_header = request_headers.get("Authorization")
-    if not auth_header:
+    auth_header = next(
+        (
+            v
+            for k, v in request_headers.items()
+            if isinstance(k, str) and k.lower() == "authorization"
+        ),
+        None,
+    )
+    if not auth_header or not isinstance(auth_header, str):
         raise ValueError(
             "No Authorization header found in request context. "
             "Ensure the AgentCore Runtime is configured with JWT inbound auth "
             "and the Authorization header is in the request header allowlist."
         )
 
-    # Remove "Bearer " prefix to get the raw JWT token
-    token = (
-        auth_header.replace("Bearer ", "")
-        if auth_header.startswith("Bearer ")
-        else auth_header
-    )
+    scheme, sep, raw_token = auth_header.strip().partition(" ")
+    token = raw_token.strip()
+    if not sep or scheme.lower() != "bearer" or not token:
+        raise ValueError("Authorization header must use the Bearer scheme.")
 
     if not COGNITO_ISSUER_URL:
         raise ValueError(

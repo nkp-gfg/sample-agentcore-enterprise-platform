@@ -59,6 +59,14 @@ def test_cognito_only_preserves_workshop_signup_and_native_auth() -> None:
     user_pool = _resources(template, "AWS::Cognito::UserPool")[0]["Properties"]
 
     assert user_pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is False
+    password_policy = user_pool["Policies"]["PasswordPolicy"]
+    assert password_policy["MinimumLength"] == 12
+    assert password_policy["RequireLowercase"] is True
+    assert password_policy["RequireUppercase"] is True
+    assert password_policy["RequireNumbers"] is True
+    assert password_policy["RequireSymbols"] is True
+    assert user_pool["MfaConfiguration"] == "OPTIONAL"
+    assert user_pool["EnabledMfas"] == ["SOFTWARE_TOKEN_MFA"]
 
     app_client = _user_client(template, "agentcore-test-app-client")
     web_client = _user_client(template, "agentcore-test-web-client")
