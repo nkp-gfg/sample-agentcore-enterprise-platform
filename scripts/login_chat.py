@@ -184,7 +184,7 @@ def _claims(jwt: str) -> dict:
 
 def _reply_text(body: str) -> str:
     """Join streamed text chunks (both HTTP Strands and AG-UI SSE); surface interrupts/errors."""
-    text, errors, interrupts = [], [], []
+    root_text, subagent_text, errors, interrupts = [], [], [], []
     for line in body.splitlines():
         if not line.startswith("data:"):
             continue
@@ -193,14 +193,17 @@ def _reply_text(body: str) -> str:
         except json.JSONDecodeError:
             continue
         if isinstance(event, str):
-            text.append(event)
+            root_text.append(event)
         elif isinstance(event, dict):
             if isinstance(event.get("data"), str):
-                text.append(event["data"])
+                root_text.append(event["data"])
             elif event.get("type") == "TEXT_MESSAGE_CONTENT" and isinstance(
                 event.get("delta"), str
             ):
-                text.append(event["delta"])
+                if event.get("subagentRunId") or event.get("subagent_run_id"):
+                    subagent_text.append(event["delta"])
+                else:
+                    root_text.append(event["delta"])
             if event.get("status") == "error":
                 errors.append(str(event.get("error")))
             elif event.get("type") == "RUN_ERROR":
@@ -219,7 +222,7 @@ def _reply_text(body: str) -> str:
                         interrupts.append(json.dumps(raw or item))
     if errors:
         return "ERROR: " + "; ".join(errors)
-    joined = "".join(text)
+    joined = "".join(root_text) or "".join(subagent_text)
     if interrupts:
         pause_note = "\n[PAUSED FOR REVIEW] " + "; ".join(interrupts)
         return (joined + pause_note).strip()

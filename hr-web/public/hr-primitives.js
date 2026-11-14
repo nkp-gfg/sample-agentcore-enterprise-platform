@@ -1,4 +1,4 @@
-/* hr-web — HR primitive renderers.
+/* hr-web — Enterprise & HR A2UI primitive renderers.
  *
  * Each export is an A2UI catalog component: a function
  * ``(properties, context) -> HTMLElement`` registered with the
@@ -112,8 +112,8 @@
     const variant = ["primary", "outline", "ghost"].includes(props.variant)
       ? props.variant
       : "primary";
-    const btn = el("button", `hr-button hr-button--${variant}`.replace("--primary", ""),
-      _text(props.label));
+    const cls = variant === "primary" ? "hr-button" : `hr-button hr-button--${variant}`;
+    const btn = el("button", cls, _text(props.label));
     btn.type = "button";
     if (props.disabled) btn.disabled = true;
     btn.addEventListener("click", () => {
@@ -145,11 +145,10 @@
     const dl = el("dl", "hr-kv");
     dl.append(_kv("Annual", _formatDays(props.annualDays)));
     dl.append(_kv("Sick", _formatDays(props.sickDays)));
-    dl.append(_kv("Probation",
-      props.onProbation
-        ? (props.probationEndDate ? `Until ${props.probationEndDate}` : "On probation")
-        : "Not on probation",
-    ));
+    const probationText = props.onProbation
+      ? (props.probationEndDate ? `Until ${props.probationEndDate}` : "On probation")
+      : (props.status === "err" && props.onProbation == null ? "—" : "Not on probation");
+    dl.append(_kv("Probation", probationText));
     card.append(dl);
     return card;
   }
@@ -167,7 +166,7 @@
     dl.append(_kv("Item", _text(props.itemType)));
     dl.append(_kv("Period", _text(props.period)));
     const amountValue = props.amount == null
-      ? "No entry for this period"
+      ? (props.status === "err" ? "—" : "No entry for this period")
       : `${_formatAmount(props.amount)} ${_text(props.currency || "")}`.trim();
     dl.append(_kv("Amount", amountValue));
     card.append(dl);
@@ -183,7 +182,10 @@
     head.append(_tag(_text(props.statusLabel || `${reports.length} direct`), variant));
     card.append(head);
     if (reports.length === 0) {
-      card.append(el("p", "hr-note", "No direct reports."));
+      const emptyMsg = props.status === "err"
+        ? "Unable to load direct reports."
+        : "No direct reports.";
+      card.append(el("p", "hr-note", emptyMsg));
     } else {
       const ul = el("ul", "hr-reports");
       for (const r of reports) {
@@ -284,11 +286,13 @@
       if (editBox.hidden) {
         editBox.hidden = false;
         editBtn.textContent = "Submit edited";
+        editBtn.setAttribute("aria-expanded", "true");
         startInput.focus();
         return;
       }
       ctx.emitAction({ name: "employee_edit_leave", context: buildPayload() });
     });
+    editBtn.setAttribute("aria-expanded", "false");
     const confirmBtn = makeButton("Confirm", "", "employee_confirm_leave", () =>
       ctx.emitAction({ name: "employee_confirm_leave", context: buildPayload() }),
     );

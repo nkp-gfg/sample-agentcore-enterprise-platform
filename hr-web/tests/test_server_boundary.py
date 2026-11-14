@@ -413,3 +413,144 @@ def test_default_boto3_ssm_reader_queries_single_prefixed_paths(monkeypatch):
         "/agentcore-production/prod/gateway/url",
     ]
 
+
+# ------------------------------------ 4. Static enterprise & SVG asset checks
+
+
+def test_serves_enterprise_catalog_asset_with_security_headers(running_server):
+    """Static /enterprise-catalog.js is served locally with hardening headers."""
+    status, headers, body = _request(
+        running_server.server_port,
+        "GET",
+        "/enterprise-catalog.js",
+    )
+    assert status == HTTPStatus.OK
+    assert "javascript" in headers.get("content-type", "").lower()
+    assert headers.get("x-content-type-options") == "nosniff"
+    assert headers.get("x-frame-options") == "DENY"
+    csp = headers.get("content-security-policy", "")
+    assert "script-src 'self'" in csp
+
+    text = body.decode("utf-8")
+    for expected in (
+        "window.EnterpriseCatalog",
+        "Object.freeze",
+        "APP_TITLE",
+        "APP_SUBTITLE",
+        "BOTS",
+        "MARKETPLACE_AGENTS",
+        "PROMPTS",
+        "GUIDE_SECTIONS",
+    ):
+        assert expected in text
+
+    lowered = text.lower()
+    for forbidden in ("akia", "asia", "client_secret", "https://", "http://"):
+        assert forbidden not in lowered
+
+    # Non-loopback Host header and mutation verbs are refused on static assets too.
+    bad_status, _, _ = _request(
+        running_server.server_port,
+        "GET",
+        "/enterprise-catalog.js",
+        host_header="attacker.example",
+    )
+    assert bad_status == HTTPStatus.FORBIDDEN
+
+    for method in ("POST", "PUT", "DELETE", "PATCH"):
+        m_status, _, m_body = _request(
+            running_server.server_port,
+            method,
+            "/enterprise-catalog.js",
+            body=b"{}",
+        )
+        assert m_status == HTTPStatus.METHOD_NOT_ALLOWED
+        assert "error" in json.loads(m_body)
+
+
+def test_enterprise_catalog_pins_god_agent_graph_and_tool_names():
+    """enterprise-catalog.js matches the deployed god-agent graph and tool map."""
+    catalog_path = HR_WEB / "public" / "enterprise-catalog.js"
+    assert catalog_path.is_file()
+    text = catalog_path.read_text(encoding="utf-8")
+
+    expected_bot_ids = (
+        "god-bot",
+        "hr-operations",
+        "leave-balance",
+        "leave-eligibility",
+        "leave-submit",
+        "hr-payroll",
+        "compensation",
+        "direct-reports",
+        "finance-payroll",
+        "allowance",
+        "review-node",
+        "code-agent",
+        "research-agent",
+        "platform-gateway",
+    )
+    for bot_id in expected_bot_ids:
+        assert f'"{bot_id}"' in text
+
+    expected_tools = (
+        "hr-ops___get_leave_balance",
+        "hr-ops___check_leave_eligibility",
+        "hr-ops___submit_leave_request",
+        "hr-payroll___get_employee_compensation",
+        "hr-payroll___list_direct_reports",
+        "hr-finance___get_allowance",
+        "hr-ops___record_leave_decision",
+    )
+    for tool_name in expected_tools:
+        assert f'"{tool_name}"' in text
+
+    for category in (
+        "Leave",
+        "Allowances",
+        "Team & Compensation",
+        "Approvals",
+        "Security & Guardrails",
+        "Platform",
+    ):
+        assert f'"{category}"' in text
+
+
+def test_serves_favicon_svg_asset_with_security_headers(running_server):
+    """Static /favicon.svg is a safe inline-free SVG served only to loopback."""
+    status, headers, body = _request(
+        running_server.server_port,
+        "GET",
+        "/favicon.svg",
+    )
+    assert status == HTTPStatus.OK
+    assert headers.get("content-type", "").startswith("image/svg+xml")
+    assert headers.get("x-content-type-options") == "nosniff"
+    assert headers.get("x-frame-options") == "DENY"
+    csp = headers.get("content-security-policy", "")
+    assert "img-src 'self' data:" in csp
+
+    svg = body.decode("utf-8")
+    assert "<svg" in svg
+    assert 'xmlns="http://www.w3.org/2000/svg"' in svg
+    assert "</svg>" in svg
+    assert "<script" not in svg.lower()
+
+    bad_status, _, _ = _request(
+        running_server.server_port,
+        "GET",
+        "/favicon.svg",
+        host_header="attacker.example",
+    )
+    assert bad_status == HTTPStatus.FORBIDDEN
+
+    for method in ("POST", "PUT", "DELETE", "PATCH"):
+        m_status, _, m_body = _request(
+            running_server.server_port,
+            method,
+            "/favicon.svg",
+            body=b"<svg/>",
+        )
+        assert m_status == HTTPStatus.METHOD_NOT_ALLOWED
+        assert "error" in json.loads(m_body)
+

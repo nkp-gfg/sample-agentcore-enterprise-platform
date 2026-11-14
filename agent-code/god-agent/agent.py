@@ -410,6 +410,22 @@ def _normalise_payload_to_agui(
             "forwardedProps": fwd,
         }
 
+    # Normalize `data["resume"]` entries for ag-ui-protocol>=1.0 `ResumeEntry`,
+    # which requires `status: Literal['resolved', 'cancelled']` and `interruptId`.
+    if isinstance(data.get("resume"), list):
+        normalised_resume: list[Any] = []
+        for item in data["resume"]:
+            if isinstance(item, dict):
+                entry = dict(item)
+                if "interruptId" not in entry and "interrupt_id" in entry:
+                    entry["interruptId"] = entry.pop("interrupt_id")
+                if "status" not in entry or entry["status"] is None:
+                    entry["status"] = "resolved"
+                normalised_resume.append(entry)
+            else:
+                normalised_resume.append(item)
+        data["resume"] = normalised_resume
+
     fwd = dict(data.get("forwardedProps") or data.get("forwarded_props") or {})
     check_pending = bool(
         fwd.get("checkPendingReviews") or fwd.get("check_pending_reviews")
@@ -421,7 +437,7 @@ def _normalise_payload_to_agui(
     if isinstance(top_resume, list) and top_resume:
         first = top_resume[0]
         if isinstance(first, dict):
-            inner = first.get("payload", first)
+            inner = first["payload"] if first.get("payload") is not None else first
             resume_dict = inner if isinstance(inner, dict) else {"decision": str(inner)}
     elif isinstance(fwd.get("resume"), list) and fwd["resume"]:
         first = fwd["resume"][0]
@@ -613,14 +629,46 @@ async def invocations(payload: dict, context: RequestContext):
             # `ag_ui_langgraph.LangGraphAgent` flags; set them on the instance.
             agui.emit_interrupt_outcome = True
             agui.emit_raw_events = False
+            agui.subagent_visibility = "attributed"
+            agui.emit_subagent_events = True
+            tool_names_by_id: dict[str, str] = {}
+            already_emitted_tools: set[str] = set()
             try:
                 async for event in agui.run(input_data):
                     if event is None:
                         continue
-                    # Flush any leaf gateway tool results BEFORE terminal RUN_FINISHED
-                    # so A2UI cards render on the client!
+                    if event.type == EventType.TOOL_CALL_START:
+                        tc_id = getattr(event, "tool_call_id", None)
+                        tc_name = getattr(event, "tool_call_name", None)
+                        if tc_id and tc_name:
+                            tool_names_by_id[str(tc_id)] = str(tc_name)
+                    elif event.type == EventType.TOOL_CALL_RESULT:
+                        tc_id = getattr(event, "tool_call_id", None)
+                        tc_name = tool_names_by_id.get(str(tc_id)) if tc_id else None
+                        if tc_name:
+                            raw_content = getattr(event, "content", None)
+                            parsed_content: Any = None
+                            if isinstance(raw_content, dict):
+                                parsed_content = raw_content
+                            elif isinstance(raw_content, str):
+                                try:
+                                    parsed_content = json.loads(raw_content)
+                                except (ValueError, TypeError):
+                                    parsed_content = None
+                            if (
+                                isinstance(parsed_content, dict)
+                                and "authorized" in parsed_content
+                            ):
+                                already_emitted_tools.add(tc_name)
+                    # Flush any leaf gateway tool results that bypassed `agui.run()`
+                    # BEFORE terminal RUN_FINISHED so A2UI cards render on the client.
                     if event.type == EventType.RUN_FINISHED:
-                        for tool_ev in _tool_result_events(drain_turn_tool_events()):
+                        missing_tool_events = [
+                            item
+                            for item in drain_turn_tool_events()
+                            if item["tool_name"] not in already_emitted_tools
+                        ]
+                        for tool_ev in _tool_result_events(missing_tool_events):
                             yield tool_ev
                         pending_review = take_turn_pending_review()
                         if pending_review is not None:

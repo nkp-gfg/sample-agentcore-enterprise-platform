@@ -487,9 +487,12 @@ def build_local_leaf_tool(calling_agent: str) -> BaseTool:
         if isinstance(raw_resume, str):
             decision = raw_resume.strip().lower()
         elif isinstance(raw_resume, dict):
-            decision = str(raw_resume.get("decision") or "").strip().lower()
-            if isinstance(raw_resume.get("arguments"), dict):
-                edited_args = dict(raw_resume["arguments"])
+            if raw_resume.get("__agui_cancelled__"):
+                decision = "reject"
+            else:
+                decision = str(raw_resume.get("decision") or "").strip().lower()
+                if isinstance(raw_resume.get("arguments"), dict):
+                    edited_args = dict(raw_resume["arguments"])
 
         if decision == "reject":
             return {"authorized": False, "reason_code": "CANCELLED_BY_EMPLOYEE"}

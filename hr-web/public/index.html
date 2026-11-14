@@ -4,119 +4,366 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>HR assistant · AgentCore Platform</title>
+<title>AgentCore Enterprise · Unified Employee AI Workspace</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
-<div class="hr-shell">
-
-<header class="hr-topbar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true">HR</span>
-    <div>
-      <span class="brand-name">HR assistant</span>
-      <span class="brand-sub">Layer 3 · facilitator-operated · 127.0.0.1 only</span>
-    </div>
+<!-- Default unauthenticated view: centered Login Gate (PKCE AutoSignin pattern).
+     Hidden automatically on boot if an established OIDC session is already active. -->
+<section class="hr-login-screen" id="loginScreen" aria-label="Sign in to AgentCore Enterprise">
+  <div class="hr-login-card">
+    <span class="brand-mark brand-mark--lg" aria-hidden="true">AE</span>
+    <span class="ew-login-eyebrow">Unified Employee AI Workspace</span>
+    <h1 class="hr-login-title">AgentCore Enterprise</h1>
+    <p class="hr-login-sub">
+      Sign in with your corporate account to collaborate with God Bot across
+      HR Operations, Payroll, and Finance agents — with policy-enforced
+      interactive cards and human-in-the-loop approvals.
+    </p>
+    <ul class="ew-login-pills" aria-label="Workspace capabilities">
+      <li>Multi-Agent Handover</li>
+      <li>A2UI v1.0 Cards</li>
+      <li>Cedar Policy Guardrails</li>
+    </ul>
+    <div class="hr-login-error" id="loginError" role="alert" hidden></div>
+    <button type="button" class="hr-button hr-button--lg" id="signInBtn">Sign in</button>
+    <p class="hr-login-meta">
+      Secured with Amazon Cognito PKCE &amp; Bedrock AgentCore · 127.0.0.1 only
+    </p>
   </div>
-  <div class="identity" aria-live="polite">
-    <span id="identityState" class="identity-state" data-state="unknown">Not signed in</span>
-    <button type="button" class="hr-button hr-button--outline" id="newChatBtn" hidden>New chat</button>
-    <button type="button" class="hr-button hr-button--ghost" id="refreshReviewsBtn" hidden>Check reviews</button>
-    <button type="button" class="hr-button" id="signInBtn">Sign in</button>
-    <button type="button" class="hr-button hr-button--ghost" id="signOutBtn" hidden>Sign out</button>
-  </div>
-</header>
+</section>
 
-<div class="hr-body">
+<!-- Authenticated 3-section enterprise desktop workspace: shown when session is established. -->
+<div class="hr-shell ew-shell" id="appWorkspace" hidden>
 
-  <main class="hr-chat" aria-label="Chat with the HR assistant">
-    <div class="hr-banner" id="authBanner" role="status">
-      Sign in with your corporate account to talk to the HR assistant. The
-      conversation uses the AG-UI SSE stream from the module&nbsp;6 runtime;
-      this page never holds AWS credentials. Every card on the right is
-      rendered through the A2UI v1.0 protocol
-      (<a href="https://a2ui.org/specification/v1_0/" rel="noopener">specification</a>).
+  <!-- Top Header Bar -->
+  <header class="ew-topbar">
+    <div class="ew-topbar-left">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">AE</span>
+        <div class="ew-brand-copy">
+          <span class="brand-name">AgentCore Enterprise</span>
+          <span class="brand-sub">Unified Employee AI Workspace</span>
+        </div>
+      </div>
+
+      <span class="ew-agent-pill" id="activeAgentPill" title="Currently active agent">God Bot · Orchestrator</span>
+
+      <span id="identityState" class="identity-state" data-state="unknown">Not signed in</span>
     </div>
 
-    <div class="hr-welcome" id="welcomeState" hidden>
-      <h2 class="hr-welcome-title">Welcome to the HR Assistant</h2>
-      <p class="hr-welcome-sub">
-        Ask about leave balances, eligibility, compensation, direct reports, or
-        monthly allowances — or pick a starter prompt below.
-      </p>
-      <div class="hr-starters" id="starterPrompts" role="list" aria-label="Starter prompts">
-        <button type="button" class="hr-starter-chip" data-prompt="How many annual and sick leave days do I have remaining?">
-          <strong>Leave balance</strong>
-          <span>Check my remaining annual and sick days</span>
+    <div class="ew-topbar-right" aria-live="polite">
+      <button type="button" class="hr-button hr-button--outline" id="newChatBtn">New chat</button>
+
+      <button type="button" class="hr-button hr-button--ghost ew-reviews-btn" id="refreshReviewsBtn">
+        <span>Reviews</span>
+        <span class="ew-badge-count" id="reviewCountBadge" hidden>0</span>
+      </button>
+
+      <span class="ew-topbar-sep" aria-hidden="true"></span>
+
+      <div class="ew-icon-group" role="toolbar" aria-label="Workspace drawers">
+        <button type="button"
+                class="ew-icon-btn"
+                id="btnHistory"
+                data-drawer="history"
+                title="Conversation History"
+                aria-label="Conversation History"
+                aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"/>
+            <polyline points="12 7 12 12 15.5 14"/>
+          </svg>
+          <span class="ew-icon-label">History</span>
         </button>
-        <button type="button" class="hr-starter-chip" data-prompt="What was my telephone allowance for 2026-10?">
-          <strong>Telephone allowance</strong>
-          <span>View my 2026-10 payroll allowance</span>
+
+        <button type="button"
+                class="ew-icon-btn"
+                id="btnPrompts"
+                data-drawer="prompts"
+                title="Search All Prompts (Ctrl+K)"
+                aria-label="Search All Prompts (Ctrl+K)"
+                aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"/>
+            <line x1="16.65" y1="16.65" x2="21" y2="21"/>
+          </svg>
+          <span class="ew-icon-label">Prompts</span>
         </button>
-        <button type="button" class="hr-starter-chip" data-prompt="Who are my direct reports, and what is my current compensation?">
-          <strong>Team &amp; compensation</strong>
-          <span>List one-hop direct reports &amp; salary</span>
+
+        <button type="button"
+                class="ew-icon-btn"
+                id="btnGuide"
+                data-drawer="guide"
+                title="User Guide"
+                aria-label="User Guide"
+                aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          </svg>
+          <span class="ew-icon-label">Guide</span>
         </button>
-        <button type="button" class="hr-starter-chip" data-prompt="Submit annual leave from 2026-12-01 to 2026-12-03 for a family trip">
-          <strong>Request leave (2-stage review)</strong>
-          <span>Trigger confirmation &amp; manager review cards</span>
+
+        <button type="button"
+                class="ew-icon-btn"
+                id="btnMarketplace"
+                data-drawer="marketplace"
+                title="Enterprise Agent Marketplace"
+                aria-label="Enterprise Agent Marketplace"
+                aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+          </svg>
+          <span class="ew-icon-label">Marketplace</span>
         </button>
       </div>
+
+      <span class="ew-topbar-sep" aria-hidden="true"></span>
+
+      <button type="button" class="hr-button hr-button--ghost" id="signOutBtn">Sign out</button>
     </div>
+  </header>
 
-    <div class="hr-messages" id="chatMessages" aria-live="polite" aria-label="Conversation"></div>
+  <!-- 3-Column Body -->
+  <div class="ew-workspace-grid">
 
-    <form class="hr-composer" id="chatForm">
-      <label class="sr-only" for="chatInput">Message</label>
-      <textarea id="chatInput"
-                class="hr-input"
-                rows="2"
-                maxlength="4000"
-                placeholder="Ask about leave, your allowance, your reports. Typing &quot;approve&quot; does nothing — use the card."
-                required
-                disabled></textarea>
-      <div class="hr-composer-foot">
-        <span><span id="chatCount">0</span> / 4000</span>
-        <span class="hr-composer-hint">Enter to send · Shift+Enter for a new line</span>
-        <button class="hr-button" id="chatSend" type="submit" disabled>Send</button>
+    <!-- 1. Left Bot Roster Sidebar -->
+    <aside class="ew-left-sidebar" id="botRosterSidebar" aria-label="Enterprise bot roster">
+      <div class="ew-pinned-section">
+        <div class="ew-roster-section-label">Orchestrator · Pinned</div>
+        <div class="ew-pinned-orchestrator">
+          <span class="ew-bot-avatar" aria-hidden="true">GB</span>
+          <div class="ew-bot-meta">
+            <div class="ew-bot-name-row">
+              <strong class="ew-bot-name">God Bot</strong>
+              <span class="ew-bot-badge">Router</span>
+            </div>
+            <span class="ew-bot-desc">Routes to HR Ops · Payroll · Finance</span>
+          </div>
+          <span class="ew-status-dot ew-status-dot--online" title="Online"></span>
+        </div>
       </div>
-    </form>
-  </main>
 
-  <!-- A2UI surfaces mount point. The processor owns every child of this
-       node. Each tool result, interrupt, or renderer message becomes one
-       A2UI v1.0 message that createSurface/updateComponents/deleteSurface
-       applies here. The hard-coded cards from the first Layer 3 commit have
-       been replaced with the EmployeeConfirmForm, ManagerReviewCard,
-       ProbationNotice, LeaveBalanceCard, AllowanceCard, DirectReportsTable,
-       and Notice primitives declared in hr-catalog.json. See
-       ui-primitives.md. -->
-  <aside id="hrSurfaces"
-         class="hr-side"
-         aria-label="A2UI surfaces: review cards and summaries"></aside>
+      <div class="ew-handover-banner" id="handoverBanner" data-state="idle" aria-live="polite">
+        <div class="ew-handover-head">
+          <span class="ew-handover-pulse" aria-hidden="true"></span>
+          <span class="ew-handover-kicker">Active Handover</span>
+        </div>
+        <div class="ew-handover-route" id="handoverStatusLabel" data-state="idle">Idle · Ready</div>
+      </div>
+
+      <div class="ew-roster-list" id="botRosterList" role="list" aria-label="Department and leaf bots">
+        <button type="button" class="hr-bot-item is-selected" data-bot-id="god-bot" data-activity="idle" data-tier="orchestrator" aria-current="true">
+          <div class="hr-bot-head">
+            <span class="hr-bot-dot" aria-hidden="true"></span>
+            <span class="hr-bot-name">God Bot</span>
+            <span class="hr-bot-status">Idle</span>
+          </div>
+          <div class="hr-bot-sub">Enterprise Orchestrator</div>
+        </button>
+        <button type="button" class="hr-bot-item" data-bot-id="leave-balance" data-activity="idle" data-tier="leaf">
+          <div class="hr-bot-head">
+            <span class="hr-bot-dot" aria-hidden="true"></span>
+            <span class="hr-bot-name">Leave Balance</span>
+            <span class="hr-bot-status">Idle</span>
+          </div>
+          <div class="hr-bot-sub">Balance Specialist</div>
+        </button>
+      </div>
+
+      <div class="ew-sidebar-foot">
+        <button type="button" class="ew-marketplace-cta" id="openMarketplaceFromLeft">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+          </svg>
+          <span>+ Agent Marketplace</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- 2. Center Console -->
+    <main class="ew-center-console" id="centerConsole" aria-label="AgentCore Enterprise conversation workspace">
+      <div class="ew-focus-strip">
+        <span class="ew-focus-label">
+          <strong>Orchestrated Workspace</strong>
+          <span class="ew-focus-sep">·</span>
+          <span>Ask naturally — God Bot delegates to scoped department &amp; leaf agents</span>
+        </span>
+        <div class="ew-focus-badges">
+          <span class="ew-focus-chip">AG-UI SSE</span>
+          <span class="ew-focus-chip">A2UI v1.0</span>
+          <span class="ew-focus-chip">Cedar AuthZ</span>
+        </div>
+      </div>
+
+      <div class="ew-chat-stage">
+        <section class="hr-welcome ew-welcome" id="welcomeState">
+          <span class="ew-welcome-eyebrow">God Bot · Enterprise Orchestrator</span>
+          <h2 class="hr-welcome-title" id="welcomeTitle">Welcome to AgentCore Enterprise</h2>
+          <p class="hr-welcome-sub" id="welcomeSub">
+            Ask about leave balances, eligibility, compensation, direct reports, or
+            monthly allowances — or pick a starter prompt below.
+          </p>
+          <div class="hr-starters" id="starterPrompts" role="list" aria-label="Starter prompts">
+            <button type="button" class="hr-starter-chip" data-prompt="How many annual and sick leave days do I have remaining?">
+              <strong>Leave balance</strong>
+              <span>Check my remaining annual and sick days</span>
+            </button>
+            <button type="button" class="hr-starter-chip" data-prompt="What was my telephone allowance for 2026-10?">
+              <strong>Telephone allowance</strong>
+              <span>View my 2026-10 payroll allowance</span>
+            </button>
+            <button type="button" class="hr-starter-chip" data-prompt="Who are my direct reports, and what is my current compensation?">
+              <strong>Team &amp; compensation</strong>
+              <span>List one-hop direct reports &amp; salary</span>
+            </button>
+            <button type="button" class="hr-starter-chip" data-prompt="Submit annual leave from 2026-12-01 to 2026-12-03 for a family trip">
+              <strong>Request leave (2-stage review)</strong>
+              <span>Trigger confirmation &amp; manager review cards</span>
+            </button>
+          </div>
+        </section>
+
+        <div class="hr-messages ew-messages" id="chatMessages" aria-live="polite" aria-label="Conversation"></div>
+      </div>
+
+      <!-- Dynamic A2UI surfaces inside the Center Console (above composer, below chat transcript).
+           The MessageProcessor owns every child of this node. -->
+      <section id="hrSurfaces"
+               class="ew-center-surfaces"
+               aria-label="Dynamic interactive cards"></section>
+
+      <form class="hr-composer ew-composer" id="chatForm">
+        <label class="sr-only" for="chatInput">Message</label>
+        <textarea id="chatInput"
+                  class="hr-input"
+                  rows="2"
+                  maxlength="4000"
+                  placeholder="Ask about leave, your allowance, your reports. Typing &quot;approve&quot; does nothing — use the card."
+                  required
+                  disabled></textarea>
+        <div class="hr-composer-foot">
+          <span class="num"><span id="chatCount">0</span> / 4000</span>
+          <span class="ew-composer-slash-hint">Type <kbd>/</kbd> or click <span aria-hidden="true">🔍</span> to browse all prompts</span>
+          <span class="hr-composer-hint">Enter to send · Shift+Enter for a new line</span>
+          <button class="hr-button" id="chatSend" type="submit" disabled>Send</button>
+        </div>
+      </form>
+    </main>
+
+    <!-- 3. Right Collapsible Drawer -->
+    <aside class="ew-right-drawer" id="rightDrawer" aria-label="Workspace tools drawer" hidden>
+      <header class="ew-drawer-header">
+        <div class="ew-drawer-title-row">
+          <h2 class="ew-drawer-title" id="rightDrawerTitle">Workspace Tools</h2>
+          <button type="button"
+                  class="ew-drawer-close"
+                  id="closeRightDrawerBtn"
+                  title="Close drawer"
+                  aria-label="Close drawer">&times;</button>
+        </div>
+
+        <div class="ew-drawer-tabs" role="tablist" aria-label="Drawer mode">
+          <button type="button"
+                  class="ew-drawer-tab"
+                  role="tab"
+                  data-drawer="history"
+                  title="Conversation History"
+                  aria-label="Conversation History">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"/>
+              <polyline points="12 7 12 12 15.5 14"/>
+            </svg>
+            <span>History</span>
+          </button>
+          <button type="button"
+                  class="ew-drawer-tab"
+                  role="tab"
+                  data-drawer="prompts"
+                  title="Search All Prompts"
+                  aria-label="Search All Prompts">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"/>
+              <line x1="16.65" y1="16.65" x2="21" y2="21"/>
+            </svg>
+            <span>Prompts</span>
+          </button>
+          <button type="button"
+                  class="ew-drawer-tab"
+                  role="tab"
+                  data-drawer="guide"
+                  title="User Guide"
+                  aria-label="User Guide">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            <span>Guide</span>
+          </button>
+          <button type="button"
+                  class="ew-drawer-tab"
+                  role="tab"
+                  data-drawer="marketplace"
+                  title="Enterprise Agent Marketplace"
+                  aria-label="Enterprise Agent Marketplace">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+              <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+              <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+              <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+            </svg>
+            <span>Market</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="ew-drawer-search-wrap" id="rightDrawerSearchWrap">
+        <label class="sr-only" for="rightDrawerSearch">Search drawer items</label>
+        <svg class="ew-drawer-search-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/>
+          <line x1="16.65" y1="16.65" x2="21" y2="21"/>
+        </svg>
+        <input type="search"
+               class="ew-drawer-search"
+               id="rightDrawerSearch"
+               placeholder="Search prompts, conversations, or agents…"
+               autocomplete="off">
+      </div>
+
+      <div class="ew-drawer-body" id="rightDrawerBody"></div>
+    </aside>
+
+  </div>
+
+  <!-- Footer -->
+  <footer class="hr-footer">
+    <span class="mono" id="footerSession">session · —</span>
+    <span class="ew-footer-handover" id="footerHandover">
+      Routing: God Bot → hr-operations · hr-payroll · finance-payroll
+    </span>
+    <span class="hr-footer-hint">
+      Loopback-only · identity comes from Cognito with PKCE · cards render through
+      <a href="https://a2ui.org/specification/v1_0/" rel="noopener">A2UI v1.0</a>.
+    </span>
+  </footer>
 
 </div>
 
-<footer class="hr-footer">
-  <span class="mono" id="footerSession">session · —</span>
-  <span class="hr-footer-hint">
-    Loopback-only · identity comes from Cognito with PKCE · the browser
-    streams AG-UI events directly from the runtime · cards render through
-    A2UI v1.0.
-  </span>
-</footer>
-
-</div>
-
-<!-- Load order: the A2UI MessageProcessor and the HR catalog (components +
-     functions) must both be ready before the tool adapter, and the tool
-     adapter before app.js, which boots everything. No CDN; every module is
-     local, matching the loopback-only invariant from server.py. -->
+<!-- Load order: the A2UI MessageProcessor, HR primitives, tool adapter, and
+     enterprise catalog must load before app.js. Zero inline scripts; zero CDNs. -->
 <script src="a2ui.js" defer></script>
 <script src="hr-primitives.js" defer></script>
 <script src="hr-tool-adapter.js" defer></script>
+<script src="enterprise-catalog.js" defer></script>
 <script src="app.js" defer></script>
 </body>
 </html>

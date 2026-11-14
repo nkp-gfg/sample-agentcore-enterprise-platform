@@ -58,6 +58,7 @@ def _clean_shared_modules():
             "review",
             "ssm_config",
             "subagents",
+            "god_agent_entry_test",
         } or mod_name.startswith(
             ("shared.", "get_employee_compensation.", "submit_leave_request.")
         ):
@@ -495,6 +496,365 @@ def test_god_agent_normalises_both_cli_and_agui_payloads(monkeypatch):
     }
 
 
+def test_god_agent_normalises_resume_status_and_snake_case_interrupt_id(monkeypatch):
+    for mod_name in list(sys.modules):
+        if mod_name == "shared" or mod_name.startswith("shared."):
+            sys.modules.pop(mod_name, None)
+
+    god_dir = REPO / "agent-code" / "god-agent"
+    agent_code_dir = REPO / "agent-code"
+    monkeypatch.syspath_prepend(str(agent_code_dir))
+    monkeypatch.syspath_prepend(str(god_dir))
+    monkeypatch.setenv("PROJECT_NAME", "test")
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("GUARDRAIL_ID", "gr-1")
+    monkeypatch.setenv("AWS_REGION_NAME", "eu-west-1")
+
+    agent_mod = _load_module("god_agent_entry_test", god_dir / "agent.py")
+
+    # 1. hr-web EmployeeConfirmForm sends resume=[{interruptId, payload}] without `status`.
+    confirm_input, confirm_resume, _ = agent_mod._normalise_payload_to_agui(
+        {
+            "threadId": "thread-" + ("c" * 32),
+            "runId": "run-confirm-1",
+            "messages": [],
+            "resume": [
+                {
+                    "interruptId": "int-1",
+                    "payload": {
+                        "decision": "approve",
+                        "kind": "employee_confirm",
+                    },
+                }
+            ],
+        }
+    )
+    assert confirm_input.resume is not None
+    assert len(confirm_input.resume) == 1
+    assert confirm_input.resume[0].interrupt_id == "int-1"
+    assert confirm_input.resume[0].status == "resolved"
+    assert confirm_resume == {"decision": "approve", "kind": "employee_confirm"}
+
+    # 2. snake_case `interrupt_id` without `interruptId` is normalized cleanly.
+    snake_input, snake_resume, _ = agent_mod._normalise_payload_to_agui(
+        {
+            "threadId": "thread-" + ("d" * 32),
+            "runId": "run-confirm-2",
+            "messages": [],
+            "resume": [
+                {
+                    "interrupt_id": "int-snake",
+                    "payload": {
+                        "decision": "edit",
+                        "kind": "employee_confirm",
+                        "arguments": {"leave_type": "annual"},
+                    },
+                }
+            ],
+        }
+    )
+    assert snake_input.resume is not None
+    assert snake_input.resume[0].interrupt_id == "int-snake"
+    assert snake_input.resume[0].status == "resolved"
+    assert snake_resume == {
+        "decision": "edit",
+        "kind": "employee_confirm",
+        "arguments": {"leave_type": "annual"},
+    }
+
+    # 3. Explicit `status: "cancelled"` is preserved.
+    cancel_input, cancel_resume, _ = agent_mod._normalise_payload_to_agui(
+        {
+            "threadId": "thread-" + ("e" * 32),
+            "runId": "run-cancel-1",
+            "messages": [],
+            "resume": [{"interruptId": "int-2", "status": "cancelled"}],
+        }
+    )
+    assert cancel_input.resume is not None
+    assert cancel_input.resume[0].interrupt_id == "int-2"
+    assert cancel_input.resume[0].status == "cancelled"
+    assert cancel_resume is not None and cancel_resume.get("kind") != "manager_review"
+
+    # 4. CLI prompt mode with resume still populates forwardedProps.command.resume.
+    cli_res_input, cli_res_dict, _ = agent_mod._normalise_payload_to_agui(
+        {
+            "prompt": "",
+            "runtimeSessionId": "session-" + ("f" * 32),
+            "resume": [{"decision": "approve", "kind": "employee_confirm"}],
+        }
+    )
+    assert cli_res_dict == {"decision": "approve", "kind": "employee_confirm"}
+    assert cli_res_input.forwarded_props["command"] == {
+        "resume": {"decision": "approve", "kind": "employee_confirm"}
+    }
+
+
+def test_god_agent_sets_subagent_attribution_flags_in_source():
+    import ast
+
+    source = (REPO / "agent-code" / "god-agent" / "agent.py").read_text()
+    tree = ast.parse(source)
+
+    attr_values: dict[str, object] = {}
+    ctor_kwargs: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "agui"
+                    and isinstance(node.value, ast.Constant)
+                ):
+                    attr_values[target.attr] = node.value.value
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "LangGraphAGUIAgent"
+        ):
+            ctor_kwargs.update(kw.arg for kw in node.keywords if kw.arg)
+
+    assert attr_values.get("emit_interrupt_outcome") is True
+    assert attr_values.get("emit_raw_events") is False
+    assert attr_values.get("subagent_visibility") == "attributed"
+    assert attr_values.get("emit_subagent_events") is True
+    assert "subagent_visibility" not in ctor_kwargs
+    assert "emit_subagent_events" not in ctor_kwargs
+
+
+def test_god_agent_invocations_deduplicates_streamed_tool_results(monkeypatch):
+    import asyncio
+
+    for mod_name in list(sys.modules):
+        if mod_name == "shared" or mod_name.startswith("shared."):
+            sys.modules.pop(mod_name, None)
+
+    god_dir = REPO / "agent-code" / "god-agent"
+    agent_code_dir = REPO / "agent-code"
+    monkeypatch.syspath_prepend(str(agent_code_dir))
+    monkeypatch.syspath_prepend(str(god_dir))
+    monkeypatch.setenv("PROJECT_NAME", "test")
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setenv("GUARDRAIL_ID", "gr-1")
+    monkeypatch.setenv("AWS_REGION_NAME", "eu-west-1")
+
+    agent_mod = _load_module("god_agent_entry_test", god_dir / "agent.py")
+    gateway_mod = sys.modules["gateway_client"]
+
+    from ag_ui.core import (
+        EventType,
+        RunFinishedEvent,
+        RunStartedEvent,
+        ToolCallEndEvent,
+        ToolCallResultEvent,
+        ToolCallStartEvent,
+    )
+
+    created_agents: list[object] = []
+
+    class _FakeAGUI:
+        def __init__(self, *, name, description, graph, config):
+            self.name = name
+            self.description = description
+            self.graph = graph
+            self.config = config
+            self.emit_interrupt_outcome = False
+            self.emit_raw_events = True
+            self.subagent_visibility = "inline"
+            self.emit_subagent_events = False
+            created_agents.append(self)
+
+        async def run(self, input_data):
+            yield RunStartedEvent(
+                type=EventType.RUN_STARTED,
+                thread_id=input_data.thread_id,
+                run_id=input_data.run_id,
+            )
+            yield ToolCallStartEvent(
+                type=EventType.TOOL_CALL_START,
+                tool_call_id="tc-1",
+                tool_call_name="hr-ops___get_leave_balance",
+            )
+            yield ToolCallEndEvent(
+                type=EventType.TOOL_CALL_END,
+                tool_call_id="tc-1",
+            )
+            yield ToolCallResultEvent(
+                type=EventType.TOOL_CALL_RESULT,
+                message_id="tm-1",
+                tool_call_id="tc-1",
+                content=json.dumps(
+                    {
+                        "authorized": True,
+                        "reason_code": "ALLOW",
+                        "data": {"annual": 12, "sick": 5},
+                    }
+                ),
+                role="tool",
+            )
+            # Simulate gateway_client recording both the already-streamed tool
+            # and a hypothetical tool that bypassed agui.run().
+            gateway_mod.record_turn_tool_event(
+                "hr-ops___get_leave_balance",
+                {"authorized": True, "reason_code": "ALLOW", "data": {"annual": 12}},
+            )
+            gateway_mod.record_turn_tool_event(
+                "hr-finance___get_allowance",
+                {"authorized": True, "reason_code": "ALLOW", "data": {"amount": 50}},
+            )
+            yield RunFinishedEvent(
+                type=EventType.RUN_FINISHED,
+                thread_id=input_data.thread_id,
+                run_id=input_data.run_id,
+            )
+
+    @contextlib.asynccontextmanager
+    async def _fake_checkpointer():
+        yield object()
+
+    class _FakeGraph:
+        def with_config(self, **_kwargs):
+            return self
+
+    async def _fake_build_god_graph(*, checkpointer):
+        return _FakeGraph()
+
+    async def _fake_claim(_thread_id, _user_id):
+        return True
+
+    monkeypatch.setattr(agent_mod, "extract_user_id_from_context", lambda _ctx: "sub-1")
+    monkeypatch.setattr(agent_mod, "hr_tools_enabled", lambda: True)
+    monkeypatch.setattr(agent_mod, "claim_or_verify_thread_owner", _fake_claim)
+    monkeypatch.setattr(agent_mod, "async_open_checkpointer", _fake_checkpointer)
+    monkeypatch.setattr(agent_mod, "build_god_graph", _fake_build_god_graph)
+    monkeypatch.setattr(agent_mod, "LangGraphAGUIAgent", _FakeAGUI)
+    monkeypatch.setattr(
+        agent_mod,
+        "default_limiter",
+        lambda: SimpleNamespace(
+            check_and_record=lambda _u: SimpleNamespace(allowed=True, turns_in_window=1)
+        ),
+    )
+
+    async def _collect():
+        events = []
+        async for ev in agent_mod.invocations(
+            {
+                "threadId": "thread-" + ("g" * 32),
+                "runId": "run-1",
+                "messages": [{"id": "m1", "role": "user", "content": "leave balance"}],
+            },
+            SimpleNamespace(),
+        ):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(_collect())
+    assert len(created_agents) == 1
+    assert created_agents[0].subagent_visibility == "attributed"
+    assert created_agents[0].emit_subagent_events is True
+
+    start_names = [
+        ev["toolCallName"] for ev in events if ev.get("type") == "TOOL_CALL_START"
+    ]
+    assert start_names.count("hr-ops___get_leave_balance") == 1
+    assert start_names.count("hr-finance___get_allowance") == 1
+    result_events = [ev for ev in events if ev.get("type") == "TOOL_CALL_RESULT"]
+    assert len(result_events) == 2
+
+
+def test_gateway_client_leave_submit_handles_agui_cancelled(monkeypatch):
+    import asyncio
+
+    for mod_name in list(sys.modules):
+        if mod_name == "shared" or mod_name.startswith("shared."):
+            sys.modules.pop(mod_name, None)
+
+    god_dir = REPO / "agent-code" / "god-agent"
+    agent_code_dir = REPO / "agent-code"
+    monkeypatch.syspath_prepend(str(agent_code_dir))
+    monkeypatch.syspath_prepend(str(god_dir))
+
+    gw = _load_module("gateway_client", god_dir / "gateway_client.py")
+    tool = gw.build_local_leaf_tool("leave-submit")
+
+    async def _unexpected_gateway(*_args, **_kwargs):
+        raise AssertionError("call_gateway_tool must not run on cancelled interrupt")
+
+    monkeypatch.setattr(gw, "call_gateway_tool", _unexpected_gateway)
+    monkeypatch.setattr(
+        gw,
+        "interrupt",
+        lambda _payload: {"__agui_cancelled__": True, "interrupt_id": "int-1"},
+    )
+
+    res = asyncio.run(
+        tool.coroutine(
+            leave_type="annual",
+            start_date="2026-12-01",
+            end_date="2026-12-02",
+            reason="trip",
+        )
+    )
+    assert res == {"authorized": False, "reason_code": "CANCELLED_BY_EMPLOYEE"}
+
+
+def test_login_chat_reply_text_prefers_root_over_subagent_deltas():
+    mod = _load_module("login_chat_test", REPO / "scripts" / "login_chat.py")
+    try:
+        sse = "\n".join(
+            [
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "TEXT_MESSAGE_CONTENT",
+                        "messageId": "m-leaf",
+                        "delta": "Your balance is 12 annual days.",
+                        "subagentRunId": "tools:leaf-1",
+                    }
+                ),
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "TEXT_MESSAGE_CONTENT",
+                        "messageId": "m-dept",
+                        "delta": "Your balance is 12 annual days.",
+                        "subagentRunId": "tools:dept-1",
+                    }
+                ),
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "TEXT_MESSAGE_CONTENT",
+                        "messageId": "m-root",
+                        "delta": "You have 12 annual days remaining.",
+                    }
+                ),
+                "data: " + json.dumps({"type": "RUN_FINISHED"}),
+            ]
+        )
+        assert mod._reply_text(sse) == "You have 12 annual days remaining."
+
+        subagent_only_sse = "\n".join(
+            [
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "TEXT_MESSAGE_CONTENT",
+                        "messageId": "m-leaf",
+                        "delta": "Subagent fallback text.",
+                        "subagentRunId": "tools:leaf-1",
+                    }
+                ),
+                "data: " + json.dumps({"type": "RUN_FINISHED"}),
+            ]
+        )
+        assert mod._reply_text(subagent_only_sse) == "Subagent fallback text."
+    finally:
+        sys.modules.pop("login_chat_test", None)
+
+
 def test_part2_stacks_use_retain_except_on_create_and_deferred_deletion_protection():
     """Ensure a failed first create rolls back cleanly without wedging ROLLBACK_FAILED
     or leaving orphaned fixed-name LogGroups/DBClusters that block retry."""
@@ -575,9 +935,7 @@ def test_part2_stacks_use_retain_except_on_create_and_deferred_deletion_protecti
                 "ToolSchema"
             ]["InlinePayload"]
             for tool_def in payload:
-                _assert_cfn_schema(
-                    tool_def["InputSchema"], f"{lid}:{tool_def['Name']}"
-                )
+                _assert_cfn_schema(tool_def["InputSchema"], f"{lid}:{tool_def['Name']}")
 
     # 4. hr-identity layer pins scramp<1.5 so scramp.make_channel_binding exists
     #    for pg8000 1.31.5 TLS channel-binding handshakes.

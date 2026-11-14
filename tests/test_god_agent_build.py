@@ -707,3 +707,65 @@ def test_god_agent_is_in_the_runtime_pattern_allowlist():
         "scripts/deploy.sh validates AGENT_PATTERN against its own allow-list "
         "and must also include the god-agent pattern"
     )
+
+
+def test_god_agent_enables_subagent_attribution_on_agui_instance():
+    """`subagent_visibility='attributed'` + `emit_subagent_events=True` are set on
+    the `LangGraphAGUIAgent` instance (not passed to `__init__`, which copilotkit
+    rejects) so leaf/department text is tagged with `subagentRunId`."""
+
+    source = (GOD_AGENT_DIR / "agent.py").read_text()
+    tree = ast.parse(source)
+
+    assigned: dict[str, object] = {}
+    ctor_kwargs: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "agui"
+                    and isinstance(node.value, ast.Constant)
+                ):
+                    assigned[target.attr] = node.value.value
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "LangGraphAGUIAgent"
+        ):
+            ctor_kwargs.update(kw.arg for kw in node.keywords if kw.arg)
+
+    assert assigned.get("subagent_visibility") == "attributed"
+    assert assigned.get("emit_subagent_events") is True
+    assert assigned.get("emit_interrupt_outcome") is True
+    assert assigned.get("emit_raw_events") is False
+    assert "subagent_visibility" not in ctor_kwargs
+    assert "emit_subagent_events" not in ctor_kwargs
+
+
+def test_leave_submit_tool_treats_agui_cancelled_sentinel_as_reject(monkeypatch):
+    """AG-UI `ResumeEntry(status='cancelled')` becomes `{'__agui_cancelled__': True}`
+    and must cancel cleanly instead of returning `INVALID_DECISION`."""
+
+    gateway_client = importlib.import_module("gateway_client")
+    tool = gateway_client.build_local_leaf_tool("leave-submit")
+
+    async def _no_gateway(*_args, **_kwargs):
+        raise AssertionError("gateway must not be called when employee cancels")
+
+    monkeypatch.setattr(gateway_client, "call_gateway_tool", _no_gateway)
+    monkeypatch.setattr(
+        gateway_client,
+        "interrupt",
+        lambda _payload: {"__agui_cancelled__": True, "interrupt_id": "int-1"},
+    )
+    res = asyncio.run(
+        tool.coroutine(
+            leave_type="annual",
+            start_date="2026-12-01",
+            end_date="2026-12-02",
+            reason="vacation",
+        )
+    )
+    assert res == {"authorized": False, "reason_code": "CANCELLED_BY_EMPLOYEE"}

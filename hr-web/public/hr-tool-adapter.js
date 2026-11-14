@@ -1,6 +1,6 @@
 /* hr-web — tool-result → A2UI wire-message adapter.
  *
- * The AgentCore runtime (module 6) still emits AG-UI events today: typed
+ * The AgentCore Enterprise runtime emits AG-UI events today: typed
  * tool-call-result JSON, not A2UI wire messages. This file translates each
  * known tool result into the A2UI v1.0 message shape (createSurface /
  * updateComponents / deleteSurface) the hand-rolled MessageProcessor
@@ -40,7 +40,15 @@
     if (code === "IDEMPOTENCY_CONFLICT") return "Key conflict";
     if (code === "NOT_REVIEWER") return "Not reviewer";
     if (code === "NOT_MAPPED") return "Unmapped caller";
-    return String(code).replace(/_/g, " ").toLowerCase();
+    if (code === "DATA_UNAVAILABLE") return "Data unavailable";
+    if (code === "INVALID_LEAVE_TYPE") return "Invalid leave type";
+    if (code === "INVALID_ITEM") return "Invalid item";
+    if (code === "CANCELLED_BY_EMPLOYEE") return "Cancelled";
+    if (code === "INVALID_DECISION") return "Invalid decision";
+    if (code === "RATE_LIMITED") return "Rate limited";
+    if (code === "LIMIT_RECURSION") return "Turn limit reached";
+    const text = String(code).replace(/_/g, " ").toLowerCase();
+    return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
   function _createOne(surfaceId, properties) {
@@ -143,30 +151,57 @@
 
   function _leaveEligibility(result) {
     if (!result) return [];
-    if (result.authorized === false && result.reason_code === "PROBATION_PERIOD") {
-      return _recreate(SURFACE_IDS.probation, {
-        component: "ProbationNotice",
-        probationEndDate: (result.data && result.data.probation_end_date) || null,
-        reasonCode: "PROBATION_PERIOD",
+    if (result.authorized === false) {
+      if (result.reason_code === "PROBATION_PERIOD") {
+        return _recreate(SURFACE_IDS.probation, {
+          component: "ProbationNotice",
+          probationEndDate: (result.data && result.data.probation_end_date) || null,
+          reasonCode: "PROBATION_PERIOD",
+        });
+      }
+      return _recreate(SURFACE_IDS.notice("eligibility-refused"), {
+        component: "Notice",
+        variant: "warn",
+        title: "Leave eligibility",
+        body: `Request is not eligible: ${reasonLabel(result.reason_code)}.`,
       });
     }
-    return [];
+    return [_deleteOne(SURFACE_IDS.notice("eligibility-refused"))];
   }
 
   function _submitLeaveRequest(result) {
     if (!result) return [];
-    const messages = [_deleteOne(SURFACE_IDS.employeeConfirm)];
+    const messages = [
+      _deleteOne(SURFACE_IDS.employeeConfirm),
+      _deleteOne(SURFACE_IDS.notice("eligibility-refused")),
+    ];
     if (result.authorized === true && result.data) {
+      messages.push(
+        _deleteOne(SURFACE_IDS.notice("submit-refused")),
+        _deleteOne(SURFACE_IDS.notice("submit-cancelled")),
+      );
       const slug = result.data.request_id
         ? String(result.data.request_id).toLowerCase().replace(/[^a-z0-9]+/g, "-")
         : `submit-${Date.now().toString(36)}`;
+      const reviewer = result.data.reviewer_employee_id
+        ? ` (${result.data.reviewer_employee_id})`
+        : "";
       messages.push(..._recreate(SURFACE_IDS.notice(slug), {
         component: "Notice",
         variant: "ok",
         title: "Leave submitted",
-        body: `Request ${result.data.request_id || ""} is pending your manager's review.`,
+        body: `Request ${result.data.request_id || ""} is pending your manager's review${reviewer}.`,
+      }));
+    } else if (result.reason_code === "CANCELLED_BY_EMPLOYEE") {
+      messages.push(_deleteOne(SURFACE_IDS.notice("submit-refused")));
+      messages.push(..._recreate(SURFACE_IDS.notice("submit-cancelled"), {
+        component: "Notice",
+        variant: "info",
+        title: "Request cancelled",
+        body: "No leave request was submitted.",
       }));
     } else {
+      messages.push(_deleteOne(SURFACE_IDS.notice("submit-cancelled")));
       messages.push(..._recreate(SURFACE_IDS.notice("submit-refused"), {
         component: "Notice",
         variant: "warn",
@@ -211,11 +246,14 @@
   function _compensation(result) {
     if (!result) return [];
     if (result.authorized === true) return [];
+    const body = result.reason_code && result.reason_code !== "NOT_AUTHORIZED"
+      ? reasonLabel(result.reason_code)
+      : "You are not allowed to see this salary.";
     return _recreate(SURFACE_IDS.notice("compensation-refused"), {
       component: "Notice",
       variant: "warn",
       title: "Policy decision",
-      body: "You are not allowed to see this salary.",
+      body,
     });
   }
 
