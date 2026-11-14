@@ -48,14 +48,14 @@ DESCRIPTIONS: dict[str, str] = {
     "deployment.federation.gateway_url": "Platform-account gateway MCP endpoint a workload account calls (an output of the platform gateway stack).",
     "deployment.federation.issuer_url": "Platform Cognito issuer; the OIDC discovery URL is derived from it.",
     "deployment.federation.m2m_client_id": "Platform Cognito M2M client id the workload's token vault exchanges for a JWT. Not secret.",
-    "deployment.federation.m2m_client_secret_name": "Secrets Manager NAME in the workload account holding the M2M client secret. The secret itself never goes in this file.",
+    "deployment.federation.m2m_client_secret_name": "Secrets Manager NAME in the workload account holding the M2M client secret. The secret itself never goes in this file.",  # pragma: allowlist secret
     # identity
     "identity.idp": "Who authenticates users. `cognito` is self-contained; the others federate Cognito to your enterprise IdP (docs/ENTERPRISE_IDP.md).",
     "identity.mode": "Who issues the tokens. `brokered`: Cognito issues them and the IdP only signs users in — works with no IdP at all. `direct`: the IdP issues them and no Cognito user pool is deployed; `entra_id` only, and the app registration needs a service principal and v2 access tokens (docs/ENTERPRISE_IDP.md, Direct mode).",
     "identity.tenant_id": "Entra ID tenant. Required when `idp: entra_id`.",
     "identity.client_id": "App registration / OIDC client id at your IdP.",
     "identity.issuer_url": "OIDC issuer of your IdP. Required for `okta` and `ping` (Entra derives it from the tenant).",
-    "identity.client_secret_name": "Secrets Manager NAME holding the IdP client secret. Required for any non-Cognito IdP; the value never goes in this file.",
+    "identity.client_secret_name": "Secrets Manager NAME holding the IdP client secret. Required for any non-Cognito IdP; the value never goes in this file.",  # pragma: allowlist secret
     # agents
     "agents.pattern": "Which agent container the runtime stack builds (docs/ARCHITECTURE.md). Ignored for the image once `migration:` is set, but still exported so verify and invoke behave.",
     "agents.model_id": "Bedrock model or cross-region inference profile injected as `MODEL_ID` into every agent. Empty = each pattern's baked-in default.",
@@ -84,6 +84,19 @@ DESCRIPTIONS: dict[str, str] = {
     "observability.alarms": "CloudWatch alarms per deployed resource, an SNS ops topic and the platform dashboard.",
     "observability.alarm_email": "Inbox subscribed to the alarm topic (SNS sends a confirmation first). Empty = topic without subscription; placeholders are rejected.",
     "observability.log_retention_days": "CloudWatch log retention for platform-managed log groups. Supported values map to native CloudWatch periods: 30, 90, 180, or 365 days.",
+    # frontend
+    "frontend.enabled": "Deploy the hosted HR web BFF (`{project}-{environment}-frontend`): WAFv2 + public/private ALB + auto-scaling ECS Fargate + DynamoDB session/chat stores. Requires `security.networking: true`.",
+    "frontend.exposure": "`private` creates an Internal ALB in private subnets; `public` creates an Internet-facing ALB in public subnets behind AWS WAF. Switchable via config.",
+    "frontend.domain_name": "Optional custom hostname (requires `certificate_arn`) used for the BFF OAuth callback/logout URLs.",
+    "frontend.certificate_arn": "Optional ACM certificate ARN for HTTPS `:443` on the ALB (with `:80` → `:443` redirect). Required for HTTPS Cognito/Entra OAuth callbacks.",
+    "frontend.allowed_cidrs": "Optional IPv4 CIDR allow-list enforced on both the ALB security group and a WAFv2 IPSet rule. When empty in `private` mode, ALB ingress is scoped to the VPC CIDR.",
+    "frontend.waf_rate_limit": "Per-IP 5-minute request threshold enforced by the Regional AWS WAFv2 WebACL attached to the ALB.",
+    "frontend.min_capacity": "Minimum ECS Fargate task count (and baseline desired count) across AZs.",
+    "frontend.max_capacity": "Maximum ECS Fargate task count for CPU, memory, and ALB request-count burst scaling.",
+    "frontend.cpu": "Fargate task CPU units (256, 512, 1024, 2048, or 4096).",
+    "frontend.memory_mib": "Fargate task memory in MiB (must be a valid combination for `frontend.cpu`).",
+    "frontend.session_ttl_hours": "DynamoDB TTL in hours for server-side BFF OAuth session records.",
+    "frontend.restrict_runtime_to_bff_vpc": "When true, attaches a `AWS::BedrockAgentCore::ResourcePolicy` locking AgentCore Runtime invocation to the VPC interface endpoint and excludes `WebClient` from the runtime JWT authorizer so agents are reachable only via the ECS BFF.",
     # migration
     "migration": "Move an existing agent onto the platform. Absent = no migration, everything behaves as before. Stack names do not change: the migrated agent deploys as `…-runtime-orchestrator` on both targets.",
     "migration.source.platform": "Where the agent runs today. Shapes the docs and the plan, not the deploy.",
@@ -91,19 +104,19 @@ DESCRIPTIONS: dict[str, str] = {
     "migration.source.build": "Build the image here from the customer's Dockerfile. Yields arm64 by construction, which is why the shipped preset uses it. Exactly one of `image` or `build`.",
     "migration.source.build.context": "Docker build context, relative to the repo root.",
     "migration.source.build.dockerfile": "Dockerfile path, relative to `context`.",
-    "migration.source.registry_secret_name": "Secrets Manager NAME holding docker-login credentials for a private registry.",
+    "migration.source.registry_secret_name": "Secrets Manager NAME holding docker-login credentials for a private registry.",  # pragma: allowlist secret
     "migration.source.port": "What the container listens on. Required by the supported `adapter` mode.",
     "migration.source.invoke_path": "Where the container takes a request. Required by the supported adapter mode, which forwards `POST /invocations` there.",
     "migration.source.health_path": "What the adapter polls to answer `GET /ping`.",
     "migration.source.trigger": "How work arrives today. Discovery metadata only: trigger and cutover infrastructure are external and are not deployed.",
     "migration.source.env": "Plain configuration for the container. Secret-shaped keys (`*_SECRET`, `*_TOKEN`, `*_KEY`, …) are refused because env values render in clear.",
-    "migration.source.secrets": "Environment variable NAMES only. Each value lives in Secrets Manager under `<project>/<environment>/migration/<NAME>`; the plan lists what to create.",
+    "migration.source.secrets": "Environment variable NAMES only. Each value lives in Secrets Manager under `<project>/<environment>/migration/<NAME>`; the plan lists what to create.",  # pragma: allowlist secret
     "migration.target.runtime": "Only `agentcore` is currently deployable (arm64, the 8080 `/invocations` contract). `ec2` is reserved for a future ECS-on-EC2 implementation and fails validation.",
     "migration.target.mode": "Only `adapter` is currently deployable; it wraps the container so it speaks the AgentCore contract. `native` is reserved for a future implementation and fails validation.",
     "migration.network.private_dependencies": "Up to 25 unique customer-side hostnames (3,000 encoded bytes) the agent must still reach. Needs `security.networking` and a `connectivity` other than `none`; verification runs a fixed allow-list TLS probe from the runtime VPC.",
     "migration.network.connectivity": "Records the existing external path from the platform VPC to the customer network. The accelerator does not provision VPN or Transit Gateway resources.",
     "migration.network.dns_forwarders": "Records externally managed IPv4 resolvers for private hostnames. The accelerator does not create resolver endpoints or rules.",
-    "migration.network.ca_bundle_secret_name": "Secrets Manager NAME of a private CA bundle used by the network probe. The bundle is read in memory and is not injected into the customer image or returned as evidence.",
+    "migration.network.ca_bundle_secret_name": "Secrets Manager NAME of a private CA bundle used by the network probe. The bundle is read in memory and is not injected into the customer image or returned as evidence.",  # pragma: allowlist secret
     "migration.network.receipt.vpc_id": "Deployed target VPC ID containing the runtime and fixed dependency probe. Required before private-network approval.",
     "migration.network.receipt.private_subnet_ids": "Deployed private subnet IDs used by the dependency probe; the digest sorts them because order has no meaning.",
     "migration.network.receipt.security_group_ids": "Deployed security group IDs used by the dependency probe; the digest sorts them because order has no meaning.",
@@ -168,7 +181,7 @@ ENV: dict[str, str] = {
     "identity.tenant_id": "IDP_TENANT_ID",
     "identity.client_id": "IDP_CLIENT_ID",
     "identity.issuer_url": "IDP_ISSUER_URL",
-    "identity.client_secret_name": "IDP_CLIENT_SECRET_NAME",
+    "identity.client_secret_name": "IDP_CLIENT_SECRET_NAME",  # pragma: allowlist secret
     "agents.pattern": "AGENT_PATTERN",
     "agents.model_id": "MODEL_ID",
     "agents.allowed_models": "ALLOWED_MODELS",
@@ -192,24 +205,36 @@ ENV: dict[str, str] = {
     "observability.alarms": "ENABLE_ALARMS",
     "observability.alarm_email": "ALARM_EMAIL",
     "observability.log_retention_days": "LOG_RETENTION_DAYS",
+    "frontend.enabled": "ENABLE_FRONTEND",
+    "frontend.exposure": "FRONTEND_EXPOSURE",
+    "frontend.domain_name": "FRONTEND_DOMAIN_NAME",
+    "frontend.certificate_arn": "FRONTEND_CERTIFICATE_ARN",
+    "frontend.allowed_cidrs": "FRONTEND_ALLOWED_CIDRS",
+    "frontend.waf_rate_limit": "FRONTEND_WAF_RATE_LIMIT",
+    "frontend.min_capacity": "FRONTEND_MIN_CAPACITY",
+    "frontend.max_capacity": "FRONTEND_MAX_CAPACITY",
+    "frontend.cpu": "FRONTEND_CPU",
+    "frontend.memory_mib": "FRONTEND_MEMORY_MIB",
+    "frontend.session_ttl_hours": "FRONTEND_SESSION_TTL_HOURS",
+    "frontend.restrict_runtime_to_bff_vpc": "FRONTEND_RESTRICT_RUNTIME",
     "migration": "MIGRATION_ENABLED",
     "migration.source.platform": "MIGRATION_SOURCE_PLATFORM",
     "migration.source.image": "MIGRATION_SOURCE_IMAGE",
     "migration.source.build.context": "MIGRATION_BUILD_CONTEXT",
     "migration.source.build.dockerfile": "MIGRATION_BUILD_DOCKERFILE",
-    "migration.source.registry_secret_name": "MIGRATION_REGISTRY_SECRET_NAME",
+    "migration.source.registry_secret_name": "MIGRATION_REGISTRY_SECRET_NAME",  # pragma: allowlist secret
     "migration.source.port": "MIGRATION_PORT",
     "migration.source.invoke_path": "MIGRATION_INVOKE_PATH",
     "migration.source.health_path": "MIGRATION_HEALTH_PATH",
     "migration.source.trigger": "MIGRATION_TRIGGER",
     "migration.source.env": "MIGRATION_ENV_JSON",
-    "migration.source.secrets": "MIGRATION_SECRETS",
+    "migration.source.secrets": "MIGRATION_SECRETS",  # pragma: allowlist secret
     "migration.target.runtime": "MIGRATION_TARGET_RUNTIME",
     "migration.target.mode": "MIGRATION_TARGET_MODE",
     "migration.network.private_dependencies": "MIGRATION_PRIVATE_DEPENDENCIES",
     "migration.network.connectivity": "MIGRATION_CONNECTIVITY",
     "migration.network.dns_forwarders": "MIGRATION_DNS_FORWARDERS",
-    "migration.network.ca_bundle_secret_name": "MIGRATION_CA_BUNDLE_SECRET_NAME",
+    "migration.network.ca_bundle_secret_name": "MIGRATION_CA_BUNDLE_SECRET_NAME",  # pragma: allowlist secret
 }
 
 # Temporarily emitted for app.py/runtime_stack.py compatibility, but omitted
@@ -223,6 +248,7 @@ FOOTPRINT = {
     "agents.a2a",
     "security.networking",
     "security.cloudtrail_alerting",
+    "frontend.enabled",
     "use_cases",
 }
 
@@ -241,7 +267,7 @@ _FULL = {
         "tenant_id": "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
         "client_id": "9a8b7c6d-1234-4abc-9def-000111222333",
         "issuer_url": "https://login.microsoftonline.com/3f2b1c4d/v2.0",
-        "client_secret_name": "agentcore/idp-client-secret",
+        "client_secret_name": "agentcore/idp-client-secret",  # pragma: allowlist secret
     },
     "agents": {
         "model_id": "us.anthropic.claude-sonnet-4-6",
@@ -255,6 +281,13 @@ _FULL = {
         "org_id": "o-abcdefghij",
     },
     "observability": {"alarm_email": "ops@corp.internal"},
+    "frontend": {
+        "enabled": False,
+        "exposure": "private",
+        "domain_name": "hr.corp.internal",
+        "certificate_arn": "arn:aws:acm:us-east-1:111111111111:certificate/12345678-1234-1234-1234-123456789012",
+        "allowed_cidrs": ["10.0.0.0/8"],
+    },
     "migration": {
         "source": {
             "platform": "openshift",
@@ -269,7 +302,7 @@ _FULL = {
             "private_dependencies": ["jira.corp.internal"],
             "connectivity": "vpn",
             "dns_forwarders": ["10.0.0.2"],
-            "ca_bundle_secret_name": "ca",
+            "ca_bundle_secret_name": "ca",  # pragma: allowlist secret
         },
     },
 }

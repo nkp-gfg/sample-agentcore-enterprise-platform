@@ -207,6 +207,10 @@ class AuthStack(cdk.Stack):
             if has_external_idp
             else [cognito.UserPoolClientIdentityProvider.COGNITO]
         )
+        self._supported_providers = supported_providers
+        self._cognito_domain_url = (
+            f"https://{prefix}-{self.account}.auth.{self.region}.amazoncognito.com"
+        )
 
         # ── Resource Server (agentcore/invoke scope) ──
         resource_server = self.user_pool.add_resource_server(
@@ -498,6 +502,20 @@ class AuthStack(cdk.Stack):
         if self.is_direct:
             return self._direct_client_id
         return self._web_client.user_pool_client_id
+
+    @property
+    def supported_identity_providers(
+        self,
+    ) -> list[cognito.UserPoolClientIdentityProvider]:
+        if self.is_direct:
+            return []
+        return list(self._supported_providers)
+
+    @property
+    def cognito_domain_url(self) -> str:
+        if self.is_direct:
+            return ""
+        return self._cognito_domain_url
 
     @property
     def m2m_client_id(self) -> str:

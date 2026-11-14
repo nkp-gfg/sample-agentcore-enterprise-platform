@@ -808,6 +808,20 @@ build_context_args() {
     # Agent framework pattern (validated above; always set)
     CONTEXT_ARGS+=(-c "agent_pattern=${AGENT_PATTERN}")
 
+    # Hosted Web UI BFF (optional)
+    [ -n "${ENABLE_FRONTEND:-}" ]          && CONTEXT_ARGS+=(-c "enable_frontend=${ENABLE_FRONTEND}")
+    [ -n "${FRONTEND_EXPOSURE:-}" ]        && CONTEXT_ARGS+=(-c "frontend_exposure=${FRONTEND_EXPOSURE}")
+    [ -n "${FRONTEND_DOMAIN_NAME:-}" ]     && CONTEXT_ARGS+=(-c "frontend_domain_name=${FRONTEND_DOMAIN_NAME}")
+    [ -n "${FRONTEND_CERTIFICATE_ARN:-}" ] && CONTEXT_ARGS+=(-c "frontend_certificate_arn=${FRONTEND_CERTIFICATE_ARN}")
+    [ -n "${FRONTEND_ALLOWED_CIDRS:-}" ]   && CONTEXT_ARGS+=(-c "frontend_allowed_cidrs=${FRONTEND_ALLOWED_CIDRS}")
+    [ -n "${FRONTEND_WAF_RATE_LIMIT:-}" ]  && CONTEXT_ARGS+=(-c "frontend_waf_rate_limit=${FRONTEND_WAF_RATE_LIMIT}")
+    [ -n "${FRONTEND_MIN_CAPACITY:-}" ]    && CONTEXT_ARGS+=(-c "frontend_min_capacity=${FRONTEND_MIN_CAPACITY}")
+    [ -n "${FRONTEND_MAX_CAPACITY:-}" ]    && CONTEXT_ARGS+=(-c "frontend_max_capacity=${FRONTEND_MAX_CAPACITY}")
+    [ -n "${FRONTEND_CPU:-}" ]             && CONTEXT_ARGS+=(-c "frontend_cpu=${FRONTEND_CPU}")
+    [ -n "${FRONTEND_MEMORY_MIB:-}" ]      && CONTEXT_ARGS+=(-c "frontend_memory_mib=${FRONTEND_MEMORY_MIB}")
+    [ -n "${FRONTEND_SESSION_TTL_HOURS:-}" ] && CONTEXT_ARGS+=(-c "frontend_session_ttl_hours=${FRONTEND_SESSION_TTL_HOURS}")
+    [ -n "${FRONTEND_RESTRICT_RUNTIME:-}" ] && CONTEXT_ARGS+=(-c "frontend_restrict_runtime=${FRONTEND_RESTRICT_RUNTIME}")
+
     return 0
 }
 

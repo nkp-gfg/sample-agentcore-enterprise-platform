@@ -106,6 +106,25 @@ Who issues the tokens the platform trusts.
 | `observability.alarm_email` | str | `""` | `ALARM_EMAIL` | Inbox subscribed to the alarm topic (SNS sends a confirmation first). Empty = topic without subscription; placeholders are rejected. |
 | `observability.log_retention_days` | int | `30` | `LOG_RETENTION_DAYS` | CloudWatch log retention for platform-managed log groups. Supported values map to native CloudWatch periods: 30, 90, 180, or 365 days. |
 
+## `frontend:`
+
+Hosted Web UI BFF (WAF + public/private ALB + auto-scaling ECS Fargate + DynamoDB).
+
+| Key | Type | Default | Env override | Description |
+|---|---|---|---|---|
+| `frontend.enabled` ✦ | bool | `False` | `ENABLE_FRONTEND` | Deploy the hosted HR web BFF (`{project}-{environment}-frontend`): WAFv2 + public/private ALB + auto-scaling ECS Fargate + DynamoDB session/chat stores. Requires `security.networking: true`. |
+| `frontend.exposure` | one of: `private`, `public` | `'private'` | `FRONTEND_EXPOSURE` | `private` creates an Internal ALB in private subnets; `public` creates an Internet-facing ALB in public subnets behind AWS WAF. Switchable via config. |
+| `frontend.domain_name` | str | `""` | `FRONTEND_DOMAIN_NAME` | Optional custom hostname (requires `certificate_arn`) used for the BFF OAuth callback/logout URLs. |
+| `frontend.certificate_arn` | str | `""` | `FRONTEND_CERTIFICATE_ARN` | Optional ACM certificate ARN for HTTPS `:443` on the ALB (with `:80` → `:443` redirect). Required for HTTPS Cognito/Entra OAuth callbacks. |
+| `frontend.allowed_cidrs` | list of str | `[]` | `FRONTEND_ALLOWED_CIDRS` | Optional IPv4 CIDR allow-list enforced on both the ALB security group and a WAFv2 IPSet rule. When empty in `private` mode, ALB ingress is scoped to the VPC CIDR. |
+| `frontend.waf_rate_limit` | int (100–20000000) | `2000` | `FRONTEND_WAF_RATE_LIMIT` | Per-IP 5-minute request threshold enforced by the Regional AWS WAFv2 WebACL attached to the ALB. |
+| `frontend.min_capacity` | int (1–50) | `2` | `FRONTEND_MIN_CAPACITY` | Minimum ECS Fargate task count (and baseline desired count) across AZs. |
+| `frontend.max_capacity` | int (1–100) | `10` | `FRONTEND_MAX_CAPACITY` | Maximum ECS Fargate task count for CPU, memory, and ALB request-count burst scaling. |
+| `frontend.cpu` | one of: `256`, `512`, `1024`, `2048`, `4096` | `512` | `FRONTEND_CPU` | Fargate task CPU units (256, 512, 1024, 2048, or 4096). |
+| `frontend.memory_mib` | int (512–30720) | `1024` | `FRONTEND_MEMORY_MIB` | Fargate task memory in MiB (must be a valid combination for `frontend.cpu`). |
+| `frontend.session_ttl_hours` | int (1–168) | `12` | `FRONTEND_SESSION_TTL_HOURS` | DynamoDB TTL in hours for server-side BFF OAuth session records. |
+| `frontend.restrict_runtime_to_bff_vpc` | bool | `True` | `FRONTEND_RESTRICT_RUNTIME` | When true, attaches a `AWS::BedrockAgentCore::ResourcePolicy` locking AgentCore Runtime invocation to the VPC interface endpoint and excludes `WebClient` from the runtime JWT authorizer so agents are reachable only via the ECS BFF. |
+
 ## `migration:`
 
 Migrate an existing agent onto the platform.

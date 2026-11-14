@@ -1,0 +1,19 @@
+# Parity fixture: hosted HR Web BFF (WAF + ALB + ECS Fargate + DynamoDB)
+# with VPC-locked AgentCore Runtime. Synthesized by scripts/check-contract.sh.
+project: agentcore-workshop
+environment: dev
+region: us-east-1
+
+security:
+  networking: true
+  cloudtrail_alerting: true
+
+agents:
+  pattern: god-agent
+
+frontend:
+  enabled: true
+  exposure: private
+  min_capacity: 2
+  max_capacity: 10
+  restrict_runtime_to_bff_vpc: true
