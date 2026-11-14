@@ -321,3 +321,16 @@ def test_preflight_explains_when_cdk_on_path_but_missing_from_node_prefix(
     assert result == 1
     assert "cdk is on PATH, but `npx --no-install cdk` could not resolve" in output
     assert "npm install -g aws-cdk" in output
+
+
+def test_command_runner_blocks_secretsmanager_mutations_and_deploy_uses_stdin() -> None:
+    for verb in ("put-secret-value", "create-secret"):
+        result = CommandRunner().run(("aws", "secretsmanager", verb))
+        assert result.returncode == 1
+        assert result.stderr == "blocked non-read-only AWS command"
+
+    deploy_sh = (
+        Path(__file__).resolve().parents[1] / "scripts" / "deploy.sh"
+    ).read_text(encoding="utf-8")
+    assert '--secret-string "$value"' not in deploy_sh
+    assert "--secret-string file:///dev/stdin" in deploy_sh

@@ -17,7 +17,8 @@ from botocore.exceptions import ClientError
 # is worse than naming the fixture properly once.
 STUB_RESPONSE_VALUE = "stub-value-from-fake-urlopen"
 STUB_CLIENT_CONFIG_VALUE = "stub-value-from-fake-secrets-manager"
-STUB_SECRET_NAME = "agentcore/test/m2m"
+STUB_AUTH_INPUT = "stub-auth-input"
+STUB_SECRET_NAME = "agentcore/test/m2m"  # pragma: allowlist secret
 
 
 class FakeAwsClient:
@@ -49,8 +50,9 @@ def test_get_m2m_token_builds_url_and_basic_auth(monkeypatch):
 
     captured = {}
 
-    def fake_urlopen(req):
+    def fake_urlopen(req, timeout=None):
         captured["req"] = req
+        captured["timeout"] = timeout
         return io.BytesIO(json.dumps({"access_token": STUB_RESPONSE_VALUE}).encode())
 
     monkeypatch.setattr(utils.urllib.request, "urlopen", fake_urlopen)
@@ -58,6 +60,7 @@ def test_get_m2m_token_builds_url_and_basic_auth(monkeypatch):
     token = utils.get_m2m_token()
 
     assert token == STUB_RESPONSE_VALUE
+    assert captured["timeout"] == 15
     req = captured["req"]
     assert (
         req.full_url
@@ -91,7 +94,7 @@ def test_old_deployment_falls_back_to_describe_user_pool_client(monkeypatch):
     monkeypatch.setattr(
         utils.urllib.request,
         "urlopen",
-        lambda _req: io.BytesIO(
+        lambda _req, timeout=None: io.BytesIO(
             json.dumps({"access_token": STUB_RESPONSE_VALUE}).encode()
         ),
     )
@@ -127,3 +130,110 @@ def test_invoke_imports_without_aws_and_session_id_is_40_chars():
     sid = invoke.new_session_id()
     assert len(sid) == 40
     assert sid != invoke.new_session_id()
+
+
+def test_oidc_discovery_and_direct_token_reject_non_https_urls(monkeypatch):
+    import pytest
+
+    with pytest.raises(ValueError, match="https://"):
+        utils.oidc_discovery("http://login.example.com/v2.0")
+
+    class DirectAwsClient(FakeAwsClient):
+        def get_parameter(self, Name):
+            if Name.endswith("auth/mode"):
+                return {"Parameter": {"Value": "direct"}}
+            if Name.endswith("auth/issuer-url"):
+                return {"Parameter": {"Value": "https://login.example.com/v2.0"}}
+            if Name.endswith("auth/m2m-scope"):
+                return {"Parameter": {"Value": "api://client/.default"}}
+            return super().get_parameter(Name)
+
+    monkeypatch.setenv("PROJECT_NAME", "myproj")
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    monkeypatch.setenv("AWS_REGION", "[REDACTED]")
+    monkeypatch.setattr(utils.boto3, "client", lambda *a, **kw: DirectAwsClient())
+    monkeypatch.setattr(
+        utils.urllib.request,
+        "urlopen",
+        lambda _url, timeout=None: io.BytesIO(
+            json.dumps({"token_endpoint": "http://insecure.example/token"}).encode()
+        ),
+    )
+
+    with pytest.raises(ValueError, match="https://"):
+        utils.get_m2m_token()
+
+
+def test_no_redirect_opener_refuses_http_redirects():
+    import threading
+    import urllib.error
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    import pytest
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1/redirected")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), RedirectHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/start"
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            utils._NO_REDIRECT_OPENER.open(url, timeout=5)
+        assert exc_info.value.code == 302
+        assert "disabled" in str(exc_info.value.reason).lower()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_authenticate_cognito_decodes_urlsafe_jwt_payload(monkeypatch):
+    # Includes '-' and '_' in base64url encoding (0xfb, 0xff bytes) where
+    # standard base64.b64decode would fail, plus unpadded payload length % 4 != 0.
+    sub_value = "user-???"
+    header_b64 = (
+        base64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode("ascii")
+    )
+    payload_bytes = json.dumps({"sub": sub_value, "pad": "~?>?"}).encode("utf-8")
+    b64url_payload = (
+        base64.urlsafe_b64encode(payload_bytes).rstrip(b"=").decode("ascii")
+    )
+    assert "-" in b64url_payload or "_" in b64url_payload
+    id_token = f"{header_b64}.{b64url_payload}.sig"
+
+    class CognitoStub:
+        class exceptions:
+            class UserNotFoundException(Exception):
+                pass
+
+        def admin_get_user(self, **_kwargs):
+            return {}
+
+        def describe_user_pool_client(self, **_kwargs):
+            return {"UserPoolClient": {}}
+
+        def initiate_auth(self, **_kwargs):
+            return {
+                "AuthenticationResult": {
+                    "AccessToken": STUB_RESPONSE_VALUE,
+                    "IdToken": id_token,
+                }
+            }
+
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setattr(utils.boto3, "client", lambda *a, **kw: CognitoStub())
+
+    access, returned_id, user_id = utils.authenticate_cognito(
+        "pool-1", "client-1", "alice", STUB_AUTH_INPUT
+    )
+    assert access == STUB_RESPONSE_VALUE
+    assert returned_id == id_token
+    assert user_id == sub_value

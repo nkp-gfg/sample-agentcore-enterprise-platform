@@ -3,35 +3,59 @@ name: ASH Full Repository Scan
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, part2-without-opa-godbot-v3 ]
   schedule:
     - cron: '0 2 1 * *'
   workflow_dispatch:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   full-scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.10'
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          version: latest
 
       - name: Install ASH
-        run: pip install git+https://github.com/awslabs/automated-security-helper.git@v3.2.2
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          uv tool install "automated-security-helper @ git+https://github.com/awslabs/automated-security-helper.git@f356ca77388a4c58bcf25d904a21121ab8872a66"
+          uv tool dir --bin >> "${GITHUB_PATH}"
+
+      - name: Install ASH binary dependencies
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: ash dependencies install --tool actionlint --tool cfn-guard --tool gitleaks --tool opengrep --tool trivy
 
       - name: Run ASH full repository scan
+        shell: bash
         run: |
+          set -o pipefail
           cat > .ash_config.yaml << 'EOF'
+          global_settings:
+            suppressions:
+              - path: ".github/workflows/ash-security-comment.yml"
+                rule_id: "zizmor/dangerous-triggers"
+                reason: "Same-repo PR comment workflow reads artifacts without checking out PR code."
           reporters:
             markdown:
               enabled: true
@@ -39,24 +63,32 @@ jobs:
                 include_detailed_findings: true
                 max_detailed_findings: 1000
           EOF
-          ash --mode container --config .ash_config.yaml 2>&1 | tee ash-output.log
+          ash scan --mode local --no-progress --config .ash_config.yaml --fail-on-findings --fail-on-incomplete-scanners --no-allow-stale-content-db --exclude-scanners cfn-nag --exclude-scanners cdk-nag --exclude-scanners npm-audit --exclude-scanners grype --exclude-scanners syft 2>&1 | tee ash-output.log
         continue-on-error: true
 
       - name: Generate scan summary
         id: scan-summary
+        shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           COMMIT_SHA: ${{ github.sha }}
           ACTOR: ${{ github.actor }}
         run: |
           SUMMARY_FILE="ash-summary.md"
+          ASH_SUMMARY=".ash/ash_output/reports/ash.summary.md"
           echo "# ASH Security Scan - Full Repository Report" > "$SUMMARY_FILE"
           echo "" >> "$SUMMARY_FILE"
           echo "**Scan Date:** $(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >> "$SUMMARY_FILE"
           echo "**Trigger:** ${EVENT_NAME}" >> "$SUMMARY_FILE"
-          if [ -f "ash-output.log" ]; then
-            TABLE_START=$(grep -n "ASH Scan Results Summary" ash-output.log | head -1 | cut -d: -f1 || echo "0")
-            TABLE_END=$(grep -n "source-dir:" ash-output.log | head -1 | cut -d: -f1 || echo "0")
+          if [ -f "$ASH_SUMMARY" ]; then
+            echo "## Scanner Results" >> "$SUMMARY_FILE"
+            echo "" >> "$SUMMARY_FILE"
+            cat "$ASH_SUMMARY" >> "$SUMMARY_FILE"
+          elif [ -f "ash-output.log" ]; then
+            TABLE_START="$(grep -n "ASH Scan Results Summary" ash-output.log | head -1 | cut -d: -f1 || echo "0")"
+            TABLE_END="$(grep -n "source-dir:" ash-output.log | head -1 | cut -d: -f1 || echo "0")"
+            TABLE_START="${TABLE_START:-0}"
+            TABLE_END="${TABLE_END:-0}"
             if [ "$TABLE_START" != "0" ] && [ "$TABLE_END" != "0" ] && [ "$TABLE_END" -gt "$TABLE_START" ]; then
               echo "## Scanner Results" >> "$SUMMARY_FILE"
               echo "" >> "$SUMMARY_FILE"
@@ -65,16 +97,16 @@ jobs:
               sed -n "${TABLE_START},${TABLE_END}p" ash-output.log | \
               sed 's/\x1b\[[0-9;]*m//g' | grep "^│" | sed 's/│/|/g' >> "$SUMMARY_FILE"
             fi
-            if grep -q "Actionable findings detected!" ash-output.log; then
-              echo "has_findings=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "has_findings=false" >> "$GITHUB_OUTPUT"
-            fi
+          fi
+          if [ -f "ash-output.log" ] && grep -qE "Actionable findings detected!|ASH scan completed with findings" ash-output.log; then
+            echo "has_findings=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_findings=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload ASH results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ash-full-scan-${{ github.run_id }}
           path: |
@@ -85,7 +117,7 @@ jobs:
 
       - name: Create issue for critical findings (monthly scan)
         if: github.event_name == 'schedule' && steps.scan-summary.outputs.has_findings == 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |

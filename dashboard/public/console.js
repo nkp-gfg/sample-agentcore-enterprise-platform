@@ -25,9 +25,11 @@
   const state = {
     agents: [],
     interactive: false,
+    authRequired: false,
     healthChecked: false,
     busy: false,
     sessionId: "",
+    sessionToken: "",
     csrfToken: "",
     statusAvailable: false,
   };
@@ -189,7 +191,7 @@
         (agent) => agent.state === "deployed" && agent.customerFacing,
       );
     byId("newSession").disabled = state.busy;
-    byId("consoleRequired").hidden = state.interactive;
+    byId("consoleRequired").hidden = state.interactive || state.authRequired;
   }
 
   function appendMessage(role, text, meta) {
@@ -250,18 +252,52 @@
     try {
       const response = await fetch("/api/health", { cache: "no-store" });
       const data = await response.json();
-      state.csrfToken = typeof data.csrfToken === "string" ? data.csrfToken : "";
+      if (!response.ok || data.status !== "ok") {
+        state.interactive = false;
+        state.authRequired = false;
+        state.csrfToken = "";
+        state.healthChecked = true;
+        updateControls();
+        return;
+      }
+      if (!state.sessionToken) {
+        state.interactive = false;
+        state.authRequired = true;
+        state.csrfToken = "";
+        state.healthChecked = true;
+        updateControls();
+        return;
+      }
+      const sessionResponse = await fetch("/api/session", {
+        cache: "no-store",
+        headers: {
+          Authorization: `Bearer ${state.sessionToken}`,
+        },
+      });
+      const sessionData = await sessionResponse.json();
+      state.csrfToken =
+        typeof sessionData.csrfToken === "string" ? sessionData.csrfToken : "";
       state.interactive =
-        response.ok &&
-        data.interactive === true &&
-        data.localOnly === true &&
+        sessionResponse.ok &&
+        sessionData.interactive === true &&
+        sessionData.localOnly === true &&
         state.csrfToken.length >= 32;
+      state.authRequired = !state.interactive && sessionResponse.status === 401;
     } catch {
       state.interactive = false;
+      state.authRequired = false;
       state.csrfToken = "";
     }
     state.healthChecked = true;
     updateControls();
+  }
+
+  function setSessionToken(token) {
+    state.sessionToken = typeof token === "string" ? token.trim() : "";
+    state.csrfToken = "";
+    state.interactive = false;
+    state.healthChecked = false;
+    checkHealth();
   }
 
   async function submitPrompt(event) {
@@ -287,6 +323,7 @@
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${state.sessionToken}`,
           "X-EBA-CSRF": state.csrfToken,
         },
         body: JSON.stringify({
@@ -296,6 +333,11 @@
         }),
       });
       const result = await response.json();
+      if (response.status === 401) {
+        state.interactive = false;
+        state.authRequired = true;
+        state.csrfToken = "";
+      }
       if (!response.ok) throw new Error(result.error || "Agent invocation failed.");
       appendMessage("assistant", result.output || "The runtime returned no display text.", component);
       byId("traceProtocol").textContent = result.protocol || "—";
@@ -346,5 +388,5 @@
   resetTrace();
   checkHealth();
 
-  window.EbaConsole = { activate, update };
+  window.EbaConsole = { activate, setSessionToken, update };
 })();

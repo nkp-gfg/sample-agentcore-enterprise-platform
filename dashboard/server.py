@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import urlsplit
 
 import boto3
@@ -59,6 +60,22 @@ COMPONENTS = {
 }
 INTERACTIVE_COMPONENT = "orchestrator"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+STATIC_ASSETS = frozenset(
+    {
+        "/",
+        "/index.html",
+        "/app.js",
+        "/app.css",
+        "/console.js",
+        "/console.css",
+        "/graph.js",
+        "/graph.css",
+        "/favicon.svg",
+        "/status.json",
+    }
+)
+SOCKET_TIMEOUT_SECONDS = 15
+SESSION_TOKEN = secrets.token_urlsafe(32)
 CSRF_TOKEN = secrets.token_urlsafe(32)
 
 
@@ -149,8 +166,8 @@ def _stack_for_component(status: dict, component: str) -> dict | None:
     return stack if isinstance(stack, dict) else None
 
 
-def validate_invocation(payload: object, status: dict) -> tuple[str, str, str, str]:
-    """Validate browser input and derive the protocol on the server."""
+def _validate_invocation_input(payload: object) -> tuple[str, str, str]:
+    """Validate browser input shape without touching monitor status or AWS."""
     if not isinstance(payload, dict):
         raise RequestRejected(HTTPStatus.BAD_REQUEST, "Request body must be an object.")
     component = payload.get("component")
@@ -179,6 +196,12 @@ def validate_invocation(payload: object, status: dict) -> tuple[str, str, str, s
             HTTPStatus.BAD_REQUEST,
             "Session ID must be 33–128 ASCII characters.",
         )
+    return component, prompt, session_id
+
+
+def validate_invocation(payload: object, status: dict) -> tuple[str, str, str, str]:
+    """Validate browser input and derive the protocol on the server."""
+    component, prompt, session_id = _validate_invocation_input(payload)
     stack = _stack_for_component(status, component)
     outputs = stack.get("outputs", {}) if stack else {}
     if (
@@ -417,14 +440,15 @@ def parse_runtime_response(body: str) -> tuple[str, list[dict[str, str]]]:
 
 
 def _loopback_host(value: str, expected_port: int) -> str | None:
+    if not value:
+        return None
     try:
         parsed = urlsplit(f"//{value}")
-        port = parsed.port or expected_port
     except ValueError:
         return None
     valid = (
         parsed.hostname in LOOPBACK_HOSTS
-        and port == expected_port
+        and parsed.port == expected_port
         and not parsed.username
         and not parsed.password
         and not parsed.path
@@ -443,9 +467,10 @@ def _is_same_origin(
     host_authority: str,
     expected_port: int,
 ) -> bool:
+    if not value or not host_authority:
+        return False
     try:
         parsed = urlsplit(value)
-        port = parsed.port or (80 if parsed.scheme == "http" else 443)
     except ValueError:
         return False
     request_host = _loopback_host(host_authority, expected_port)
@@ -453,7 +478,8 @@ def _is_same_origin(
         parsed.scheme == "http"
         and request_host is not None
         and parsed.hostname == request_host
-        and port == expected_port
+        and parsed.port == expected_port
+        and parsed.netloc.lower() == host_authority.strip().lower()
         and not parsed.username
         and not parsed.password
         and parsed.path in {"", "/"}
@@ -462,26 +488,68 @@ def _is_same_origin(
     )
 
 
+class EbaConsoleServer(ThreadingHTTPServer):
+    """Threaded loopback HTTP server with bounded worker cleanup and session auth."""
+
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        handler_class,
+        *,
+        session_token: str | None = None,
+        csrf_token: str | None = None,
+    ):
+        self.session_token = session_token or secrets.token_urlsafe(32)
+        self.csrf_token = csrf_token or secrets.token_urlsafe(32)
+        super().__init__(server_address, handler_class)
+
+
 class EbaConsoleHandler(SimpleHTTPRequestHandler):
     """Static dashboard plus a same-origin invoke endpoint."""
 
     server_version = "AgentCoreEbaConsole/1"
+    timeout = SOCKET_TIMEOUT_SECONDS
+    extensions_map: ClassVar[dict[str, str]] = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".html": "text/html; charset=utf-8",
+        ".js": "application/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".svg": "image/svg+xml",
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(PUBLIC), **kwargs)
+
+    def setup(self) -> None:
+        if hasattr(self.request, "settimeout"):
+            self.request.settimeout(SOCKET_TIMEOUT_SECONDS)
+        super().setup()
+
+    def version_string(self) -> str:
+        return self.server_version
 
     def end_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; img-src 'self' data:; style-src 'self' "
-            "'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
-            "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+            "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+            "script-src 'self'; connect-src 'self'; object-src 'none'; "
+            "worker-src 'none'; base-uri 'none'; frame-ancestors 'none'; "
             "form-action 'none'",
         )
-        if self.path.startswith("/api/") or self.path.startswith("/status.json"):
+        path_only = self.path.split("?", 1)[0]
+        if path_only.startswith("/api/") or path_only == "/status.json":
             self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
@@ -492,47 +560,128 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
         ):
             raise RequestRejected(HTTPStatus.FORBIDDEN, "Loopback host required.")
 
-    def _send_json(self, status: HTTPStatus, value: dict) -> None:
+    def _require_session_token(self) -> None:
+        auth_header = self.headers.get("Authorization", "").strip()
+        scheme, _, token = auth_header.partition(" ")
+        expected = getattr(self.server, "session_token", SESSION_TOKEN)
+        stripped_token = token.strip()
+        if (
+            scheme.lower() != "bearer"
+            or not stripped_token
+            or not hmac.compare_digest(stripped_token, expected)
+        ):
+            raise RequestRejected(
+                HTTPStatus.UNAUTHORIZED,
+                "Valid session bearer token required.",
+            )
+
+    def _send_json(
+        self, status: HTTPStatus, value: dict, *, head_only: bool = False
+    ) -> None:
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if not head_only:
+            self.wfile.write(body)
 
-    def do_GET(self) -> None:
+    def _resolve_static_asset(self, path_only: str) -> Path:
+        public_root = PUBLIC.resolve()
+        translated = Path(self.translate_path(path_only))
+        target = translated / "index.html" if path_only == "/" else translated
+        resolved = target.resolve()
+        if not resolved.is_relative_to(public_root) or not resolved.is_file():
+            raise RequestRejected(HTTPStatus.NOT_FOUND, "Resource not found.")
+        return resolved
+
+    def _handle_read(self, *, head_only: bool) -> None:
         try:
             self._require_loopback_host()
-            if self.path.split("?", 1)[0] == "/api/health":
+            path_only = self.path.split("?", 1)[0]
+            if path_only == "/api/health":
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"status": "ok"},
+                    head_only=head_only,
+                )
+                return
+            if path_only == "/api/session":
+                self._require_session_token()
+                csrf_token = getattr(self.server, "csrf_token", CSRF_TOKEN)
                 self._send_json(
                     HTTPStatus.OK,
                     {
                         "interactive": True,
                         "localOnly": True,
                         "maxPromptChars": MAX_PROMPT_CHARS,
-                        "csrfToken": CSRF_TOKEN,
+                        "csrfToken": csrf_token,
                     },
+                    head_only=head_only,
                 )
                 return
-            super().do_GET()
+            if path_only not in STATIC_ASSETS:
+                raise RequestRejected(HTTPStatus.NOT_FOUND, "Resource not found.")
+            if path_only == "/status.json":
+                self._require_session_token()
+            self._resolve_static_asset(path_only)
+            if head_only:
+                super().do_HEAD()
+            else:
+                super().do_GET()
+        except RequestRejected as exc:
+            self._send_json(exc.status, {"error": exc.message}, head_only=head_only)
+
+    def _reject_method(self, method: str) -> None:
+        try:
+            self._require_loopback_host()
         except RequestRejected as exc:
             self._send_json(exc.status, {"error": exc.message})
+            return
+        self._send_json(
+            HTTPStatus.METHOD_NOT_ALLOWED,
+            {"error": f"{method} is not supported on this server."},
+        )
+
+    def do_GET(self) -> None:
+        self._handle_read(head_only=False)
+
+    def do_HEAD(self) -> None:
+        self._handle_read(head_only=True)
+
+    def do_OPTIONS(self) -> None:
+        self._reject_method("OPTIONS")
+
+    def do_PUT(self) -> None:
+        self._reject_method("PUT")
+
+    def do_DELETE(self) -> None:
+        self._reject_method("DELETE")
+
+    def do_PATCH(self) -> None:
+        self._reject_method("PATCH")
+
+    def do_TRACE(self) -> None:
+        self._reject_method("TRACE")
 
     def do_POST(self) -> None:
         acquired = False
         try:
             self._require_loopback_host()
-            if self.path != "/api/invoke":
+            path_only = self.path.split("?", 1)[0]
+            if path_only != "/api/invoke":
                 raise RequestRejected(HTTPStatus.NOT_FOUND, "Endpoint not found.")
+            self._require_session_token()
             if not _is_same_origin(
                 self.headers.get("Origin", ""),
                 self.headers.get("Host", ""),
                 self.server.server_port,
             ):
                 raise RequestRejected(HTTPStatus.FORBIDDEN, "Same origin required.")
+            expected_csrf = getattr(self.server, "csrf_token", CSRF_TOKEN)
             if not hmac.compare_digest(
                 self.headers.get("X-EBA-CSRF", ""),
-                CSRF_TOKEN,
+                expected_csrf,
             ):
                 raise RequestRejected(
                     HTTPStatus.FORBIDDEN,
@@ -564,18 +713,19 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
                     "Request body must be valid JSON.",
                 ) from exc
 
-            status = load_status()
-            component, prompt, session_id, runtime_arn = validate_invocation(
-                payload,
-                status,
-            )
-            region = validate_operator_identity(status, runtime_arn)
+            _validate_invocation_input(payload)
             if not INVOCATION_GATE.acquire():
                 raise RequestRejected(
                     HTTPStatus.TOO_MANY_REQUESTS,
                     "The local invocation limit is busy. Wait and retry.",
                 )
             acquired = True
+            status = load_status()
+            component, prompt, session_id, runtime_arn = validate_invocation(
+                payload,
+                status,
+            )
+            region = validate_operator_identity(status, runtime_arn)
             started = time.monotonic()
             protocol, raw = invoke_component(
                 component,
@@ -634,6 +784,23 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
         logger.info("%s - %s", self.client_address[0], fmt % args)
 
 
+def make_server(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8888,
+    session_token: str | None = None,
+    csrf_token: str | None = None,
+) -> EbaConsoleServer:
+    if host not in LOOPBACK_HOSTS:
+        raise ValueError(f"EBA Console refuses non-loopback host {host!r}")
+    return EbaConsoleServer(
+        (host, port),
+        EbaConsoleHandler,
+        session_token=session_token,
+        csrf_token=csrf_token,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the local AgentCore EBA Console")
     parser.add_argument("--port", type=int, default=8888)
@@ -641,8 +808,13 @@ def main() -> None:
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), EbaConsoleHandler)
-    print(f"EBA Console: http://127.0.0.1:{args.port}")
+    server = make_server(
+        port=args.port,
+        session_token=SESSION_TOKEN,
+        csrf_token=CSRF_TOKEN,
+    )
+    print(f"EBA Console: http://127.0.0.1:{args.port}/#token={server.session_token}")
+    print(f"Session token: {server.session_token}")
     print("Local operator access only. Press Ctrl+C to stop.")
     try:
         server.serve_forever()
