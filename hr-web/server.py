@@ -19,6 +19,8 @@ See ``custom-app-plan/phases.md`` § "Layer 3" and ``README.md`` for context.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import logging
 import os
@@ -31,6 +33,7 @@ from dataclasses import asdict, dataclass
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -46,6 +49,21 @@ logger = logging.getLogger("hr-web")
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_PORT = 8899
+
+STATIC_ASSETS = frozenset(
+    {
+        "/",
+        "/index.html",
+        "/styles.css",
+        "/a2ui.js",
+        "/hr-primitives.js",
+        "/hr-tool-adapter.js",
+        "/enterprise-catalog.js",
+        "/app.js",
+        "/hr-catalog.json",
+        "/favicon.svg",
+    }
+)
 
 # The four SSM parameter *leaves* this server is allowed to read. Any attempt
 # to serialize a value that was not loaded through one of these leaves is a
@@ -70,11 +88,15 @@ PUBLIC_CONFIG_FIELDS = frozenset(
     }
 )
 
+REGION_RE = re.compile(r"^[a-z]{2}(?:-[a-z]+)+-\d$")
 RUNTIME_ARN_RE = re.compile(
     r"^arn:aws:bedrock-agentcore:([a-z]{2}(?:-[a-z]+)+-\d):\d{12}:runtime/.+$"
 )
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{33,128}$")
 XRAY_TRACE_ID_RE = re.compile(r"^1-[0-9a-f]{8}-[0-9a-fA-F-]{24,36}$")
+JWT_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+JWT_CLOCK_SKEW_SECONDS = 30
+SOCKET_TIMEOUT_SECONDS = 15
 MAX_INVOKE_BODY_BYTES = 256 * 1024
 MAX_CONCURRENT_INVOCATIONS = 4
 REQUESTS_PER_MINUTE = 30
@@ -291,16 +313,105 @@ def _is_loopback_host(value: str, expected_port: int) -> bool:
     )
 
 
+def _decode_b64url_json(segment: str) -> dict | None:
+    if not segment or not JWT_SEGMENT_RE.match(segment):
+        return None
+    pad = "=" * ((4 - (len(segment) % 4)) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(segment + pad)
+        parsed = json.loads(raw.decode("utf-8"))
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _validate_bearer_jwt(auth_header: str, *, expected_issuer: str = "") -> None:
+    """Validate structural JWT claims locally before dialing AgentCore."""
+    scheme, _, raw_token = auth_header.strip().partition(" ")
+    token = raw_token.strip()
+    if scheme.lower() != "bearer" or not token:
+        raise RequestRejected(HTTPStatus.UNAUTHORIZED, "Bearer access token required.")
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise RequestRejected(
+            HTTPStatus.UNAUTHORIZED, "Bearer token must be a valid JWT."
+        )
+
+    header = _decode_b64url_json(parts[0])
+    claims = _decode_b64url_json(parts[1])
+    if header is None or claims is None or not JWT_SEGMENT_RE.match(parts[2]):
+        raise RequestRejected(
+            HTTPStatus.UNAUTHORIZED, "Bearer token must be a valid JWT."
+        )
+
+    exp = claims.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        raise RequestRejected(
+            HTTPStatus.UNAUTHORIZED, "Bearer token is missing numeric exp claim."
+        )
+    if exp <= time.time() - JWT_CLOCK_SKEW_SECONDS:
+        raise RequestRejected(HTTPStatus.UNAUTHORIZED, "Bearer token is expired.")
+
+    if expected_issuer:
+        iss = claims.get("iss")
+        if not isinstance(iss, str) or iss.rstrip("/") != expected_issuer.rstrip("/"):
+            raise RequestRejected(
+                HTTPStatus.UNAUTHORIZED, "Bearer token issuer mismatch."
+            )
+
+
+def _discover_cognito_auth_origin(config: PublicConfig) -> str | None:
+    """Best-effort lookup of the exact Cognito Hosted UI origin from OIDC discovery."""
+    parsed_issuer = urlsplit(config.issuer_url)
+    issuer_host = (parsed_issuer.hostname or "").lower()
+    if parsed_issuer.scheme != "https" or not (
+        issuer_host.startswith("cognito-idp.")
+        and issuer_host.endswith(".amazonaws.com")
+    ):
+        return None
+    disc_url = f"{config.issuer_url.rstrip('/')}/.well-known/openid-configuration"
+    try:
+        with urlopen(Request(disc_url, method="GET"), timeout=3) as resp:  # nosec B310 — https verified above
+            disc = json.loads(resp.read(64 * 1024).decode("utf-8"))
+    except Exception:  # noqa: BLE001 — fall back to regional Cognito wildcard
+        return None
+    if not isinstance(disc, dict):
+        return None
+    auth_ep = disc.get("authorization_endpoint")
+    if not isinstance(auth_ep, str):
+        return None
+    parsed_auth = urlsplit(auth_ep)
+    if parsed_auth.scheme == "https" and parsed_auth.netloc:
+        return f"https://{parsed_auth.netloc}"
+    return None
+
+
 class HrWebHandler(SimpleHTTPRequestHandler):
     """Static ``public/`` + a single ``GET /config.json`` endpoint."""
 
     server_version = "AgentCoreHrWeb/1"
+    extensions_map: ClassVar[dict[str, str]] = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".html": "text/html; charset=utf-8",
+        ".js": "application/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".svg": "image/svg+xml",
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(PUBLIC), **kwargs)
 
+    def setup(self) -> None:
+        self.request.settimeout(SOCKET_TIMEOUT_SECONDS)
+        super().setup()
+
+    def version_string(self) -> str:
+        return self.server_version
+
     # Every write verb is refused. The server reads SSM once at boot and never
-    # changes state afterwards, so GET + HEAD are the full surface.
+    # changes state afterwards, so GET + HEAD (+ POST /invocations) are the full surface.
     def do_POST(self) -> None:
         path_only = self.path.split("?", 1)[0]
         if path_only == "/invocations":
@@ -317,6 +428,15 @@ class HrWebHandler(SimpleHTTPRequestHandler):
     def do_PATCH(self) -> None:
         self._reject_mutation("PATCH")
 
+    def do_OPTIONS(self) -> None:
+        self._reject_mutation("OPTIONS")
+
+    def do_TRACE(self) -> None:
+        self._reject_mutation("TRACE")
+
+    def do_CONNECT(self) -> None:
+        self._reject_mutation("CONNECT")
+
     def _forward_invocations(self) -> None:
         """Same-origin loopback SSE passthrough to AgentCore Runtime.
 
@@ -329,24 +449,36 @@ class HrWebHandler(SimpleHTTPRequestHandler):
         try:
             self._require_loopback_host()
             origin = self.headers.get("Origin", "").strip()
-            if origin:
-                parsed_origin = urlsplit(origin)
-                host_header = self.headers.get("Host", "").strip()
-                if (
-                    parsed_origin.scheme != "http"
-                    or parsed_origin.hostname not in LOOPBACK_HOSTS
-                    or parsed_origin.port != self.server.server_port
-                    or parsed_origin.netloc.lower() != host_header.lower()
-                ):
-                    raise RequestRejected(
-                        HTTPStatus.FORBIDDEN, "Same-origin loopback Origin required."
-                    )
+            host_header = self.headers.get("Host", "").strip()
+            if not origin:
+                raise RequestRejected(
+                    HTTPStatus.FORBIDDEN, "Same-origin loopback Origin required."
+                )
+            parsed_origin = urlsplit(origin)
+            if (
+                parsed_origin.scheme != "http"
+                or parsed_origin.hostname not in LOOPBACK_HOSTS
+                or parsed_origin.port != self.server.server_port
+                or parsed_origin.netloc.lower() != host_header.lower()
+            ):
+                raise RequestRejected(
+                    HTTPStatus.FORBIDDEN, "Same-origin loopback Origin required."
+                )
+
+            config: PublicConfig | None = getattr(self.server, "public_config", None)
+            if config is None:
+                raise RequestRejected(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Server configuration is not loaded.",
+                )
+            if not REGION_RE.match(config.region):
+                raise RequestRejected(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Server region configuration is invalid.",
+                )
 
             auth_header = self.headers.get("Authorization", "").strip()
-            if not auth_header.lower().startswith("bearer ") or len(auth_header) < 16:
-                raise RequestRejected(
-                    HTTPStatus.UNAUTHORIZED, "Bearer access token required."
-                )
+            _validate_bearer_jwt(auth_header, expected_issuer=config.issuer_url)
 
             session_id = self.headers.get(
                 "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id", ""
@@ -388,13 +520,6 @@ class HrWebHandler(SimpleHTTPRequestHandler):
                     HTTPStatus.BAD_REQUEST, "Request body must be a JSON object."
                 )
 
-            config: PublicConfig | None = getattr(self.server, "public_config", None)
-            if config is None:
-                raise RequestRejected(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    "Server configuration is not loaded.",
-                )
-
             if gate is not None:
                 if not gate.acquire():
                     raise RequestRejected(
@@ -430,7 +555,6 @@ class HrWebHandler(SimpleHTTPRequestHandler):
                         "Content-Type",
                         upstream.headers.get("Content-Type", "text/event-stream"),
                     )
-                    self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     read_chunk = getattr(upstream, "read1", upstream.read)
                     while True:
@@ -485,6 +609,9 @@ class HrWebHandler(SimpleHTTPRequestHandler):
         """
         origins: list[str] = ["'self'"]
         config: PublicConfig | None = getattr(self.server, "public_config", None)
+        exact_cognito_origin: str | None = getattr(
+            self.server, "cognito_auth_origin", None
+        )
         if config is not None:
             parsed_issuer = urlsplit(config.issuer_url)
             if parsed_issuer.scheme == "https" and parsed_issuer.netloc:
@@ -497,11 +624,14 @@ class HrWebHandler(SimpleHTTPRequestHandler):
                     and issuer_host.endswith(".amazonaws.com")
                 ) or issuer_host.endswith(".amazoncognito.com")
                 if is_cognito_issuer:
-                    cognito_auth_origin = (
-                        f"https://*.auth.{config.region}.amazoncognito.com"
-                        if config.region
-                        else "https://*.amazoncognito.com"
-                    )
+                    if exact_cognito_origin:
+                        cognito_auth_origin = exact_cognito_origin
+                    else:
+                        cognito_auth_origin = (
+                            f"https://*.auth.{config.region}.amazoncognito.com"
+                            if config.region
+                            else "https://*.amazoncognito.com"
+                        )
                     if cognito_auth_origin not in origins:
                         origins.append(cognito_auth_origin)
         return " ".join(origins)
@@ -509,18 +639,25 @@ class HrWebHandler(SimpleHTTPRequestHandler):
     def end_headers(self) -> None:
         # Hardening headers mirror ``dashboard/server.py`` so a review covers
         # both loopback consoles the same way. ``connect-src`` allows only `'self'`
-        # plus the configured OIDC issuer origin (and regional Cognito Hosted UI).
+        # plus the configured OIDC issuer origin (and regional/exact Cognito Hosted UI).
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data:; "
             "style-src 'self'; script-src 'self'; "
             f"connect-src {self._connect_src_origins()}; "
+            "object-src 'none'; worker-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
         )
-        if self.path.startswith("/config.json"):
+        path_only = self.path.split("?", 1)[0]
+        if path_only in {"/config.json", "/invocations"}:
             self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
@@ -531,15 +668,30 @@ class HrWebHandler(SimpleHTTPRequestHandler):
         ):
             raise RequestRejected(HTTPStatus.FORBIDDEN, "Loopback host required.")
 
-    def _send_json(self, status: HTTPStatus, value: dict) -> None:
+    def _send_json(
+        self, status: HTTPStatus, value: dict, *, send_body: bool = True
+    ) -> None:
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if send_body:
+            self.wfile.write(body)
 
-    def do_GET(self) -> None:
+    def _validate_static_path(self, path_only: str) -> None:
+        if path_only not in STATIC_ASSETS:
+            raise RequestRejected(HTTPStatus.NOT_FOUND, "Resource not found.")
+        mapped_path = "/index.html" if path_only == "/" else path_only
+        resolved_public = PUBLIC.resolve()
+        try:
+            target = Path(self.translate_path(mapped_path)).resolve()
+        except OSError as exc:
+            raise RequestRejected(HTTPStatus.NOT_FOUND, "Resource not found.") from exc
+        if not target.is_relative_to(resolved_public) or not target.is_file():
+            raise RequestRejected(HTTPStatus.NOT_FOUND, "Resource not found.")
+
+    def _handle_read(self, *, head_only: bool) -> None:
         try:
             self._require_loopback_host()
             path_only = self.path.split("?", 1)[0]
@@ -550,11 +702,23 @@ class HrWebHandler(SimpleHTTPRequestHandler):
                         HTTPStatus.SERVICE_UNAVAILABLE,
                         "Server configuration is not loaded.",
                     )
-                self._send_json(HTTPStatus.OK, config.as_public_dict())
+                self._send_json(
+                    HTTPStatus.OK, config.as_public_dict(), send_body=not head_only
+                )
                 return
-            super().do_GET()
+            self._validate_static_path(path_only)
+            if head_only:
+                super().do_HEAD()
+            else:
+                super().do_GET()
         except RequestRejected as exc:
-            self._send_json(exc.status, {"error": exc.message})
+            self._send_json(exc.status, {"error": exc.message}, send_body=not head_only)
+
+    def do_GET(self) -> None:
+        self._handle_read(head_only=False)
+
+    def do_HEAD(self) -> None:
+        self._handle_read(head_only=True)
 
     def log_message(self, fmt: str, *args) -> None:
         logger.info("%s - %s", self.client_address[0], fmt % args)
@@ -563,6 +727,9 @@ class HrWebHandler(SimpleHTTPRequestHandler):
 class HrWebServer(ThreadingHTTPServer):
     """Threaded HTTP server that carries one frozen ``PublicConfig``."""
 
+    daemon_threads = True
+    block_on_close = False
+
     def __init__(
         self,
         server_address: tuple[str, int],
@@ -570,10 +737,14 @@ class HrWebServer(ThreadingHTTPServer):
         public_config: PublicConfig,
         *,
         invocation_gate: InvocationGate | None = None,
+        cognito_auth_origin: str | None = None,
     ):
+        if not REGION_RE.match(public_config.region):
+            raise ConfigError(f"Configured region is invalid: {public_config.region!r}")
         super().__init__(server_address, handler_class)
         self.public_config = public_config
         self.invocation_gate = invocation_gate or InvocationGate()
+        self.cognito_auth_origin = cognito_auth_origin
 
 
 def make_server(
@@ -582,6 +753,7 @@ def make_server(
     host: str = "127.0.0.1",
     port: int = DEFAULT_PORT,
     invocation_gate: InvocationGate | None = None,
+    cognito_auth_origin: str | None = None,
 ) -> HrWebServer:
     """Factory used by ``main`` and by the boundary tests."""
     if host not in LOOPBACK_HOSTS:
@@ -594,6 +766,7 @@ def make_server(
         HrWebHandler,
         public_config,
         invocation_gate=invocation_gate,
+        cognito_auth_origin=cognito_auth_origin,
     )
 
 
@@ -631,7 +804,10 @@ def main() -> None:
         print(f"hr-web could not start: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
-    server = make_server(config, port=args.port)
+    cognito_auth_origin = _discover_cognito_auth_origin(config)
+    server = make_server(
+        config, port=args.port, cognito_auth_origin=cognito_auth_origin
+    )
     print(f"hr-web UI: http://127.0.0.1:{args.port}")
     print("Facilitator access only. Press Ctrl+C to stop.")
     try:

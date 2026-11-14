@@ -839,24 +839,53 @@
     }
   }
 
+  function assertHttpsUrl(rawUrl, label) {
+    if (typeof rawUrl !== "string" || !rawUrl) {
+      throw new Error(`Discovery metadata missing ${label}.`);
+    }
+    let parsed;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      throw new Error(`Invalid ${label} URL.`);
+    }
+    if (parsed.protocol !== "https:") {
+      throw new Error(`${label} must use https:.`);
+    }
+    return parsed.toString();
+  }
+
+  function validateDiscoveryDocument(disc) {
+    if (!disc || typeof disc !== "object") {
+      throw new Error("Invalid OIDC discovery metadata.");
+    }
+    assertHttpsUrl(disc.authorization_endpoint, "authorization_endpoint");
+    assertHttpsUrl(disc.token_endpoint, "token_endpoint");
+    if (disc.revocation_endpoint != null && disc.revocation_endpoint !== "") {
+      assertHttpsUrl(disc.revocation_endpoint, "revocation_endpoint");
+    }
+    if (disc.end_session_endpoint != null && disc.end_session_endpoint !== "") {
+      assertHttpsUrl(disc.end_session_endpoint, "end_session_endpoint");
+    }
+    return disc;
+  }
+
   async function loadDiscovery() {
     const cached = sessionStorage.getItem(STORAGE_KEYS.discovery);
     if (cached) {
       try {
-        const obj = JSON.parse(cached);
-        if (obj && obj.authorization_endpoint && obj.token_endpoint) {
-          state.discovery = obj;
-          return;
-        }
-      } catch { /* refetch */ }
+        const obj = validateDiscoveryDocument(JSON.parse(cached));
+        state.discovery = obj;
+        return;
+      } catch {
+        try { sessionStorage.removeItem(STORAGE_KEYS.discovery); } catch { /* ignore */ }
+      }
     }
-    const url = `${state.config.issuer_url.replace(/\/$/, "")}/.well-known/openid-configuration`;
+    const issuerBase = assertHttpsUrl(state.config.issuer_url, "issuer_url").replace(/\/$/, "");
+    const url = `${issuerBase}/.well-known/openid-configuration`;
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`openid-configuration HTTP ${res.status}`);
-    const disc = await res.json();
-    if (!disc.authorization_endpoint || !disc.token_endpoint) {
-      throw new Error("Identity provider has no hosted-UI endpoints.");
-    }
+    const disc = validateDiscoveryDocument(await res.json());
     state.discovery = disc;
     sessionStorage.setItem(STORAGE_KEYS.discovery, JSON.stringify(disc));
   }
@@ -865,6 +894,7 @@
 
   async function beginSignIn() {
     await loadDiscovery();
+    const authUrl = assertHttpsUrl(state.discovery.authorization_endpoint, "authorization_endpoint");
     const verifier = b64urlEncode(window.crypto.getRandomValues(new Uint8Array(32)));
     const challenge = b64urlEncode(await sha256(verifier));
     const oauthState = b64urlEncode(window.crypto.getRandomValues(new Uint8Array(16)));
@@ -883,7 +913,7 @@
       code_challenge: challenge,
       code_challenge_method: "S256",
     });
-    location.assign(`${state.discovery.authorization_endpoint}?${query.toString()}`);
+    location.assign(`${authUrl}?${query.toString()}`);
   }
 
   function decodeClaims(jwt) {
@@ -893,7 +923,12 @@
     try {
       const pad = parts[1] + "=".repeat((4 - (parts[1].length % 4)) % 4);
       const bin = atob(pad.replaceAll("-", "+").replaceAll("_", "/"));
-      return JSON.parse(bin);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) {
+        bytes[i] = bin.charCodeAt(i);
+      }
+      const jsonText = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      return JSON.parse(jsonText);
     } catch { return null; }
   }
 
@@ -941,21 +976,28 @@
       if (!_audienceMatches(idClaims.aud, idClaims.azp, clientId)) {
         throw new Error("ID token audience mismatch.");
       }
-      if (typeof idClaims.exp === "number" && idClaims.exp <= nowSec - 30) {
+      if (typeof idClaims.exp !== "number" || !Number.isFinite(idClaims.exp)) {
+        throw new Error("ID token missing exp claim.");
+      }
+      if (idClaims.exp <= nowSec - 30) {
         throw new Error("ID token is expired.");
       }
     }
 
-    if (accessClaims) {
-      if (accessClaims.iss && !_issuerMatches(accessClaims.iss)) {
-        throw new Error("Access token issuer mismatch.");
-      }
-      if (accessClaims.client_id && accessClaims.client_id !== clientId) {
-        throw new Error("Access token client_id mismatch.");
-      }
-      if (typeof accessClaims.exp === "number" && accessClaims.exp <= nowSec - 30) {
-        throw new Error("Access token is expired.");
-      }
+    if (!accessClaims || typeof accessClaims !== "object") {
+      throw new Error("Access token is not a valid JWT.");
+    }
+    if (accessClaims.iss && !_issuerMatches(accessClaims.iss)) {
+      throw new Error("Access token issuer mismatch.");
+    }
+    if (accessClaims.client_id && accessClaims.client_id !== clientId) {
+      throw new Error("Access token client_id mismatch.");
+    }
+    if (typeof accessClaims.exp !== "number" || !Number.isFinite(accessClaims.exp)) {
+      throw new Error("Access token missing exp claim.");
+    }
+    if (accessClaims.exp <= nowSec - 30) {
+      throw new Error("Access token is expired.");
     }
 
     return { accessToken, idToken, accessClaims, idClaims };
@@ -1025,6 +1067,7 @@
       throw new Error("Sign-in state mismatch (possible forged redirect).");
     }
     await loadDiscovery();
+    const tokenUrl = assertHttpsUrl(state.discovery.token_endpoint, "token_endpoint");
     const body = new URLSearchParams({
       grant_type: "authorization_code",
       client_id: state.config.web_client_id,
@@ -1032,7 +1075,7 @@
       redirect_uri: REDIRECT_URI,
       code_verifier: verifier,
     });
-    const res = await fetch(state.discovery.token_endpoint, {
+    const res = await fetch(tokenUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
@@ -1045,12 +1088,13 @@
   async function refreshEstablishedSession(refreshToken) {
     if (!refreshToken || !state.config) return false;
     await loadDiscovery();
+    const tokenUrl = assertHttpsUrl(state.discovery.token_endpoint, "token_endpoint");
     const body = new URLSearchParams({
       grant_type: "refresh_token",
       client_id: state.config.web_client_id,
       refresh_token: refreshToken,
     });
-    const res = await fetch(state.discovery.token_endpoint, {
+    const res = await fetch(tokenUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
@@ -1138,6 +1182,12 @@
 
   async function revokeRefreshTokenBestEffort(discovery, clientId, refreshToken) {
     if (!discovery || !discovery.revocation_endpoint || !clientId || !refreshToken) return;
+    let revocationUrl;
+    try {
+      revocationUrl = assertHttpsUrl(discovery.revocation_endpoint, "revocation_endpoint");
+    } catch {
+      return;
+    }
     const controller = typeof AbortController === "function" ? new AbortController() : null;
     const timer = controller ? setTimeout(() => controller.abort(), 1200) : null;
     try {
@@ -1145,7 +1195,7 @@
         token: refreshToken,
         client_id: clientId,
       });
-      await fetch(discovery.revocation_endpoint, {
+      await fetch(revocationUrl, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: body.toString(),
@@ -1173,11 +1223,19 @@
     // `signoutRedirect({ extraQueryParams: { client_id, logout_uri } })`) so a
     // second persona (e.g. M1 after E1) can sign in cleanly without incognito.
     if (discovery && discovery.end_session_endpoint && clientId) {
-      const logoutQuery = new URLSearchParams({
-        client_id: clientId,
-        logout_uri: REDIRECT_URI,
-      });
-      location.assign(`${discovery.end_session_endpoint}?${logoutQuery.toString()}`);
+      let endSessionUrl = "";
+      try {
+        endSessionUrl = assertHttpsUrl(discovery.end_session_endpoint, "end_session_endpoint");
+      } catch {
+        endSessionUrl = "";
+      }
+      if (endSessionUrl) {
+        const logoutQuery = new URLSearchParams({
+          client_id: clientId,
+          logout_uri: REDIRECT_URI,
+        });
+        location.assign(`${endSessionUrl}?${logoutQuery.toString()}`);
+      }
     }
   }
 
@@ -3020,6 +3078,32 @@
     return window.HrCatalog.build(doc);
   }
 
+  const OAUTH_ERROR_MESSAGES = Object.freeze({
+    access_denied: "Sign-in was cancelled or denied by the identity provider.",
+    invalid_request: "Sign-in failed due to an invalid OAuth request.",
+    unauthorized_client: "This client is not authorized to sign in.",
+    unsupported_response_type: "The identity provider does not support this sign-in flow.",
+    invalid_scope: "Requested sign-in scope was rejected by the identity provider.",
+    server_error: "The identity provider encountered an error. Please try again.",
+    temporarily_unavailable: "The identity provider is temporarily unavailable. Please try again.",
+    login_required: "Interactive sign-in is required. Please try signing in again.",
+    interaction_required: "Additional verification is required by the identity provider.",
+  });
+
+  function formatOAuthCallbackError(errorCode, hasErrorDescription) {
+    const code = String(errorCode || "").trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(OAUTH_ERROR_MESSAGES, code)) {
+      return OAUTH_ERROR_MESSAGES[code];
+    }
+    if (/^[a-z0-9_.-]{1,48}$/.test(code)) {
+      return `Sign-in failed (${code}). Please try signing in again.`;
+    }
+    if (hasErrorDescription) {
+      return "Sign-in was rejected by the identity provider. Please try signing in again.";
+    }
+    return "Sign-in failed. Please try signing in again.";
+  }
+
   async function start() {
     purgeLegacyPersistentStorage();
     purgePrefixedKeys(window.sessionStorage, [STORAGE_KEYS.historyPrefix]);
@@ -3054,12 +3138,13 @@
     const params = new URLSearchParams(location.search);
     const code = params.get("code");
     const returnedState = params.get("state");
-    const authErr = params.get("error_description") || params.get("error");
-    if (authErr) {
+    const oauthErrCode = params.get("error");
+    const oauthErrDesc = params.get("error_description");
+    if (oauthErrCode || oauthErrDesc) {
       history.replaceState(null, "", REDIRECT_URI);
       renderIdentity();
       updateControls();
-      showLoginError(`Sign-in failed: ${authErr}`);
+      showLoginError(formatOAuthCallbackError(oauthErrCode, Boolean(oauthErrDesc)));
       return;
     }
     if (code) {
