@@ -13,6 +13,10 @@ grep -q '^export AWS_PAGER=""$' "$SCRIPT_DIR/deploy.sh" \
     || fail "deploy.sh must disable the interactive AWS CLI pager"
 echo "PASS: deploy output cannot be trapped by the AWS CLI pager"
 
+grep -q '^unset PREFIX$' "$SCRIPT_DIR/deploy.sh" \
+    || fail "deploy.sh must clear any exported PREFIX before invoking npm/npx"
+echo "PASS: exported PREFIX cannot hijack npm/npx global prefix"
+
 # Sandbox: pull ONLY the config vars + functions out of deploy.sh (no main flow).
 # shellcheck disable=SC2034  # used by the eval'd CONFIG_FILE= line below
 PROJECT_DIR="$TMP"

@@ -8,6 +8,7 @@ never calls an AWS mutation API and never prints a secret value.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess  # nosec B404 — fixed argv, no shell, exact AWS read allow-list
@@ -47,6 +48,9 @@ class CommandRunner:
             and (args[1], args[2]) not in READ_ONLY_AWS_CALLS
         ):
             return CommandResult(1, stderr="blocked non-read-only AWS command")
+        # npm/@npmcli/config treats process.env.PREFIX as npm's global install
+        # prefix, breaking `npx --no-install cdk` if the caller exported PREFIX.
+        env = {key: value for key, value in os.environ.items() if key != "PREFIX"}
         try:
             completed = subprocess.run(  # nosec B603, B607 — see class contract
                 list(args),
@@ -54,6 +58,7 @@ class CommandRunner:
                 capture_output=True,
                 text=True,
                 timeout=20,
+                env=env,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return CommandResult(1, stderr=type(exc).__name__)
@@ -156,6 +161,13 @@ class Preflight:
             result = self.runner.run(("npx", "--no-install", "cdk", "--version"))
             if result.returncode == 0:
                 self.reporter.pass_("AWS CDK", result.stdout.splitlines()[0])
+            elif self.which("cdk"):
+                self.reporter.fail(
+                    "AWS CDK",
+                    "cdk is on PATH, but `npx --no-install cdk` could not resolve "
+                    "`aws-cdk` in the active Node prefix; run `npm install -g aws-cdk` "
+                    "before build",
+                )
             else:
                 self.reporter.fail(
                     "AWS CDK",

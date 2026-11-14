@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -294,3 +295,30 @@ use_cases:
     assert "requires security.egress_filter: true" in output
     assert "requires security.cedar.enabled: true and mode: ENFORCE" in output
     _assert_read_only_aws_calls(runner.calls)
+
+
+def test_command_runner_strips_exported_prefix_env_var(monkeypatch) -> None:
+    monkeypatch.setenv("PREFIX", "agentcore-production-prod")
+
+    result = CommandRunner().run(
+        (sys.executable, "-c", "import os; print(os.environ.get('PREFIX', 'UNSET'))")
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "UNSET"
+
+
+def test_preflight_explains_when_cdk_on_path_but_missing_from_node_prefix(
+    tmp_path: Path, capsys
+) -> None:
+    runner = FakeRunner(
+        {("npx", "--no-install", "cdk"): CommandResult(1, stderr="missing")}
+    )
+
+    result = _preflight(_manifest(tmp_path), runner, tmp_path).run()
+
+    output = capsys.readouterr().out
+    assert result == 1
+    assert "cdk is on PATH, but `npx --no-install cdk` could not resolve" in output
+    assert "npm install -g aws-cdk" in output
+

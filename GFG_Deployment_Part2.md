@@ -27,13 +27,13 @@ Part 1, Step 15, passed on this checkout. The virtualenv is active (`.venv/bin/p
 
 ### Read the stack prefix from `platform.yaml`
 
-Do not export `AWS_REGION` (`platform.yaml` owns the deploy Region). Export `PREFIX`, `SSM`, and `REGION` for the CLI commands below:
+Do not export `AWS_REGION` (`platform.yaml` owns the deploy Region). Set `PREFIX` as a shell variable (do not `export` it — `npm` and `npx` treat `process.env.PREFIX` as their global install prefix) and export `SSM` and `REGION` for the CLI commands below:
 
 ```bash
 eval "$(.venv/bin/python - <<'PY'
 from infra_utils.platform_config import load_platform_config
 cfg = load_platform_config("platform.yaml")
-print(f"export PREFIX={cfg.project}-{cfg.environment}")
+print(f"unset PREFIX; PREFIX={cfg.project}-{cfg.environment}")
 print(f"export SSM=/{cfg.project}/{cfg.environment}")
 print(f"export REGION={cfg.region}")
 PY

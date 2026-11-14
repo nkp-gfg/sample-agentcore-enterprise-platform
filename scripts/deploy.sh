@@ -6,6 +6,13 @@ set -euo pipefail
 # screens (observed during the live G0 migration).
 export AWS_PAGER=""
 
+# npm/@npmcli/config reads process.env.PREFIX as npm's global install prefix.
+# If a caller exported PREFIX in their shell (for example for stack-name CLI
+# snippets), `npx cdk` and `npm install -g aws-cdk` look under ./$PREFIX/lib
+# instead of Node's global prefix and fail. Clear any inherited export here so
+# deploy.sh's own PREFIX assignment below stays shell-local.
+unset PREFIX
+
 # ── Bash version check (must run before any bash-4 syntax like `declare -A`) ──
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     echo "ERROR: This script requires bash 4 or newer (you are running bash ${BASH_VERSION})." >&2

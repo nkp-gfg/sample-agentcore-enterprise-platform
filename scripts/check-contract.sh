@@ -9,6 +9,8 @@
 # No AWS credentials needed: account is a placeholder and the networking VPC's
 # AZ lookup is pre-seeded via cdk.context.json (docs/TESTING.md A7b).
 set -euo pipefail
+# Prevent an exported shell PREFIX from overriding npm/npx's global prefix.
+unset PREFIX
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO"
