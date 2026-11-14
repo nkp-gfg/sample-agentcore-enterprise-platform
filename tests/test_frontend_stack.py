@@ -239,6 +239,14 @@ def test_private_frontend_synthesizes_internal_alb_waf_fargate_scaling_and_dynam
     assert scalable[0]["Properties"]["MaxCapacity"] == 10
     assert len(_resources(fe_tpl, "AWS::ApplicationAutoScaling::ScalingPolicy")) == 3
 
+    ecs_svcs = _resources(fe_tpl, "AWS::ECS::Service")
+    assert len(ecs_svcs) == 1
+    assert (
+        ecs_svcs[0]["Properties"]["DeploymentConfiguration"]["MinimumHealthyPercent"]
+        == 100
+    )
+    assert ecs_svcs[0]["Properties"]["DeploymentConfiguration"]["MaximumPercent"] == 200
+
     # 4. DynamoDB BffSessions + ChatSessions tables retained & CMK-encrypted.
     tables = _resources(fe_tpl, "AWS::DynamoDB::Table")
     assert len(tables) == 2

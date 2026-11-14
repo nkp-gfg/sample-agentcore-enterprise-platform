@@ -686,6 +686,8 @@ class FrontendStack(cdk.Stack):
             security_groups=[ecs_sg],
             assign_public_ip=False,
             circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True),
+            min_healthy_percent=100,
+            max_healthy_percent=200,
             health_check_grace_period=cdk.Duration.seconds(60),
         )
         service.attach_to_application_target_group(target_group)
