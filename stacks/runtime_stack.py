@@ -380,6 +380,9 @@ class RuntimeStack(cdk.Stack):
             assumed_by=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
             role_name=f"{prefix}-{component_name}-runtime-role",
         )
+        oauth2_provider_name = (extra_env_vars or {}).get(
+            "GATEWAY_CREDENTIAL_PROVIDER_NAME"
+        ) or f"{prefix}-gateway-m2m"
         self._attach_runtime_permissions(
             runtime_role,
             repo.repository_arn,
@@ -389,6 +392,8 @@ class RuntimeStack(cdk.Stack):
             gateway_arn=gateway_arn,
             memory_arn=memory_arn,
             kms_key_arn=kms_key_arn,
+            workload_identity_name=rt_name,
+            oauth2_provider_name=oauth2_provider_name,
         )
         if migration_secret_names:
             # The adapter resolves each declared migration secret into the
@@ -690,6 +695,8 @@ class RuntimeStack(cdk.Stack):
         gateway_arn: str = "",
         memory_arn: str = "",
         kms_key_arn: str = "",
+        workload_identity_name: str = "",
+        oauth2_provider_name: str = "",
     ) -> None:
         """Attach the standard AgentCore Runtime permissions to a role.
 
@@ -781,11 +788,11 @@ class RuntimeStack(cdk.Stack):
                 actions=["ssm:GetParameter", "ssm:GetParameters"],
                 resources=[f"arn:aws:ssm:*:*:parameter/{project_name}/*"],
             ),
-            # AgentCore service access (A2A, browser, identity tokens). Still
-            # "*": the A2A targets do not exist yet when this role is built,
-            # and the browser and workload-token actions are not scoped by the
-            # shipped patterns. Gateway and Memory are split out below so they
-            # can be pinned to this deployment's ARNs.
+            # AgentCore service access (A2A, browser). Still "*": the A2A
+            # targets do not exist yet when this role is built, and the browser
+            # actions are not scoped by the shipped patterns. Gateway, Memory,
+            # and Identity credential-vault actions are split out so they can
+            # be pinned to this deployment's ARNs.
             iam.PolicyStatement(
                 sid="AgentCoreAccess",
                 actions=[
@@ -794,9 +801,6 @@ class RuntimeStack(cdk.Stack):
                     "bedrock-agentcore:StartBrowserSession",
                     "bedrock-agentcore:StopBrowserSession",
                     "bedrock-agentcore:ConnectBrowserAutomationStream",
-                    "bedrock-agentcore:GetResourceOauth2Token",
-                    "bedrock-agentcore:GetWorkloadAccessToken",
-                    "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
                 ],
                 resources=["*"],
             ),
@@ -926,3 +930,22 @@ class RuntimeStack(cdk.Stack):
             ]
         for stmt in statements:
             role.add_to_policy(stmt)
+
+        # Scope workload-identity and OAuth2 credential-provider vault actions
+        # using the control-library least-privilege policy instead of "*".
+        stack = cdk.Stack.of(role)
+        scoped_identity_doc = load_control(
+            "iam.identity-credential-provider-scoped",
+            {
+                "region": stack.region,
+                "account_id": stack.account,
+                "workload_identity_name": workload_identity_name or role.role_name,
+                "oauth2_provider_name": oauth2_provider_name
+                or f"{project_name}-gateway-m2m",
+            },
+        )
+        for raw_stmt in scoped_identity_doc["Statement"]:
+            if raw_stmt.get("Sid") == "DenyWorkloadTokenForUserId":
+                # Already emitted explicitly above as DenyWorkloadTokenForUserId.
+                continue
+            role.add_to_policy(iam.PolicyStatement.from_json(raw_stmt))

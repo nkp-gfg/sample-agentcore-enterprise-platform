@@ -13,11 +13,22 @@ ENV DOCKER_CONTAINER=1 \
     PYTHONUNBUFFERED=1 \
     CLAUDE_CODE_USE_BEDROCK=1
 
-# Install Node.js for claude-code CLI
+# Install Node.js for claude-code CLI via checksum-verified official tarball
+ARG NODE_VERSION=22.23.5
+ARG NODE_SHA256_ARM64=2babb9eb5264860d540849f4b064a6fbdebcdc323657d9d382ce23d313fd5e09
+ARG NODE_SHA256_X64=cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8
 RUN apt-get update && \
-    apt-get install -y curl && \
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && \
-    apt-get install -y nodejs && \
+    apt-get install -y --no-install-recommends curl ca-certificates xz-utils && \
+    arch="$(dpkg --print-architecture)" && \
+    case "$arch" in \
+      arm64) node_arch="arm64"; node_sha="${NODE_SHA256_ARM64}" ;; \
+      amd64) node_arch="x64"; node_sha="${NODE_SHA256_X64}" ;; \
+      *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" -o /tmp/node.tar.xz && \
+    echo "${node_sha}  /tmp/node.tar.xz" | sha256sum -c - && \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && \
+    rm -f /tmp/node.tar.xz && \
     rm -rf /var/lib/apt/lists/*
 
 # Install claude-code globally

@@ -12,6 +12,23 @@ ClaudeAgentOptions.
 
 from claude_agent_sdk import AgentDefinition
 
+DISALLOWED_TOOLS: tuple[str, ...] = (
+    "Bash",
+    "Write",
+    "NotebookEdit",
+    "Edit",
+    "WebFetch",
+    "Read",
+    "Glob",
+    "Grep",
+    "EnterWorktree",
+    "Skill",
+    "TodoWrite",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+)
+
 
 def get_subagent_definitions(mcp_servers: dict) -> dict[str, AgentDefinition]:
     """Build subagent definitions for task delegation.
@@ -44,10 +61,8 @@ CRITICAL SESSION MANAGEMENT:
                 "mcp__codeint__execute_code",
                 "mcp__codeint__execute_command",
                 "mcp__gateway__*",
-                "Read",
-                "Grep",
-                "Glob",
             ],
+            disallowedTools=list(DISALLOWED_TOOLS),
             model="sonnet",
         ),
     }

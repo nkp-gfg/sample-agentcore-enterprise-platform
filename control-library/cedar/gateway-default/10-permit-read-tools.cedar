@@ -15,7 +15,7 @@
 // To extend: add each read/low-risk tool's action to the list below. Do NOT add write,
 // update, delete, or payment tools here — leaving them out keeps them denied by default.
 permit(
-  principal,
+  principal is AgentCore::OAuthUser,
   action in [AgentCore::Action::"<<read_action>>"],
   resource == AgentCore::Gateway::"<<gateway_arn>>"
 );

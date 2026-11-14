@@ -122,10 +122,12 @@ async def invocations(payload, context: RequestContext):
             message_chunk, _metadata = event
             yield message_chunk.model_dump()
 
-    except Exception as e:
-        error_msg = str(e) if str(e) else f"{type(e).__name__}: {e!r}"
+    except Exception:
         logger.exception("Agent run failed")
-        yield {"status": "error", "error": error_msg}
+        yield {
+            "status": "error",
+            "error": "An internal error occurred. Please try again.",
+        }
 
 
 if __name__ == "__main__":

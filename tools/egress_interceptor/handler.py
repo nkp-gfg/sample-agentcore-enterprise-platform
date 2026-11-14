@@ -61,6 +61,10 @@ class GuardrailBlocked(Exception):
     """Raised when the guardrail hard-blocks content (e.g. prompt injection, blocked PII)."""
 
 
+class GuardrailUnavailable(Exception):
+    """Raised when the Bedrock Guardrail call fails so the interceptor fails closed."""
+
+
 def _apply_guardrail(text: str, source: str) -> str:
     """Run the guardrail over one text value. Returns masked text, or raises GuardrailBlocked.
 
@@ -69,12 +73,16 @@ def _apply_guardrail(text: str, source: str) -> str:
     if not text.strip() or not _GUARDRAIL_ID:
         return text
 
-    resp = _bedrock.apply_guardrail(
-        guardrailIdentifier=_GUARDRAIL_ID,
-        guardrailVersion=_GUARDRAIL_VERSION,
-        source=source,
-        content=[{"text": {"text": text}}],
-    )
+    try:
+        resp = _bedrock.apply_guardrail(
+            guardrailIdentifier=_GUARDRAIL_ID,
+            guardrailVersion=_GUARDRAIL_VERSION,
+            source=source,
+            content=[{"text": {"text": text}}],
+        )
+    except Exception as exc:
+        logger.exception("apply_guardrail failed (%s)", source)
+        raise GuardrailUnavailable("egress guardrail unavailable") from exc
 
     if resp.get("action") != "GUARDRAIL_INTERVENED":
         return text
@@ -266,3 +274,20 @@ def handler(event, context):
         return _on_response(request_body, response)
     except GuardrailBlocked as exc:
         return _blocked_response(point, str(exc), request_body)
+    except GuardrailUnavailable:
+        logger.error("egress guardrail unavailable (%s); failing closed", point)
+        return _output(
+            transformedGatewayResponse={
+                "statusCode": 200,
+                "body": {
+                    "jsonrpc": "2.0",
+                    "id": request_body.get("id"),
+                    "result": {
+                        "content": [
+                            {"type": "text", "text": "Egress guardrail unavailable."}
+                        ],
+                        "isError": True,
+                    },
+                },
+            }
+        )

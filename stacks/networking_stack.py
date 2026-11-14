@@ -82,6 +82,32 @@ class NetworkingStack(cdk.Stack):
             description="HTTPS to AWS service endpoints and NAT egress",
         )
 
+        retention_by_days = {
+            30: logs.RetentionDays.ONE_MONTH,
+            90: logs.RetentionDays.THREE_MONTHS,
+            180: logs.RetentionDays.SIX_MONTHS,
+            365: logs.RetentionDays.ONE_YEAR,
+        }
+        if log_retention_days not in retention_by_days:
+            raise ValueError("log_retention_days must be one of 30, 90, 180, or 365")
+
+        flow_log_group = logs.LogGroup(
+            self,
+            "VpcFlowLogGroup",
+            log_group_name=f"/aws/vpc/{prefix}-flow-logs",
+            retention=retention_by_days[log_retention_days],
+            removal_policy=(
+                cdk.RemovalPolicy.RETAIN if retain_data else cdk.RemovalPolicy.DESTROY
+            ),
+        )
+        ec2.FlowLog(
+            self,
+            "VpcFlowLog",
+            resource_type=ec2.FlowLogResourceType.from_vpc(self.vpc),
+            destination=ec2.FlowLogDestination.to_cloud_watch_logs(flow_log_group),
+            traffic_type=ec2.FlowLogTrafficType.ALL,
+        )
+
         if enable_vpc_endpoints:
             self.vpc.add_interface_endpoint(
                 "BedrockEndpoint",
@@ -173,16 +199,6 @@ class NetworkingStack(cdk.Stack):
 
         self.migration_dependency_probe = None
         if migration_private_dependencies:
-            retention_by_days = {
-                30: logs.RetentionDays.ONE_MONTH,
-                90: logs.RetentionDays.THREE_MONTHS,
-                180: logs.RetentionDays.SIX_MONTHS,
-                365: logs.RetentionDays.ONE_YEAR,
-            }
-            if log_retention_days not in retention_by_days:
-                raise ValueError(
-                    "log_retention_days must be one of 30, 90, 180, or 365"
-                )
             probe_log_group = logs.LogGroup(
                 self,
                 "MigrationDependencyProbeLogs",

@@ -62,12 +62,53 @@ def handler(event: dict, context) -> dict:
     if not isinstance(requested, str) or not requested.strip():
         requested = caller
 
-    # Read the current row (no salary column) so the policy checks the live
-    # `manager_id` from PostgreSQL.
+    # Read the current row (no salary column), evaluate policy, and read
+    # salaries + re-verify active/manager state inside ONE hr_reader
+    # transaction/connection to eliminate TOCTOU between policy check
+    # and salary fetch.
     try:
         with connect("hr_reader") as connection, connection.cursor() as cursor:
             cursor.execute(_SELECT_TARGET_SQL, (requested,))
             row = cursor.fetchone()
+
+            if row is None:
+                target_status, target_manager, _full_name = ("unknown", None, None)
+            else:
+                target_status, target_manager, _full_name = row
+
+            decision = evaluate_policy(
+                {
+                    "action": _ACTION,
+                    "caller_employee_id": caller,
+                    "requested_employee_id": requested,
+                    "target_status": target_status,
+                    "target_manager_id": target_manager,
+                    "agent_id": agent_id,
+                }
+            )
+            reason_code = decision["reason_code"]
+
+            if not decision["allow"]:
+                log_decision(
+                    action=_ACTION,
+                    caller_employee_id=caller,
+                    target_employee_id=requested,
+                    allow=False,
+                    reason_code=reason_code,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    policy_version=decision["policy_version"],
+                    decided_by_layer="policy",
+                )
+                return build_response(authorized=False, reason_code=reason_code)
+
+            # Only after the policy allows do we read the amount. Reading it earlier
+            # and discarding it on deny would still leak a figure into memory
+            # and, eventually, into a trace.
+            cursor.execute(_SELECT_SALARY_SQL, (requested,))
+            amount_row = cursor.fetchone()
+            cursor.execute(_SELECT_TARGET_SQL, (requested,))
+            target_row = cursor.fetchone()
     except DataUnavailable:
         log_decision(
             action=_ACTION,
@@ -82,62 +123,55 @@ def handler(event: dict, context) -> dict:
         )
         return build_response(authorized=False, reason_code="DATA_UNAVAILABLE")
 
-    if row is None:
-        target_status, target_manager, _full_name = ("unknown", None, None)
-    else:
-        target_status, target_manager, _full_name = row
+    if amount_row is None or target_row is None:
+        # Salary row missing after policy already allowed on the employee
+        # row: treat as data gap, never fall through as an allow with
+        # null fields.
+        log_decision(
+            action=_ACTION,
+            caller_employee_id=caller,
+            target_employee_id=requested,
+            allow=False,
+            reason_code="DATA_UNAVAILABLE",
+            agent_id=agent_id,
+            session_id=session_id,
+            policy_version="",
+            decided_by_layer="tool",
+        )
+        return build_response(authorized=False, reason_code="DATA_UNAVAILABLE")
 
-    decision = evaluate_policy(
-        {
-            "action": _ACTION,
-            "caller_employee_id": caller,
-            "requested_employee_id": requested,
-            "target_status": target_status,
-            "target_manager_id": target_manager,
-            "agent_id": agent_id,
-        }
-    )
-    reason_code = decision["reason_code"]
+    status, manager_id, full_name = target_row
+    if status != "active" or (requested != caller and manager_id != caller):
+        log_decision(
+            action=_ACTION,
+            caller_employee_id=caller,
+            target_employee_id=requested,
+            allow=False,
+            reason_code="NOT_AUTHORIZED",
+            agent_id=agent_id,
+            session_id=session_id,
+            policy_version=decision["policy_version"],
+            decided_by_layer="tool",
+        )
+        return build_response(authorized=False, reason_code="NOT_AUTHORIZED")
+
+    base_salary, currency = amount_row
+    try:
+        amount_number = float(base_salary)
+    except (TypeError, ValueError) as exc:
+        raise HRToolError("salary row is not numeric") from exc
 
     log_decision(
         action=_ACTION,
         caller_employee_id=caller,
         target_employee_id=requested,
-        allow=decision["allow"],
+        allow=True,
         reason_code=reason_code,
         agent_id=agent_id,
         session_id=session_id,
         policy_version=decision["policy_version"],
         decided_by_layer="policy",
     )
-
-    if not decision["allow"]:
-        return build_response(authorized=False, reason_code=reason_code)
-
-    # Only after the policy allows do we read the amount. Reading it earlier
-    # and discarding it on deny would still leak a figure into memory
-    # and, eventually, into a trace.
-    try:
-        with connect("hr_reader") as connection, connection.cursor() as cursor:
-            cursor.execute(_SELECT_SALARY_SQL, (requested,))
-            amount_row = cursor.fetchone()
-            cursor.execute(_SELECT_TARGET_SQL, (requested,))
-            target_row = cursor.fetchone()
-    except DataUnavailable:
-        return build_response(authorized=False, reason_code="DATA_UNAVAILABLE")
-
-    if amount_row is None or target_row is None:
-        # Salary row missing after policy already allowed on the employee
-        # row: treat as data gap, never fall through as an allow with
-        # null fields.
-        return build_response(authorized=False, reason_code="DATA_UNAVAILABLE")
-
-    base_salary, currency = amount_row
-    _status, _manager, full_name = target_row
-    try:
-        amount_number = float(base_salary)
-    except (TypeError, ValueError) as exc:
-        raise HRToolError("salary row is not numeric") from exc
     return build_response(
         authorized=True,
         reason_code="ALLOW",

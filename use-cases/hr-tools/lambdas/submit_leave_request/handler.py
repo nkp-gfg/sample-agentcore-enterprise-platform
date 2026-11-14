@@ -126,6 +126,17 @@ def handler(event: dict, context) -> dict:
     reason_text = event.get("reason") or ""
     if not isinstance(reason_text, str):
         reason_text = ""
+    if len(reason_text) > 500:
+        _audit(
+            caller=caller,
+            agent_id=agent_id,
+            session_id=session_id,
+            allow=False,
+            reason_code="INVALID_RANGE",
+            policy_version="",
+            decided_by_layer="tool",
+        )
+        return build_response(authorized=False, reason_code="INVALID_RANGE")
     idempotency_key = event.get("idempotency_key") or ""
     if not isinstance(idempotency_key, str) or not idempotency_key.strip():
         # Not a spec reason code; INVALID_RANGE is the closest tool-side

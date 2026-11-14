@@ -6,4 +6,4 @@
 # dogs psycopg2-binary on newer Lambda runtimes. It supports PostgreSQL
 # scram-sha-256, TLS, and the long password value RDS IAM auth needs.
 # boto3 is provided by the Lambda runtime and is NOT listed here.
-pg8000>=1.30.5,<2
+pg8000==1.31.5
