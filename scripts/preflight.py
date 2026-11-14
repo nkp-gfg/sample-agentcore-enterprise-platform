@@ -117,6 +117,7 @@ class Preflight:
         if self._load_manifest():
             account_matches = self._check_aws_identity()
             if account_matches:
+                self._check_footprint_and_part2()
                 self._check_secrets()
                 self._check_model()
             self._check_migration_image()
@@ -416,21 +417,107 @@ class Preflight:
                 f"{self.config.region}; create or repair it before build",
             )
 
+    def _check_footprint_and_part2(self) -> None:
+        assert self.config is not None
+        try:
+            stacks = self.config.expected_stacks(self.account)
+        except ValueError as exc:
+            self.reporter.fail("Use cases", str(exc))
+            return
+
+        uc = self.config.use_cases or {}
+        is_god_agent = self.config.agents.pattern == "god-agent"
+        hr_enabled = [
+            name for name in ("hr-data", "hr-identity", "hr-tools") if name in uc
+        ]
+        if not hr_enabled and not is_god_agent:
+            return
+
+        failed_before = self.reporter.failed
+        if ("hr-identity" in uc or "hr-tools" in uc or is_god_agent) and (
+            self.config.identity.mode != "brokered"
+        ):
+            self.reporter.fail(
+                "HR Part 2",
+                "requires identity.mode: brokered (Cognito User Pool pre-token V3_0 trigger)",
+            )
+
+        if "hr-tools" in uc:
+            if not self.config.security.egress_filter:
+                self.reporter.fail(
+                    "HR Part 2 (hr-tools)",
+                    "requires security.egress_filter: true so the Gateway REQUEST "
+                    "interceptor promotes caller_employee_id and agent_id",
+                )
+            if (
+                not self.config.security.cedar.enabled
+                or self.config.security.cedar.mode != "ENFORCE"
+            ):
+                self.reporter.fail(
+                    "HR Part 2 (hr-tools)",
+                    "requires security.cedar.enabled: true and mode: ENFORCE",
+                )
+
+        if is_god_agent:
+            if not self.config.security.networking:
+                self.reporter.fail(
+                    "HR Part 2 (god-agent)",
+                    "requires security.networking: true to reach Aurora agent_state in VPC",
+                )
+            if not self.config.security.require_guardrails:
+                self.reporter.fail(
+                    "HR Part 2 (god-agent)",
+                    "requires security.require_guardrails: true for all 10 ChatBedrock models",
+                )
+            missing_uc = [
+                n for n in ("hr-data", "hr-identity", "hr-tools") if n not in uc
+            ]
+            if missing_uc:
+                self.reporter.warn(
+                    "HR Part 2 (god-agent)",
+                    f"use_cases omits {missing_uc}; ensure their SSM parameters "
+                    "are already deployed in this account/Region",
+                )
+
+        if "hr-identity" in uc and "hr-data" not in uc:
+            self.reporter.warn(
+                "HR Part 2 (hr-identity)",
+                "hr-data is not listed in use_cases; uc-hr-data must already be deployed",
+            )
+        if "hr-tools" in uc:
+            missing_deps = [n for n in ("hr-data", "hr-identity") if n not in uc]
+            if missing_deps:
+                self.reporter.warn(
+                    "HR Part 2 (hr-tools)",
+                    f"{missing_deps} not listed in use_cases; deploy them before uc-hr-tools",
+                )
+
+        if self.reporter.failed == failed_before:
+            parts = [*hr_enabled]
+            if is_god_agent:
+                parts.append("pattern=god-agent")
+            self.reporter.pass_(
+                "HR Part 2",
+                f"{', '.join(parts)} ready ({len(stacks)} total stack(s) in footprint)",
+            )
+
     def _effective_model(self) -> str:
         assert self.config is not None
         if self.config.agents.model_id:
             return self.config.agents.model_id
-        agent_file = (
-            self.repo_root / "agent-code" / self.config.agents.pattern / "agent.py"
-        )
-        if not agent_file.is_file():
-            return ""
-        match = re.search(
-            r'^DEFAULT_MODEL_ID\s*=\s*["\']([^"\']+)["\']',
-            agent_file.read_text(encoding="utf-8"),
-            re.MULTILINE,
-        )
-        return match.group(1) if match else ""
+        pattern_dir = self.repo_root / "agent-code" / self.config.agents.pattern
+        for filename in ("agent.py", "guardrail.py"):
+            candidate = pattern_dir / filename
+            if not candidate.is_file():
+                continue
+            match = re.search(
+                r'^DEFAULT_MODEL_ID\s*=\s*["\']([^"\']+)["\']',
+                candidate.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+            if match:
+                return match.group(1)
+        return ""
 
     def _check_model(self) -> None:
         assert self.config is not None

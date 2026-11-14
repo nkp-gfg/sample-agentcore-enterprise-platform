@@ -55,6 +55,25 @@ M1 Cognito sub:
 
 When a deploy asks which agent pattern to use, press Enter and keep the pattern Part 1 is already running. When it asks about the IdP, keep Entra. The only phase that changes the pattern is Phase 5.
 
+### Same `design` / `doctor` / `verify` commands in Part 2
+
+The three top-level commands from Part 1 automatically expand to cover Part 2 as you add each HR block to `platform.yaml`:
+
+```bash
+# 1. Validate platform.yaml and print the stack plan + enabled HR use cases (no AWS mutations)
+./scripts/deploy.sh design
+
+# 2. Read-only preflight: checks tools, AWS account/Region, secrets, Bedrock model,
+#    and Part 2 prerequisites (networking, KMS, brokered Cognito, egress filter, Cedar ENFORCE)
+./scripts/deploy.sh doctor
+
+# 3. Full-footprint health check: runs all 8 Part 1 checks (using --agui for god-agent)
+#    PLUS use-cases/hr-data/verify.py, hr-identity/verify.py, and hr-tools/verify.py
+./scripts/deploy.sh verify
+```
+
+Run `design` and `doctor` after each `platform.yaml` edit below, run the per-phase `verify.py` right after each stack deploy, and run `./scripts/deploy.sh verify` at the end of Part 2 to prove all 11 checks pass together.
+
 ## Phase 1. Database (`hr-data`)
 
 Enable only the database first. Leave the other two use cases out of `platform.yaml` until their phases.
