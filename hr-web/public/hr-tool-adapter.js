@@ -187,20 +187,20 @@
         _deleteOne(SURFACE_IDS.notice("submit-refused")),
         _deleteOne(SURFACE_IDS.notice("submit-cancelled")),
       );
-      const slug = result.data.request_id
-        ? String(result.data.request_id).toLowerCase().replace(/[^a-z0-9]+/g, "-")
-        : `submit-${Date.now().toString(36)}`;
       const reviewer = result.data.reviewer_employee_id
         ? ` (${result.data.reviewer_employee_id})`
         : "";
-      messages.push(..._recreate(SURFACE_IDS.notice(slug), {
+      messages.push(..._recreate(SURFACE_IDS.notice("leave-submitted"), {
         component: "Notice",
         variant: "ok",
         title: "Leave submitted",
         body: `Request ${result.data.request_id || ""} is pending your manager's review${reviewer}.`,
       }));
     } else if (result.reason_code === "CANCELLED_BY_EMPLOYEE") {
-      messages.push(_deleteOne(SURFACE_IDS.notice("submit-refused")));
+      messages.push(
+        _deleteOne(SURFACE_IDS.notice("submit-refused")),
+        _deleteOne(SURFACE_IDS.notice("leave-submitted")),
+      );
       messages.push(..._recreate(SURFACE_IDS.notice("submit-cancelled"), {
         component: "Notice",
         variant: "info",
@@ -208,7 +208,10 @@
         body: "No leave request was submitted.",
       }));
     } else {
-      messages.push(_deleteOne(SURFACE_IDS.notice("submit-cancelled")));
+      messages.push(
+        _deleteOne(SURFACE_IDS.notice("submit-cancelled")),
+        _deleteOne(SURFACE_IDS.notice("leave-submitted")),
+      );
       messages.push(..._recreate(SURFACE_IDS.notice("submit-refused"), {
         component: "Notice",
         variant: "warn",
@@ -221,15 +224,17 @@
 
   function _recordLeaveDecision(result) {
     if (!result) return [];
-    const messages = [_deleteOne(SURFACE_IDS.managerReview)];
+    const messages = [
+      _deleteOne(SURFACE_IDS.managerReview),
+      _deleteOne(SURFACE_IDS.notice("leave-decision")),
+      _deleteOne(SURFACE_IDS.notice("not-reviewer")),
+      _deleteOne(SURFACE_IDS.notice("decision-refused")),
+    ];
     if (result.data && result.data.request_id) {
       messages.push(_deleteOne(SURFACE_IDS.managerReviewFor(result.data.request_id)));
     }
     if (result.authorized === true && result.data) {
-      const slug = result.data.request_id
-        ? String(result.data.request_id).toLowerCase().replace(/[^a-z0-9]+/g, "-")
-        : `decision-${Date.now().toString(36)}`;
-      messages.push(..._recreate(SURFACE_IDS.notice(`decision-${slug}`), {
+      messages.push(..._recreate(SURFACE_IDS.notice("leave-decision"), {
         component: "Notice",
         variant: "ok",
         title: "Decision recorded",
@@ -357,6 +362,26 @@
     return [];
   }
 
+  function clearNonReviewSurfaces(
+    surfaceIds,
+    { preserveEmployeeConfirm = false, preserveManagerReviews = true } = {},
+  ) {
+    const out = [];
+    for (const rawId of surfaceIds || []) {
+      const id = String(rawId || "");
+      if (!id) continue;
+      if (id === SURFACE_IDS.employeeConfirm && preserveEmployeeConfirm) continue;
+      if (
+        (id === SURFACE_IDS.managerReview || id.startsWith(`${SURFACE_IDS.managerReview}-`))
+        && preserveManagerReviews
+      ) {
+        continue;
+      }
+      out.push(_deleteOne(id));
+    }
+    return out;
+  }
+
   window.HrToolAdapter = Object.freeze({
     PROTOCOL_VERSION,
     CATALOG_ID,
@@ -366,5 +391,6 @@
     fromToolResult,
     fromInterrupt,
     clearSurfacesFor,
+    clearNonReviewSurfaces,
   });
 })();

@@ -284,6 +284,7 @@
     botActivity: {},
     activeHandoverChain: [],
     currentMessages: [],
+    mobileRosterOpen: false,
     drawerOpen: false,
     drawerMode: "history",
     drawerQuery: "",
@@ -361,6 +362,10 @@
   function bareToolName(toolName) {
     const raw = String(toolName || "");
     return raw.includes("___") ? raw.split("___").pop() : raw;
+  }
+
+  function isOrchestrationTool(toolName) {
+    return bareToolName(toolName) === "task";
   }
 
   function b64urlEncode(bytes) {
@@ -1166,6 +1171,11 @@
     state.botActivity = {};
     state.activeHandoverChain = [];
     state.selectedBotId = null;
+    state.mobileRosterOpen = false;
+    const sidebar = $("botRosterSidebar");
+    if (sidebar) sidebar.classList.remove("is-roster-open");
+    const rosterToggle = $("toggleRosterBtn");
+    if (rosterToggle) rosterToggle.setAttribute("aria-expanded", "false");
     lastAutofilledPrompt = "";
     try { sessionStorage.clear(); } catch { /* ignore */ }
     if (state.sseController) state.sseController.abort();
@@ -1393,6 +1403,10 @@
         }
       }
       if (Array.isArray(msg.cards) && msg.cards.length > 0) {
+        clearPreviousTurnSurfaces({
+          preserveEmployeeConfirm: false,
+          preserveManagerReviews: false,
+        });
         applyA2uiMessages(msg.cards);
       }
     }
@@ -2221,19 +2235,11 @@
     return message;
   }
 
-  function appendTrace(node, kind, label, detailJson) {
-    if (!node) return null;
-    let trace = node.querySelector(".hr-trace");
-    if (!trace) {
-      trace = el("ul", "hr-trace");
-      const lastCol = node.querySelector("div:last-child");
-      if (lastCol) lastCol.append(trace);
-    }
-    const item = el("li", "hr-trace-item");
+  function populateTraceItem(item, kind, label, detailJson) {
     item.dataset.kind = kind;
     const head = el("div", "hr-trace-head");
     head.append(el("span", "hr-trace-dot"), el("span", "hr-trace-label", label));
-    item.append(head);
+    item.replaceChildren(head);
     if (detailJson !== undefined && detailJson !== null) {
       const toggle = el("button", "hr-trace-toggle", "Details");
       toggle.type = "button";
@@ -2249,6 +2255,19 @@
       head.append(toggle);
       item.append(pre);
     }
+    return item;
+  }
+
+  function appendTrace(node, kind, label, detailJson) {
+    if (!node) return null;
+    let trace = node.querySelector(".hr-trace");
+    if (!trace) {
+      trace = el("ul", "hr-trace");
+      const lastCol = node.querySelector("div:last-child");
+      if (lastCol) lastCol.append(trace);
+    }
+    const item = el("li", "hr-trace-item");
+    populateTraceItem(item, kind, label, detailJson);
     trace.append(item);
     return item;
   }
@@ -2262,6 +2281,34 @@
   function applyA2uiMessages(messages) {
     if (!state.processor || !Array.isArray(messages) || messages.length === 0) return;
     state.processor.processMessages(messages);
+  }
+
+  function clearPreviousTurnSurfaces({
+    preserveEmployeeConfirm = false,
+    preserveManagerReviews = true,
+  } = {}) {
+    if (!state.processor || typeof window.HrToolAdapter.clearNonReviewSurfaces !== "function") return;
+    const keepEmployee = Boolean(preserveEmployeeConfirm && state.pendingEmployeeConfirm);
+    const activeManagerIds = new Set();
+    if (preserveManagerReviews) {
+      for (const key of state.pendingManagerReviews.keys()) {
+        activeManagerIds.add(window.HrToolAdapter.SURFACE_IDS.managerReviewFor(key));
+      }
+    }
+    const toDelete = [];
+    for (const id of state.processor.getSurfaces().keys()) {
+      if (id === window.HrToolAdapter.SURFACE_IDS.employeeConfirm && keepEmployee) continue;
+      if (activeManagerIds.has(id)) continue;
+      toDelete.push(id);
+    }
+    if (toDelete.length > 0) {
+      applyA2uiMessages(
+        window.HrToolAdapter.clearNonReviewSurfaces(toDelete, {
+          preserveEmployeeConfirm: keepEmployee,
+          preserveManagerReviews: false,
+        }),
+      );
+    }
   }
 
   /* ------------------------------------------------------------- SSE */
@@ -2309,6 +2356,7 @@
     state.busy = true;
     updateControls();
     resetBotActivityForTurn(message);
+    clearPreviousTurnSurfaces({ preserveEmployeeConfirm: true, preserveManagerReviews: true });
     state.runId = newId("run");
     const props = Object.assign(
       state.activeAgentId ? { activeAgentId: state.activeAgentId } : {},
@@ -2367,6 +2415,7 @@
         ? `Review decision (${resumePayload.decision || "submit"})`
         : `Confirmation (${(resumePayload && resumePayload.decision) || "submit"})`,
     );
+    clearPreviousTurnSurfaces({ preserveEmployeeConfirm: false, preserveManagerReviews: true });
     state.runId = newId("run");
     const input = {
       threadId: state.threadId,
@@ -2566,6 +2615,17 @@
       }
     }
 
+    if (turnCtx.sawInterrupt && !finalText.trim() && !isSilentPoll) {
+      if (state.pendingEmployeeConfirm) {
+        finalText = "Please review and confirm your leave request in the card below.";
+      } else if (state.pendingManagerReviews.size > 0) {
+        finalText = "Pending leave review loaded in the card below.";
+      }
+      if (finalText) {
+        body.replaceChildren(renderMarkdownSafe(finalText));
+      }
+    }
+
     if (!turnCtx.sawRunFinished && !turnCtx.sawRunError && !isSilentPoll) {
       finalizeBotsOnFinish(turnCtx.sawInterrupt, false);
     }
@@ -2682,12 +2742,11 @@
         break;
       }
       case "TOOL_CALL_START": {
-        turnCtx.clearThinkingPlaceholder();
         const callId = event.toolCallId ? String(event.toolCallId) : "";
         const callName = event.toolCallName ? String(event.toolCallName) : "";
         if (callId && callName) {
           turnCtx.outstanding.set(callId, { name: callName, subagentRunId });
-          if (callName === "task") {
+          if (isOrchestrationTool(callName)) {
             const parentBotId = subagentRunId
               ? (turnCtx.subagentBotMap.get(String(subagentRunId)) || "god-bot")
               : "god-bot";
@@ -2695,36 +2754,47 @@
             if (!currentParent || currentParent.status !== "active") {
               setBotActivity(parentBotId, { status: "active", task: "Delegating task…" });
             }
-          } else {
-            const leafBotId = resolveBotId(null, callName);
-            if (leafBotId) {
-              setBotActivity(leafBotId, {
-                status: "active",
-                task: `Calling ${bareToolName(callName)}…`,
-              });
-              pushHandoverStep(leafBotId);
-            }
+            break;
           }
-          const traceItem = appendTrace(turnCtx.assistantNode, "info", `tool · ${callName}`);
-          if (traceItem) turnCtx.pendingStartTraces.set(callId, traceItem);
+          const bare = bareToolName(callName);
+          const leafBotId = resolveBotId(null, callName);
+          if (leafBotId) {
+            setBotActivity(leafBotId, {
+              status: "active",
+              task: `Calling ${bare}…`,
+            });
+            pushHandoverStep(leafBotId);
+          }
+          const traceItem = appendTrace(turnCtx.assistantNode, "info", `Running ${bare}…`);
+          if (traceItem) {
+            traceItem.dataset.toolBare = bare;
+            turnCtx.pendingStartTraces.set(callId, traceItem);
+          }
         }
         break;
       }
       case "TOOL_CALL_RESULT": {
-        turnCtx.clearThinkingPlaceholder();
         const id = event.toolCallId ? String(event.toolCallId) : "";
         const tracked = turnCtx.outstanding.get(id);
         const name = (tracked && tracked.name) || event.toolCallName || "tool";
         turnCtx.outstanding.delete(id);
 
+        const pendingStartNode = turnCtx.pendingStartTraces.get(id);
+        turnCtx.pendingStartTraces.delete(id);
+
+        if (isOrchestrationTool(name)) {
+          if (pendingStartNode && pendingStartNode.parentNode) {
+            pendingStartNode.remove();
+          }
+          break;
+        }
+
         const result = parseToolResult(event.content);
         const dedupeSerialized = result !== null
           ? stableStringify(result)
           : String(event.content ?? "");
-        const dedupeKey = `${bareToolName(name)}\0${dedupeSerialized}`;
-
-        const pendingStartNode = turnCtx.pendingStartTraces.get(id);
-        turnCtx.pendingStartTraces.delete(id);
+        const bare = bareToolName(name);
+        const dedupeKey = `${bare}\0${dedupeSerialized}`;
 
         if (turnCtx.seenToolResults.has(dedupeKey)) {
           if (pendingStartNode && pendingStartNode.parentNode) {
@@ -2735,7 +2805,7 @@
         turnCtx.seenToolResults.add(dedupeKey);
 
         const leafBotId = resolveBotId(null, name);
-        if (leafBotId && name !== "task") {
+        if (leafBotId) {
           const denied = result && result.authorized === false;
           const summary = summarizeToolResult(name, result);
           setBotActivity(leafBotId, {
@@ -2756,8 +2826,25 @@
         const traceKind = result && result.authorized === false ? "deny"
           : result && result.authorized === true ? "allow" : "info";
         const tag = result && result.reason_code ? ` · ${result.reason_code}` : "";
-        const label = `result · ${name}${tag}`;
-        appendTrace(turnCtx.assistantNode, traceKind, label, result);
+        const summary = summarizeToolResult(name, result);
+        const label = summary && summary !== "Completed"
+          ? `${bare}${tag} · ${summary}`
+          : `${bare}${tag}`;
+        let targetTraceNode = pendingStartNode;
+        if (!targetTraceNode) {
+          for (const [pendingId, candidate] of turnCtx.pendingStartTraces.entries()) {
+            if (candidate && candidate.dataset.toolBare === bare) {
+              targetTraceNode = candidate;
+              turnCtx.pendingStartTraces.delete(pendingId);
+              break;
+            }
+          }
+        }
+        if (targetTraceNode && targetTraceNode.parentNode) {
+          populateTraceItem(targetTraceNode, traceKind, label, result);
+        } else {
+          appendTrace(turnCtx.assistantNode, traceKind, label, result);
+        }
         turnCtx.traces.push({ kind: traceKind, label, detail: result });
         break;
       }
@@ -2765,6 +2852,10 @@
       case "RUN_STARTED": break;
       case "RUN_FINISHED": {
         turnCtx.clearThinkingPlaceholder();
+        for (const traceNode of turnCtx.pendingStartTraces.values()) {
+          if (traceNode && traceNode.parentNode) traceNode.remove();
+        }
+        turnCtx.pendingStartTraces.clear();
         turnCtx.sawRunFinished = true;
         const hasInterrupt = handleRunFinished(event, turnCtx.isSilentPoll);
         turnCtx.sawInterrupt = hasInterrupt;
@@ -2778,6 +2869,10 @@
       }
       case "RUN_ERROR": {
         turnCtx.clearThinkingPlaceholder();
+        for (const traceNode of turnCtx.pendingStartTraces.values()) {
+          if (traceNode && traceNode.parentNode) traceNode.remove();
+        }
+        turnCtx.pendingStartTraces.clear();
         turnCtx.sawRunError = true;
         finalizeBotsOnFinish(false, true);
         const message = event.message || event.code || "Runtime error.";
@@ -3218,6 +3313,14 @@
   }
   if ($("openMarketplaceFromLeft")) {
     $("openMarketplaceFromLeft").addEventListener("click", () => openDrawer("marketplace"));
+  }
+  if ($("toggleRosterBtn")) {
+    $("toggleRosterBtn").addEventListener("click", () => {
+      state.mobileRosterOpen = !state.mobileRosterOpen;
+      const sidebar = $("botRosterSidebar");
+      if (sidebar) sidebar.classList.toggle("is-roster-open", state.mobileRosterOpen);
+      $("toggleRosterBtn").setAttribute("aria-expanded", String(state.mobileRosterOpen));
+    });
   }
   if ($("closeRightDrawerBtn")) {
     $("closeRightDrawerBtn").addEventListener("click", closeDrawer);

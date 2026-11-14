@@ -1401,3 +1401,89 @@ if (customMsg.includes("555-0199") || customMsg.includes("<script>")) {
         check=False,
     )
     assert res.returncode == 0, res.stderr or res.stdout
+
+
+def test_hr_adapter_turn_cleanup_and_ui_mobile_trace_invariants():
+    """Ensure stale turn cards clear, task traces stay hidden, and mobile CSS resets topbar flex."""
+    import re
+    import shutil
+    import subprocess
+
+    app_text = (HR_WEB / "public" / "app.js").read_text(encoding="utf-8")
+    css_text = (HR_WEB / "public" / "styles.css").read_text(encoding="utf-8")
+    html_text = (HR_WEB / "public" / "index.html").read_text(encoding="utf-8")
+
+    # 1. Task orchestration traces are filtered and replaced in place on tool result.
+    assert "function isOrchestrationTool(" in app_text
+    assert "function populateTraceItem(" in app_text
+    assert "function clearPreviousTurnSurfaces(" in app_text
+    assert "isOrchestrationTool(callName)" in app_text
+    assert "isOrchestrationTool(name)" in app_text
+    assert "Please review and confirm your leave request in the card below." in app_text
+
+    # 2. Mobile responsive CSS fixes topbar flex overlap and collapsible agent roster.
+    mobile_block = re.search(
+        r"@media \(max-width: 960px\) \{[\s\S]*?\n\}",
+        css_text,
+    )
+    assert mobile_block is not None
+    assert "flex: 0 0 auto;" in mobile_block.group(0)
+    assert "height: auto;" in mobile_block.group(0)
+    assert ".hr-message-body:empty" in css_text
+    assert 'id="toggleRosterBtn"' in html_text
+
+    # 3. Node check on HrToolAdapter.clearNonReviewSurfaces and non-stacking notice IDs.
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+
+    adapter_path = str(HR_WEB / "public" / "hr-tool-adapter.js")
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const sandbox = { window: {}, console };
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+const adapter = sandbox.window.HrToolAdapter;
+
+const sub1 = adapter.fromToolResult("hr-ops___submit_leave_request", {
+  authorized: true,
+  reason_code: "ALLOW",
+  data: { request_id: "lr-111", reviewer_employee_id: "M1" },
+});
+const sub2 = adapter.fromToolResult("hr-ops___submit_leave_request", {
+  authorized: true,
+  reason_code: "ALLOW",
+  data: { request_id: "lr-222", reviewer_employee_id: "M1" },
+});
+const created1 = sub1.find((m) => m.createSurface).createSurface.surfaceId;
+const created2 = sub2.find((m) => m.createSurface).createSurface.surfaceId;
+if (created1 !== created2 || created1 !== "surface-notice-leave-submitted") {
+  throw new Error(`Expected stable submit notice surface ID, got ${created1} vs ${created2}`);
+}
+
+const dels = adapter.clearNonReviewSurfaces(
+  [
+    "surface-leave-balance",
+    "surface-notice-leave-submitted",
+    "surface-employee-confirm",
+    "surface-manager-review-lr-999",
+  ],
+  { preserveEmployeeConfirm: true, preserveManagerReviews: true },
+);
+const deletedIds = dels.map((m) => m.deleteSurface.surfaceId);
+if (
+  deletedIds.length !== 2
+  || !deletedIds.includes("surface-leave-balance")
+  || !deletedIds.includes("surface-notice-leave-submitted")
+) {
+  throw new Error("Unexpected deleted IDs: " + JSON.stringify(deletedIds));
+}
+"""
+    res = subprocess.run(
+        [node, "-e", script, adapter_path],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr or res.stdout

@@ -135,27 +135,40 @@
 
     <!-- 1. Left Bot Roster Sidebar -->
     <aside class="ew-left-sidebar" id="botRosterSidebar" aria-label="Enterprise bot roster">
-      <div class="ew-pinned-section">
-        <div class="ew-roster-section-label">Orchestrator · Pinned</div>
-        <div class="ew-pinned-orchestrator">
-          <span class="ew-bot-avatar" aria-hidden="true">GB</span>
-          <div class="ew-bot-meta">
-            <div class="ew-bot-name-row">
-              <strong class="ew-bot-name">God Bot</strong>
-              <span class="ew-bot-badge">Router</span>
+      <div class="ew-sidebar-mobile-bar">
+        <div class="ew-pinned-section">
+          <div class="ew-roster-section-label">Orchestrator · Pinned</div>
+          <div class="ew-pinned-orchestrator">
+            <span class="ew-bot-avatar" aria-hidden="true">GB</span>
+            <div class="ew-bot-meta">
+              <div class="ew-bot-name-row">
+                <strong class="ew-bot-name">God Bot</strong>
+                <span class="ew-bot-badge">Router</span>
+              </div>
+              <span class="ew-bot-desc">Routes to HR Ops · Payroll · Finance</span>
             </div>
-            <span class="ew-bot-desc">Routes to HR Ops · Payroll · Finance</span>
+            <span class="ew-status-dot ew-status-dot--online" title="Online"></span>
           </div>
-          <span class="ew-status-dot ew-status-dot--online" title="Online"></span>
         </div>
-      </div>
 
-      <div class="ew-handover-banner" id="handoverBanner" data-state="idle" aria-live="polite">
-        <div class="ew-handover-head">
-          <span class="ew-handover-pulse" aria-hidden="true"></span>
-          <span class="ew-handover-kicker">Active Handover</span>
+        <div class="ew-handover-banner" id="handoverBanner" data-state="idle" aria-live="polite">
+          <div class="ew-handover-head">
+            <span class="ew-handover-pulse" aria-hidden="true"></span>
+            <span class="ew-handover-kicker">Active Handover</span>
+          </div>
+          <div class="ew-handover-route" id="handoverStatusLabel" data-state="idle">Idle · Ready</div>
         </div>
-        <div class="ew-handover-route" id="handoverStatusLabel" data-state="idle">Idle · Ready</div>
+
+        <button type="button"
+                class="ew-roster-toggle"
+                id="toggleRosterBtn"
+                aria-expanded="false"
+                aria-controls="botRosterList">
+          <span>Agents</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
       </div>
 
       <div class="ew-roster-list" id="botRosterList" role="list" aria-label="Department and leaf bots">
