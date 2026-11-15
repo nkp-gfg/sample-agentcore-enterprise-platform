@@ -7,7 +7,7 @@
   const LAYERS = [
     { id: 'foundation',    name: 'Foundation',    stacks: ['networking', 'security'] },
     { id: 'identity',      name: 'Identity',      stacks: ['auth', 'identity'] },
-    { id: 'service',       name: 'Service',       stacks: ['gateway', 'memory'] },
+    { id: 'service',       name: 'Service',       stacks: ['gateway', 'frontend', 'memory'] },
     { id: 'runtime',       name: 'Runtime',       stacks: ['runtime-orchestrator', 'runtime-code-agent', 'runtime-research-agent'] },
     { id: 'observability', name: 'Observability', stacks: ['observability'] }
   ];
@@ -62,6 +62,8 @@
     'NotionProviderArn', 'GatewayUrl', 'GatewayArn', 'GatewayId', 'MemoryId',
     'MemoryArn', 'RuntimeArn', 'RuntimeId', 'SourceHash', 'ImageUri',
     'SecurityAlertsTopicArn', 'MonitoredResources',
+    'FrontendUrl', 'FrontendExposure', 'WebAclArn', 'EcsClusterName',
+    'EcsServiceName', 'BffSessionTableName', 'ChatSessionTableName', 'BffClientId',
     // HR assistant outputs — reviewed non-secret. The master-secret NAME is
     // not listed here (the test allow-list refuses any key containing
     // "secret"); operators find it in the Parameters tab under
@@ -77,6 +79,8 @@
     'identity/github-provider-arn', 'identity/notion-provider-arn',
     'memory/memory-id', 'memory/memory-arn', 'networking/vpc-id',
     'networking/private-subnet-ids', 'networking/runtime-security-group-id',
+    'networking/agentcore-vpce-id',
+    'frontend/url', 'frontend/exposure', 'frontend/bff-client-id',
     'runtimes/orchestrator/arn', 'runtimes/orchestrator/id',
     'runtimes/code-agent/arn', 'runtimes/code-agent/id',
     'runtimes/research-agent/arn', 'runtimes/research-agent/id',

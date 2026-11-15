@@ -31,6 +31,7 @@ from infra_utils.platform_config import (
     to_env,
 )
 from stacks.auth_stack import AuthStack
+from stacks.frontend_stack import FrontendStack
 from stacks.gateway_stack import GatewayStack
 from stacks.identity_stack import IdentityStack
 from stacks.memory_stack import MemoryStack
@@ -172,6 +173,32 @@ log_retention_days = int(cfg("log_retention_days", "LOG_RETENTION_DAYS", "30"))
 # AWS Organizations ID (o-xxxx). Required when enable_resource_policies is on, so the
 # in-account-only resource policies can render their aws:PrincipalOrgID deny guard.
 org_id = cfg("org_id", "ORG_ID", "")
+
+# Hosted Web UI BFF (WAF + public/private ALB + ECS Fargate + DynamoDB)
+enable_frontend = cfg("enable_frontend", "ENABLE_FRONTEND", "false") == "true"
+frontend_exposure = cfg("frontend_exposure", "FRONTEND_EXPOSURE", "private")
+frontend_domain_name = cfg("frontend_domain_name", "FRONTEND_DOMAIN_NAME", "")
+frontend_certificate_arn = cfg(
+    "frontend_certificate_arn", "FRONTEND_CERTIFICATE_ARN", ""
+)
+frontend_allowed_cidrs = [
+    c.strip()
+    for c in cfg("frontend_allowed_cidrs", "FRONTEND_ALLOWED_CIDRS", "").split(",")
+    if c.strip()
+]
+frontend_waf_rate_limit = int(
+    cfg("frontend_waf_rate_limit", "FRONTEND_WAF_RATE_LIMIT", "2000")
+)
+frontend_min_capacity = int(cfg("frontend_min_capacity", "FRONTEND_MIN_CAPACITY", "2"))
+frontend_max_capacity = int(cfg("frontend_max_capacity", "FRONTEND_MAX_CAPACITY", "10"))
+frontend_cpu = int(cfg("frontend_cpu", "FRONTEND_CPU", "512"))
+frontend_memory_mib = int(cfg("frontend_memory_mib", "FRONTEND_MEMORY_MIB", "1024"))
+frontend_session_ttl_hours = int(
+    cfg("frontend_session_ttl_hours", "FRONTEND_SESSION_TTL_HOURS", "12")
+)
+frontend_restrict_runtime = (
+    cfg("frontend_restrict_runtime", "FRONTEND_RESTRICT_RUNTIME", "true") == "true"
+)
 
 # Agent pattern selection (from FAST reference patterns)
 # Options: strands-agent, langgraph-agent, claude-sdk-agent, claude-sdk-multi-agent,
@@ -650,6 +677,61 @@ gateway_url_for_runtimes = (
 )
 
 # ═══════════════════════════════════════════════════════════════
+# FRONTEND BFF LAYER (WAF + Public/Private ALB + ECS Fargate + DynamoDB)
+# ═══════════════════════════════════════════════════════════════
+frontend_stack = None
+if enable_frontend and not is_fed_workload:
+    if networking_stack is None:
+        raise ValueError(
+            "enable_frontend=true requires enable_networking=true "
+            "(ALB, ECS Fargate BFF, and VPCE-locked runtimes run inside the VPC)"
+        )
+    frontend_stack = FrontendStack(
+        app,
+        f"{prefix}-frontend",
+        project_name=project,
+        environment=env_name,
+        vpc=networking_stack.vpc,
+        exposure=frontend_exposure,
+        domain_name=frontend_domain_name,
+        certificate_arn=frontend_certificate_arn,
+        allowed_cidrs=frontend_allowed_cidrs,
+        waf_rate_limit=frontend_waf_rate_limit,
+        min_capacity=frontend_min_capacity,
+        max_capacity=frontend_max_capacity,
+        cpu=frontend_cpu,
+        memory_mib=frontend_memory_mib,
+        session_ttl_hours=frontend_session_ttl_hours,
+        log_retention_days=log_retention_days,
+        retain_data=production_mode,
+        kms_key_arn=(
+            security_stack.kms_key.key_arn
+            if (security_stack and security_stack.kms_key)
+            else ""
+        ),
+        idp_mode=idp_mode,
+        issuer_url=issuer_url,
+        user_pool_id=(
+            auth_stack.user_pool.user_pool_id
+            if (auth_stack and not auth_stack.is_direct)
+            else ""
+        ),
+        supported_identity_providers=(
+            auth_stack.supported_identity_providers if auth_stack else None
+        ),
+        direct_client_id=idp_config["client_id"] if idp_mode == "direct" else "",
+        direct_client_secret_name=(
+            idp_config["client_secret_name"] if idp_mode == "direct" else ""
+        ),
+        env=cdk_env,
+    )
+    frontend_stack.add_dependency(networking_stack)
+    if security_stack:
+        frontend_stack.add_dependency(security_stack)
+    if auth_stack:
+        frontend_stack.add_dependency(auth_stack)
+
+# ═══════════════════════════════════════════════════════════════
 # RUNTIME LAYER
 # ═══════════════════════════════════════════════════════════════
 
@@ -674,6 +756,24 @@ runtime_network = (
 # AGENT_PATTERN=langgraph-agent ./scripts/deploy.sh deploy --module 6
 runtime_orchestrator = None
 if not is_fed_platform:
+    orchestrator_allowed_clients = list(allowed_clients)
+    if frontend_stack is not None and idp_mode != "direct":
+        if frontend_restrict_runtime:
+            orchestrator_allowed_clients = [
+                frontend_stack.bff_client_id,
+                m2m_client_id,
+            ]
+        elif frontend_stack.bff_client_id not in orchestrator_allowed_clients:
+            orchestrator_allowed_clients.append(frontend_stack.bff_client_id)
+    restrict_orchestrator_vpce_id = (
+        networking_stack.agentcore_vpce_id
+        if (
+            frontend_stack is not None
+            and frontend_restrict_runtime
+            and networking_stack
+        )
+        else ""
+    )
     runtime_orchestrator = RuntimeStack(
         app,
         f"{prefix}-runtime-orchestrator",
@@ -686,7 +786,7 @@ if not is_fed_platform:
         runtime_generation=orchestrator_runtime_generation,
         allowed_models=allowed_models,
         cognito_issuer_url=issuer_url,
-        cognito_allowed_clients=allowed_clients,
+        cognito_allowed_clients=orchestrator_allowed_clients,
         allowed_audience=allowed_audience,
         require_guardrails=require_guardrails,
         retain_data=production_mode,
@@ -705,7 +805,9 @@ if not is_fed_platform:
             and not is_fed_workload
             and auth_stack is not None
             and not auth_stack.is_direct
+            and not (frontend_stack is not None and frontend_restrict_runtime)
         ),
+        restrict_to_vpce_id=restrict_orchestrator_vpce_id,
         extra_env_vars={
             "GATEWAY_URL": gateway_url_for_runtimes,
             "GATEWAY_CREDENTIAL_PROVIDER_NAME": identity_stack.gateway_credential_provider_name,
@@ -715,7 +817,9 @@ if not is_fed_platform:
             # instead of trusting that the runtime authorizer ran. Without these the
             # agent refuses the request rather than decoding it unverified.
             "COGNITO_ISSUER_URL": issuer_url,
-            "COGNITO_ALLOWED_CLIENTS": ",".join(allowed_clients or allowed_audience),
+            "COGNITO_ALLOWED_CLIENTS": ",".join(
+                orchestrator_allowed_clients or allowed_audience
+            ),
             "STACK_NAME": prefix,
             "USE_LONG_TERM_MEMORY": str(use_long_term_memory).lower(),
             "LTM_TOP_K": str(ltm_top_k),
@@ -726,6 +830,8 @@ if not is_fed_platform:
         **runtime_network,
         env=cdk_env,
     )
+    if frontend_stack is not None:
+        runtime_orchestrator.add_dependency(frontend_stack)
     if gateway_stack:
         runtime_orchestrator.add_dependency(gateway_stack)
     runtime_orchestrator.add_dependency(memory_stack)

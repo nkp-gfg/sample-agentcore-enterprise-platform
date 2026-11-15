@@ -79,6 +79,12 @@ STACK_META = {
         "layer": "service",
         "description": "MCP Gateway + CUSTOM_JWT auth + tool targets",
     },
+    "frontend": {
+        "module": "3",
+        "team": "platform",
+        "layer": "service",
+        "description": "WAFv2 + public/private ALB + auto-scaling ECS Fargate BFF + DynamoDB",
+    },
     "memory": {
         "module": "A",
         "team": "agent",
@@ -170,6 +176,18 @@ SAFE_STACK_OUTPUTS = {
         }
     ),
     "gateway": frozenset({"GatewayUrl", "GatewayArn", "GatewayId"}),
+    "frontend": frozenset(
+        {
+            "FrontendUrl",
+            "FrontendExposure",
+            "WebAclArn",
+            "EcsClusterName",
+            "EcsServiceName",
+            "BffSessionTableName",
+            "ChatSessionTableName",
+            "BffClientId",
+        }
+    ),
     "memory": frozenset({"MemoryId", "MemoryArn"}),
     "runtime-orchestrator": frozenset(
         {"RuntimeArn", "RuntimeId", "SourceHash", "ImageUri"}
@@ -237,6 +255,10 @@ SAFE_SSM_PARAMETERS = frozenset(
         "networking/vpc-id",
         "networking/private-subnet-ids",
         "networking/runtime-security-group-id",
+        "networking/agentcore-vpce-id",
+        "frontend/url",
+        "frontend/exposure",
+        "frontend/bff-client-id",
         "runtimes/orchestrator/arn",
         "runtimes/orchestrator/id",
         "runtimes/code-agent/arn",

@@ -525,6 +525,107 @@ def observability_placeholders(alarm_email: str) -> list[str]:
     return []
 
 
+_ACM_ARN_RE = re.compile(
+    r"^arn:aws(-[a-z]+)?:acm:[a-z0-9-]+:\d{12}:certificate/[A-Za-z0-9-]+$"
+)
+_FARGATE_MEMORY_BY_CPU = {
+    256: {512, 1024, 2048},
+    512: {1024, 2048, 3072, 4096},
+    1024: {2048, 3072, 4096, 5120, 6144, 7168, 8192},
+    2048: set(range(4096, 16385, 1024)),
+    4096: set(range(8192, 30721, 1024)),
+}
+
+
+class FrontendConfig(BaseModel):
+    """Hosted Web UI BFF (WAF + public/private ALB + auto-scaling ECS Fargate + DynamoDB)."""
+
+    enabled: bool = False
+    exposure: Literal["private", "public"] = "private"
+    domain_name: str = ""
+    certificate_arn: str = ""
+    allowed_cidrs: list[str] = Field(default_factory=list)
+    waf_rate_limit: int = Field(default=2000, ge=100, le=20_000_000)
+    min_capacity: int = Field(default=2, ge=1, le=50)
+    max_capacity: int = Field(default=10, ge=1, le=100)
+    cpu: Literal[256, 512, 1024, 2048, 4096] = 512
+    memory_mib: int = Field(default=1024, ge=512, le=30720)
+    session_ttl_hours: int = Field(default=12, ge=1, le=168)
+    restrict_runtime_to_bff_vpc: bool = True
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("cpu", mode="before")
+    @classmethod
+    def _coerce_cpu(cls, v: object) -> object:
+        if isinstance(v, str) and v.strip().isdigit():
+            return int(v.strip())
+        return v
+
+    @field_validator("domain_name")
+    @classmethod
+    def _domain_shape(cls, v: str) -> str:
+        if not v:
+            return v
+        if not _HOSTNAME_RE.match(v):
+            raise ValueError(
+                f"frontend.domain_name must be a valid hostname, got {v!r}"
+            )
+        _refuse_placeholders(
+            [f"frontend.domain_name is a placeholder ({v!r})"]
+            if _SENTINEL_RE.search(v)
+            else []
+        )
+        return v
+
+    @field_validator("certificate_arn")
+    @classmethod
+    def _cert_arn_shape(cls, v: str) -> str:
+        if not v:
+            return v
+        if not _ACM_ARN_RE.match(v):
+            raise ValueError(
+                "frontend.certificate_arn must be an ACM certificate ARN "
+                f"(arn:aws:acm:<region>:<account>:certificate/<id>), got {v!r}"
+            )
+        return v
+
+    @field_validator("allowed_cidrs")
+    @classmethod
+    def _cidr_shapes(cls, v: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw in v:
+            try:
+                net = ipaddress.ip_network(raw, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"invalid IPv4 CIDR {raw!r}: {exc}") from exc
+            if net.version != 4:
+                raise ValueError(
+                    f"frontend.allowed_cidrs supports IPv4 CIDRs only, got {raw!r}"
+                )
+            normalized.append(str(net))
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_scaling_and_tls(self) -> FrontendConfig:
+        if self.max_capacity < self.min_capacity:
+            raise ValueError(
+                f"frontend.max_capacity ({self.max_capacity}) must be >= "
+                f"frontend.min_capacity ({self.min_capacity})"
+            )
+        valid_mem = _FARGATE_MEMORY_BY_CPU[self.cpu]
+        if self.memory_mib not in valid_mem:
+            raise ValueError(
+                f"frontend.memory_mib={self.memory_mib} is invalid for "
+                f"frontend.cpu={self.cpu}; valid values: {sorted(valid_mem)}"
+            )
+        if self.domain_name and not self.certificate_arn:
+            raise ValueError(
+                "frontend.domain_name requires frontend.certificate_arn for HTTPS"
+            )
+        return self
+
+
 # ── Migration ──
 # An existing agent (someone else's container) moves onto the platform. The
 # block describes where it comes from, how the platform should run it, and
@@ -1408,6 +1509,7 @@ class PlatformConfig(BaseModel):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    frontend: FrontendConfig = Field(default_factory=FrontendConfig)
     # Opt-in use cases: name → that use case's own config block (passed to its
     # build() untouched; {} to enable with defaults). Names must exist under
     # use-cases/ — validated below so a typo cannot silently deploy nothing.
@@ -1632,7 +1734,31 @@ class PlatformConfig(BaseModel):
         # The migration block (PR #63) carries its own warnings; getattr keeps
         # this property valid on a tree where that field does not exist yet.
         migration = getattr(self, "migration", None)
-        return out + (migration.warnings if migration else [])
+        out = out + (migration.warnings if migration else [])
+        if self.frontend.enabled and not self.frontend.certificate_arn:
+            out.append(
+                "frontend.certificate_arn is empty: ALB uses HTTP :80 without "
+                "TLS; set an ACM certificate ARN before configuring HTTPS "
+                "Cognito/Entra OAuth callbacks"
+            )
+        return out
+
+    @model_validator(mode="after")
+    def _frontend_requires_vpc_and_non_federated(self) -> PlatformConfig:
+        if not self.frontend.enabled:
+            return self
+        if not self.security.networking:
+            raise ValueError(
+                "frontend.enabled=true requires security.networking=true "
+                "(ALB, ECS Fargate BFF, and VPCE-locked runtimes run inside the VPC)"
+            )
+        if self.deployment.strategy == "federated":
+            raise ValueError(
+                "frontend.enabled=true is not supported with "
+                "deployment.strategy='federated' (auth and runtime must be "
+                "in the same account for the ECS BFF stack)"
+            )
+        return self
 
     @property
     def web_search_enabled(self) -> bool:
@@ -1670,6 +1796,8 @@ class PlatformConfig(BaseModel):
             stacks.append(f"{prefix}-memory")
         if role != "workload":
             stacks.append(f"{prefix}-gateway")
+        if self.frontend.enabled and role != "workload":
+            stacks.append(f"{prefix}-frontend")
         if role != "platform":
             stacks.append(f"{prefix}-runtime-orchestrator")
             if self.agents.a2a:
@@ -1763,6 +1891,9 @@ def apply_environment_overrides(
         "CEDAR_MODE": ("security", "cedar", "mode"),
         "ORG_ID": ("security", "org_id"),
         "ALARM_EMAIL": ("observability", "alarm_email"),
+        "FRONTEND_EXPOSURE": ("frontend", "exposure"),
+        "FRONTEND_DOMAIN_NAME": ("frontend", "domain_name"),
+        "FRONTEND_CERTIFICATE_ARN": ("frontend", "certificate_arn"),
     }
     for key, path in scalar_paths.items():
         if env.get(key):
@@ -1780,6 +1911,8 @@ def apply_environment_overrides(
         "ENABLE_TRACEABILITY": ("security", "traceability"),
         "ENABLE_TRANSACTION_SEARCH": ("observability", "transaction_search"),
         "ENABLE_ALARMS": ("observability", "alarms"),
+        "ENABLE_FRONTEND": ("frontend", "enabled"),
+        "FRONTEND_RESTRICT_RUNTIME": ("frontend", "restrict_runtime_to_bff_vpc"),
     }
     for key, path in bool_paths.items():
         if not env.get(key):
@@ -1802,6 +1935,15 @@ def apply_environment_overrides(
             ("agents", "allowed_models"),
             [item.strip() for item in env["ALLOWED_MODELS"].split(",") if item.strip()],
         )
+    if env.get("FRONTEND_ALLOWED_CIDRS"):
+        put(
+            ("frontend", "allowed_cidrs"),
+            [
+                item.strip()
+                for item in env["FRONTEND_ALLOWED_CIDRS"].split(",")
+                if item.strip()
+            ],
+        )
     for key, path in {
         "ORCHESTRATOR_RUNTIME_GENERATION": (
             "agents",
@@ -1811,6 +1953,12 @@ def apply_environment_overrides(
         "LTM_RELEVANCE_SCORE": ("agents", "memory", "relevance_score"),
         "MEMORY_EVENT_EXPIRY_DAYS": ("agents", "memory", "event_expiry_days"),
         "LOG_RETENTION_DAYS": ("observability", "log_retention_days"),
+        "FRONTEND_WAF_RATE_LIMIT": ("frontend", "waf_rate_limit"),
+        "FRONTEND_MIN_CAPACITY": ("frontend", "min_capacity"),
+        "FRONTEND_MAX_CAPACITY": ("frontend", "max_capacity"),
+        "FRONTEND_CPU": ("frontend", "cpu"),
+        "FRONTEND_MEMORY_MIB": ("frontend", "memory_mib"),
+        "FRONTEND_SESSION_TTL_HOURS": ("frontend", "session_ttl_hours"),
     }.items():
         if env.get(key):
             put(path, env[key])
@@ -1894,6 +2042,20 @@ def to_env(config: PlatformConfig) -> dict[str, str]:
         "ENABLE_ALARMS": str(config.observability.alarms).lower(),
         "ALARM_EMAIL": config.observability.alarm_email,
         "LOG_RETENTION_DAYS": str(config.observability.log_retention_days),
+        "ENABLE_FRONTEND": str(config.frontend.enabled).lower(),
+        "FRONTEND_EXPOSURE": config.frontend.exposure,
+        "FRONTEND_DOMAIN_NAME": config.frontend.domain_name,
+        "FRONTEND_CERTIFICATE_ARN": config.frontend.certificate_arn,
+        "FRONTEND_ALLOWED_CIDRS": ",".join(config.frontend.allowed_cidrs),
+        "FRONTEND_WAF_RATE_LIMIT": str(config.frontend.waf_rate_limit),
+        "FRONTEND_MIN_CAPACITY": str(config.frontend.min_capacity),
+        "FRONTEND_MAX_CAPACITY": str(config.frontend.max_capacity),
+        "FRONTEND_CPU": str(config.frontend.cpu),
+        "FRONTEND_MEMORY_MIB": str(config.frontend.memory_mib),
+        "FRONTEND_SESSION_TTL_HOURS": str(config.frontend.session_ttl_hours),
+        "FRONTEND_RESTRICT_RUNTIME": str(
+            config.frontend.restrict_runtime_to_bff_vpc
+        ).lower(),
         "MIGRATION_ENABLED": str(config.migration is not None).lower(),
     }
     if config.migration:
@@ -2751,6 +2913,25 @@ def design_plan(config: PlatformConfig, account: str = "") -> list[str]:
         lines += [f"  {name}  (uc-{name})" for name in sorted(config.use_cases)]
     else:
         lines += ["", "Use cases: none yet (deploy.sh usecase new <name>)"]
+
+    if config.frontend.enabled:
+        fe = config.frontend
+        cidrs = ", ".join(fe.allowed_cidrs) if fe.allowed_cidrs else "(default)"
+        tls = "HTTPS (ACM)" if fe.certificate_arn else "HTTP :80 (no ACM cert)"
+        lines += [
+            "",
+            f"Frontend BFF ({fe.exposure} ALB + WAF -> ECS Fargate + DynamoDB):",
+            f"  Exposure: {fe.exposure}  TLS: {tls}  Allowed CIDRs: {cidrs}",
+            (
+                f"  ECS Fargate: {fe.min_capacity}-{fe.max_capacity} tasks "
+                f"({fe.cpu} CPU / {fe.memory_mib} MiB)"
+            ),
+            (
+                f"  WAF rate limit: {fe.waf_rate_limit}/5m  "
+                f"Session TTL: {fe.session_ttl_hours}h  "
+                f"Runtime VPCE-locked: {fe.restrict_runtime_to_bff_vpc}"
+            ),
+        ]
 
     if config.migration:
         # migration_plan() prints the migration block's own warnings; the

@@ -262,6 +262,7 @@
 
   const state = {
     config: null,
+    authMode: "pkce",
     discovery: null,
     accessToken: null,
     idToken: null,
@@ -269,6 +270,9 @@
     expiresAt: 0,
     renewTimer: null,
     idClaims: null,
+    bffAuthenticated: false,
+    bffSub: "",
+    bffCsrfToken: "",
     userLabel: "",
     threadId: null,
     runId: null,
@@ -291,6 +295,12 @@
   };
 
   let lastAutofilledPrompt = "";
+
+  function isSignedIn() {
+    return state.authMode === "bff"
+      ? Boolean(state.bffAuthenticated)
+      : Boolean(state.accessToken);
+  }
 
   /* ------------------------------------------------------------- helpers */
 
@@ -830,6 +840,21 @@
     const res = await fetch("/config.json", { cache: "no-store" });
     if (!res.ok) throw new Error(`config.json HTTP ${res.status}`);
     const data = await res.json();
+    if (data && data.auth_mode === "bff") {
+      if (typeof data.a2ui_protocol_version !== "string" || !data.a2ui_protocol_version) {
+        throw new Error("config.json is missing a2ui_protocol_version");
+      }
+      state.authMode = "bff";
+      state.config = Object.freeze({ ...data });
+      if (state.config.a2ui_protocol_version !== window.A2UI.PROTOCOL_VERSION) {
+        throw new Error(
+          `Server pins A2UI ${state.config.a2ui_protocol_version} but this `
+          + `renderer speaks ${window.A2UI.PROTOCOL_VERSION}.`,
+        );
+      }
+      return;
+    }
+    state.authMode = "pkce";
     for (const key of CONFIG_FIELDS) {
       if (typeof data[key] !== "string" || !data[key]) {
         throw new Error(`config.json is missing ${key}`);
@@ -898,6 +923,10 @@
   /* ------------------------------------------------------------- PKCE */
 
   async function beginSignIn() {
+    if (state.authMode === "bff") {
+      location.assign("/auth/login");
+      return;
+    }
     await loadDiscovery();
     const authUrl = assertHttpsUrl(state.discovery.authorization_endpoint, "authorization_endpoint");
     const verifier = b64urlEncode(window.crypto.getRandomValues(new Uint8Array(32)));
@@ -1162,6 +1191,9 @@
     state.refreshToken = null;
     state.expiresAt = 0;
     state.idClaims = null;
+    state.bffAuthenticated = false;
+    state.bffSub = "";
+    state.bffCsrfToken = "";
     state.userLabel = "";
     state.threadId = null;
     state.pendingEmployeeConfirm = null;
@@ -1220,6 +1252,27 @@
   }
 
   async function signOut() {
+    if (state.authMode === "bff") {
+      const csrf = state.bffCsrfToken;
+      clearLocalState();
+      try {
+        const res = await fetch("/auth/logout", {
+          method: "POST",
+          headers: csrf ? { "X-BFF-CSRF": csrf } : {},
+          credentials: "same-origin",
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && typeof data.logoutUrl === "string" && data.logoutUrl.startsWith("https://")) {
+            location.assign(data.logoutUrl);
+            return;
+          }
+        }
+      } catch {
+        /* ignore logout redirect errors */
+      }
+      return;
+    }
     let discovery = state.discovery;
     const clientId = state.config && state.config.web_client_id;
     const refreshToken = state.refreshToken;
@@ -1250,7 +1303,7 @@
   }
 
   function startNewChat() {
-    if (state.busy || !state.accessToken) return;
+    if (state.busy || !isSignedIn()) return;
     if (state.sseController) state.sseController.abort();
     state.pendingEmployeeConfirm = null;
     state.pendingManagerReviews.clear();
@@ -1279,6 +1332,10 @@
   /* ------------------------------------------------------------- history */
 
   function getUserHistoryStorageKey() {
+    if (state.authMode === "bff" && state.bffSub) {
+      const safeBff = String(state.bffSub).replace(/[^A-Za-z0-9_.-]/g, "_") || "default";
+      return `${STORAGE_KEYS.historyPrefix}${safeBff}`;
+    }
     const accessClaims = state.accessToken ? decodeClaims(state.accessToken) : null;
     const rawSub = (state.idClaims && (state.idClaims.sub || state.idClaims["cognito:username"] || state.idClaims.email))
       || (accessClaims && (accessClaims.sub || accessClaims.username))
@@ -1319,7 +1376,7 @@
   }
 
   function saveCurrentThreadToHistory() {
-    if (!state.accessToken || !state.threadId) return;
+    if (!isSignedIn() || !state.threadId) return;
     const meaningful = state.currentMessages.filter(
       (m) => m && ((m.text && m.text.trim()) || (Array.isArray(m.traces) && m.traces.length > 0) || (Array.isArray(m.cards) && m.cards.length > 0)),
     );
@@ -1350,6 +1407,13 @@
   function deleteHistoryThread(threadId) {
     const remaining = loadHistoryList().filter((item) => item.threadId !== threadId);
     writeHistoryList(remaining);
+    if (state.authMode === "bff" && state.bffAuthenticated) {
+      fetch(`/api/sessions/${encodeURIComponent(threadId)}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: state.bffCsrfToken ? { "X-BFF-CSRF": state.bffCsrfToken } : {},
+      }).catch(() => {});
+    }
     if (state.drawerOpen && state.drawerMode === "history") {
       renderDrawerBody();
     }
@@ -1357,14 +1421,66 @@
 
   function clearAllHistory() {
     state.historyByUser.delete(getUserHistoryStorageKey());
+    if (state.authMode === "bff" && state.bffAuthenticated) {
+      fetch("/api/sessions", {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: state.bffCsrfToken ? { "X-BFF-CSRF": state.bffCsrfToken } : {},
+      }).catch(() => {});
+    }
     if (state.drawerOpen && state.drawerMode === "history") {
       renderDrawerBody();
     }
   }
 
-  function loadHistoryThread(threadId) {
-    if (state.busy || !state.accessToken) return;
-    const item = loadHistoryList().find((x) => x.threadId === threadId);
+  async function syncBffHistoryList() {
+    if (state.authMode !== "bff" || !state.bffAuthenticated) return [];
+    try {
+      const res = await fetch("/api/sessions", { cache: "no-store", credentials: "same-origin" });
+      if (!res.ok) return [];
+      const data = await res.json();
+      const threads = Array.isArray(data.threads) ? data.threads : [];
+      const existingById = new Map(loadHistoryList().map((item) => [item.threadId, item]));
+      const merged = threads.map((t) => {
+        const prev = existingById.get(t.threadId);
+        return {
+          threadId: t.threadId,
+          title: t.title || "Conversation",
+          updatedAt: t.updatedAt || Date.now(),
+          activeAgentId: t.activeAgentId || "hr-assistant",
+          messageCount: t.messageCount || 0,
+          messages: prev && Array.isArray(prev.messages) ? prev.messages : [],
+        };
+      });
+      writeHistoryList(merged);
+      if (state.drawerOpen && state.drawerMode === "history") {
+        renderDrawerBody();
+      }
+      return merged;
+    } catch {
+      return [];
+    }
+  }
+
+  async function loadHistoryThread(threadId) {
+    if (state.busy || !isSignedIn()) return;
+    let item = loadHistoryList().find((x) => x.threadId === threadId);
+    if (state.authMode === "bff" && state.bffAuthenticated && (!item || !item.messages || item.messages.length === 0)) {
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(threadId)}`, {
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+        if (res.ok) {
+          item = await res.json();
+          const list = loadHistoryList().filter((x) => x.threadId !== threadId);
+          list.unshift(item);
+          writeHistoryList(list);
+        }
+      } catch {
+        /* fallback to in-memory entry if present */
+      }
+    }
     if (!item) return;
 
     if (state.sseController) state.sseController.abort();
@@ -1408,6 +1524,20 @@
           preserveManagerReviews: false,
         });
         applyA2uiMessages(msg.cards);
+      } else if (Array.isArray(msg.traces) && msg.traces.length > 0 && window.HrToolAdapter) {
+        const reconstructed = [];
+        for (const tr of msg.traces) {
+          if (tr && tr.toolName && tr.detail !== undefined) {
+            reconstructed.push(...window.HrToolAdapter.fromToolResult(tr.toolName, tr.detail));
+          }
+        }
+        if (reconstructed.length > 0) {
+          clearPreviousTurnSurfaces({
+            preserveEmployeeConfirm: false,
+            preserveManagerReviews: false,
+          });
+          applyA2uiMessages(reconstructed);
+        }
       }
     }
 
@@ -1604,7 +1734,7 @@
       renderWelcomeForActiveAgent(activeBot);
     }
 
-    if (activeBot && !state.busy && state.accessToken) {
+    if (activeBot && !state.busy && isSignedIn()) {
       const sample = samplePromptForBot(activeBot);
       const chatInput = $("chatInput");
       if (sample && chatInput && (!chatInput.value.trim() || chatInput.value === lastAutofilledPrompt)) {
@@ -1738,7 +1868,7 @@
     const shouldReset = options.resetChat !== false;
     const shouldClose = options.closeAfter !== false;
 
-    if (shouldReset && !state.busy && state.accessToken) {
+    if (shouldReset && !state.busy && isSignedIn()) {
       startNewChat();
     } else {
       renderWelcomeForActiveAgent(null);
@@ -1747,7 +1877,7 @@
 
     if (shouldClose) closeDrawer();
     const chatInput = $("chatInput");
-    if (chatInput && !state.busy && state.accessToken) chatInput.focus();
+    if (chatInput && !state.busy && isSignedIn()) chatInput.focus();
   }
 
   /* ------------------------------------------------------------- right drawer */
@@ -1856,7 +1986,9 @@
       const openBtn = el("button", "hr-history-btn");
       openBtn.type = "button";
       openBtn.append(el("span", "hr-drawer-card-title", item.title || "Conversation"));
-      const msgCount = Array.isArray(item.messages) ? item.messages.length : 0;
+      const msgCount = Array.isArray(item.messages) && item.messages.length > 0
+        ? item.messages.length
+        : (Number(item.messageCount) || 0);
       const agentObj = getCatalog().MARKETPLACE_AGENTS.find((a) => a && a.id === item.activeAgentId);
       const agentLabel = (agentObj && agentObj.name) || item.activeAgentId || "HR Assistant";
       openBtn.append(el("span", "hr-drawer-card-meta",
@@ -1926,7 +2058,7 @@
         const actions = el("div", "hr-drawer-actions");
         const useBtn = el("button", "hr-button hr-button--outline", "Use");
         useBtn.type = "button";
-        useBtn.disabled = !state.accessToken || state.busy;
+        useBtn.disabled = !isSignedIn() || state.busy;
         useBtn.addEventListener("click", () => {
           const input = $("chatInput");
           if (!input) return;
@@ -1942,7 +2074,7 @@
 
         const runBtn = el("button", "hr-button", "Run");
         runBtn.type = "button";
-        runBtn.disabled = !state.accessToken || state.busy;
+        runBtn.disabled = !isSignedIn() || state.busy;
         runBtn.addEventListener("click", () => {
           if (!p.prompt) return;
           closeDrawer();
@@ -1988,7 +2120,7 @@
       }
 
       const actions = el("div", "hr-drawer-actions");
-      if (sec.prompt && state.accessToken) {
+      if (sec.prompt && isSignedIn()) {
         const tryBtn = el("button", "hr-button hr-button--outline", "Try example");
         tryBtn.type = "button";
         tryBtn.disabled = state.busy;
@@ -2010,7 +2142,7 @@
         mktBtn.addEventListener("click", () => openDrawer("marketplace"));
         actions.append(mktBtn);
       }
-      if (sec.id === "god-bot-handover" && state.accessToken) {
+      if (sec.id === "god-bot-handover" && isSignedIn()) {
         const tryLeaveBtn = el("button", "hr-button hr-button--outline", "Try handover");
         tryLeaveBtn.type = "button";
         tryLeaveBtn.disabled = state.busy;
@@ -2074,7 +2206,7 @@
         isActive ? "Active (New chat)" : "Start with this agent",
       );
       startBtn.type = "button";
-      startBtn.disabled = !state.accessToken || state.busy;
+      startBtn.disabled = !isSignedIn() || state.busy;
       startBtn.addEventListener("click", () => selectMarketplaceAgent(agent.id));
       actions.append(startBtn);
       card.append(actions);
@@ -2119,7 +2251,7 @@
     const chatMessages = $("chatMessages");
     if (!welcome || !chatMessages) return;
     const hasMessages = chatMessages.childElementCount > 0;
-    welcome.hidden = !state.accessToken || hasMessages;
+    welcome.hidden = !isSignedIn() || hasMessages;
   }
 
   function updateReviewBadge(count) {
@@ -2131,7 +2263,7 @@
   }
 
   function renderIdentity() {
-    const isAuthenticated = Boolean(state.accessToken);
+    const isAuthenticated = isSignedIn();
     const loginScreen = $("loginScreen");
     const workspace = $("appWorkspace");
     const label = $("identityState");
@@ -2168,7 +2300,7 @@
   }
 
   function updateControls() {
-    const ready = Boolean(state.accessToken) && !state.busy;
+    const ready = isSignedIn() && !state.busy;
     const refreshBtn = $("refreshReviewsBtn");
     const newChatBtn = $("newChatBtn");
     const sendBtn = $("chatSend");
@@ -2220,7 +2352,7 @@
     }
     syncWelcomeVisibility();
 
-    if (options.recordHistory !== false && state.accessToken && !options.ephemeral) {
+    if (options.recordHistory !== false && isSignedIn() && !options.ephemeral) {
       state.currentMessages.push({
         role,
         text: text || "",
@@ -2318,7 +2450,7 @@
   }
 
   async function pollPendingReviews({ manual = false } = {}) {
-    if (state.busy || !state.accessToken || !state.threadId) return;
+    if (state.busy || !isSignedIn() || !state.threadId) return;
     state.busy = true;
     updateControls();
     state.runId = newId("run");
@@ -2344,7 +2476,7 @@
   }
 
   async function sendMessage(text) {
-    if (state.busy || !state.accessToken) return;
+    if (state.busy || !isSignedIn()) return;
     const message = (text || "").trim();
     if (!message) return;
     appendMessage("user", message);
@@ -2407,7 +2539,7 @@
   }
 
   async function sendResume(resumePayload, interruptId) {
-    if (state.busy || !state.accessToken) return false;
+    if (state.busy || !isSignedIn()) return false;
     state.busy = true;
     updateControls();
     resetBotActivityForTurn(
@@ -2497,16 +2629,22 @@
   async function streamAgent(input, _retriedAfterRefresh) {
     if (state.sseController) state.sseController.abort();
     state.sseController = new AbortController();
+    const reqHeaders = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": state.threadId,
+      "X-Amzn-Trace-Id": newXrayTraceId(),
+    };
+    if (state.authMode === "bff") {
+      if (state.bffCsrfToken) reqHeaders["X-BFF-CSRF"] = state.bffCsrfToken;
+    } else {
+      reqHeaders.Authorization = `Bearer ${state.accessToken}`;
+    }
     const res = await fetch(runtimeUrl(), {
       method: "POST",
       signal: state.sseController.signal,
-      headers: {
-        Authorization: `Bearer ${state.accessToken}`,
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": state.threadId,
-        "X-Amzn-Trace-Id": newXrayTraceId(),
-      },
+      credentials: "same-origin",
+      headers: reqHeaders,
       body: JSON.stringify(input),
     });
     if (res.status === 401 || res.status === 403) {
@@ -3020,7 +3158,7 @@
   }
 
   function restoreEmployeeConfirmIfNeeded(savedInterrupt) {
-    if (!savedInterrupt || !state.accessToken || state.pendingEmployeeConfirm) return;
+    if (!savedInterrupt || !isSignedIn() || state.pendingEmployeeConfirm) return;
     state.pendingEmployeeConfirm = savedInterrupt;
     const messages = window.HrToolAdapter.fromInterrupt(savedInterrupt);
     if (messages.length > 0) applyA2uiMessages(messages);
@@ -3143,7 +3281,7 @@
       kind: "manager_review",
       request_id: effectiveRequestId,
     }, interruptId);
-    if (!ok && state.accessToken && !state.pendingManagerReviews.has(effectiveKey)) {
+    if (!ok && isSignedIn() && !state.pendingManagerReviews.has(effectiveKey)) {
       state.pendingManagerReviews.set(effectiveKey, interrupt);
       updateReviewBadge(state.pendingManagerReviews.size);
       applyA2uiMessages(window.HrToolAdapter.fromInterrupt(interrupt));
@@ -3242,6 +3380,42 @@
       showLoginError(formatOAuthCallbackError(oauthErrCode, Boolean(oauthErrDesc)));
       return;
     }
+    if (state.authMode === "bff") {
+      try {
+        const res = await fetch("/api/auth/me", { cache: "no-store", credentials: "same-origin" });
+        if (res.ok) {
+          const me = await res.json();
+          if (me && me.authenticated) {
+            state.bffAuthenticated = true;
+            state.bffSub = me.sub || "";
+            state.bffCsrfToken = me.csrfToken || "";
+            state.userLabel = me.userLabel || "Signed in";
+            state.threadId = (me.activeThreadId && /^[A-Za-z0-9_-]{8,128}$/.test(me.activeThreadId))
+              ? me.activeThreadId
+              : ensureTabThreadId();
+            renderIdentity();
+            renderBotRoster();
+            renderWelcomeForActiveAgent(null);
+            updateControls();
+            const threads = await syncBffHistoryList();
+            if (threads.some((t) => t.threadId === state.threadId)) {
+              await loadHistoryThread(state.threadId);
+            }
+            if ($("chatInput")) $("chatInput").focus();
+            await pollPendingReviews({ manual: false });
+            return;
+          }
+        }
+      } catch (err) {
+        showLoginError(`Could not verify BFF session: ${err.message}`);
+      }
+      renderIdentity();
+      renderBotRoster();
+      renderWelcomeForActiveAgent(null);
+      updateControls();
+      return;
+    }
+
     if (code) {
       const signInBtn = $("signInBtn");
       if (signInBtn) {
@@ -3392,7 +3566,7 @@
 
   document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
-      if (!state.accessToken) return;
+      if (!isSignedIn()) return;
       e.preventDefault();
       if (state.drawerOpen && state.drawerMode === "prompts") {
         closeDrawer();

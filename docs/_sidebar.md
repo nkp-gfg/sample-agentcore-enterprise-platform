@@ -28,6 +28,7 @@ Build
 - [Add gateway tools](GATEWAY_TARGETS.md)
 - [Build a use case](PLATFORM_INTERFACE.md)
 - [HR assistant](hr/README.md)
+- [Hosted HR web BFF (WAF + ALB + ECS)](FRONTEND_ECS_BFF_DEPLOYMENT.md)
 
 Migrate
 - [EBA migration runbook](MIGRATION_RUNBOOK.md)

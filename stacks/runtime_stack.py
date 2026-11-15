@@ -44,7 +44,7 @@ from constructs import Construct
 
 from infra_utils.jwt_authorizer import custom_jwt_authorizer
 from infra_utils.platform_config import allowed_model_resources
-from infra_utils.policy_loader import load_control
+from infra_utils.policy_loader import load_control, load_control_json
 from infra_utils.runtime_network import build_network_config
 from infra_utils.runtime_protocol import needs_jwt_authorizer, resolve_protocol
 from infra_utils.source_hash import component_image_tag, compute_source_hash
@@ -91,6 +91,7 @@ class RuntimeStack(cdk.Stack):
         # lookup of the public Cognito web-client-id for hr-web PKCE tokens.
         m2m_client_secret_name: str = "",
         include_ssm_web_client: bool = False,
+        restrict_to_vpce_id: str = "",
         # ── Migration (image-source) mode ──
         # Set source_image (registry ref) or build_context (local dir) and the
         # stack builds the migration adapter (migration/adapter/) ON TOP of the
@@ -544,6 +545,21 @@ class RuntimeStack(cdk.Stack):
 
         self._runtime = agentcore.CfnRuntime(self, "Runtime", **runtime_props)
         self._runtime.node.add_dependency(build_trigger)
+
+        if restrict_to_vpce_id:
+            policy_json = load_control_json(
+                "resource-policy.runtime.vpce-only",
+                {
+                    "runtime_arn": self._runtime.attr_agent_runtime_arn,
+                    "vpce_id": restrict_to_vpce_id,
+                },
+            )
+            agentcore.CfnResourcePolicy(
+                self,
+                "RuntimeResourcePolicy",
+                resource_arn=self._runtime.attr_agent_runtime_arn,
+                policy=policy_json,
+            )
 
         # ── SSM Parameters ──
         ssm.StringParameter(
