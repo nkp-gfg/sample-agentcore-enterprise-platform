@@ -1735,7 +1735,11 @@ class PlatformConfig(BaseModel):
         # this property valid on a tree where that field does not exist yet.
         migration = getattr(self, "migration", None)
         out = out + (migration.warnings if migration else [])
-        if self.frontend.enabled and self.frontend.domain_name and not self.frontend.certificate_arn:
+        if (
+            self.frontend.enabled
+            and self.frontend.domain_name
+            and not self.frontend.certificate_arn
+        ):
             out.append(
                 "frontend.domain_name is set without frontend.certificate_arn. "
                 "The Express Mode hostname is still HTTPS. A custom domain "

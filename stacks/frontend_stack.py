@@ -40,9 +40,6 @@ from aws_cdk import (
     aws_iam as iam,
 )
 from aws_cdk import (
-    custom_resources as cr,
-)
-from aws_cdk import (
     aws_kms as kms,
 )
 from aws_cdk import (
@@ -59,6 +56,9 @@ from aws_cdk import (
 )
 from aws_cdk import (
     aws_wafv2 as wafv2,
+)
+from aws_cdk import (
+    custom_resources as cr,
 )
 from constructs import Construct
 
@@ -139,7 +139,6 @@ class FrontendStack(cdk.Stack):
         ).subnet_ids
         # Customer ACM ARNs are not attached. Express Mode requests the cert.
         del certificate_arn
-
 
         # ── 3. AWS WAFv2 Regional WebACL attached to the ALB ───────────────
         waf_rules: list[wafv2.CfnWebACL.RuleProperty] = []

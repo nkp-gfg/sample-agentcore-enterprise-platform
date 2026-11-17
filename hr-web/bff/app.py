@@ -489,13 +489,20 @@ def create_app(
             parts = urlsplit(cfg.oidc_redirect_uri)
             return f"{parts.scheme}://{parts.netloc}"
         host = (
-            request.headers.get("x-forwarded-host")
-            or request.headers.get("host")
-            or ""
-        ).split(",")[0].strip()
+            (
+                request.headers.get("x-forwarded-host")
+                or request.headers.get("host")
+                or ""
+            )
+            .split(",")[0]
+            .strip()
+        )
         proto = (
-            request.headers.get("x-forwarded-proto") or "https"
-        ).split(",")[0].strip().lower()
+            (request.headers.get("x-forwarded-proto") or "https")
+            .split(",")[0]
+            .strip()
+            .lower()
+        )
         if proto != "https" or not host.endswith(".on.aws"):
             raise HTTPException(
                 status_code=400, detail="Public host is not recognized."
@@ -521,11 +528,10 @@ def create_app(
 
     def _require_csrf(request: Request, session: dict[str, Any]) -> None:
         origin = (request.headers.get("origin") or "").strip()
-        if origin:
-            if origin.lower() != _request_origin(request).lower():
-                raise HTTPException(
-                    status_code=403, detail="Cross-origin request rejected."
-                )
+        if origin and origin.lower() != _request_origin(request).lower():
+            raise HTTPException(
+                status_code=403, detail="Cross-origin request rejected."
+            )
         sent_csrf = (request.headers.get("x-bff-csrf") or "").strip()
         expected_csrf = str(session.get("csrf_token") or "")
         if (
