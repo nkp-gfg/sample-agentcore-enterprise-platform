@@ -1,5 +1,6 @@
 *.swp
 package-lock.json
+!hr-web/web/package-lock.json
 __pycache__
 .pytest_cache
 .venv

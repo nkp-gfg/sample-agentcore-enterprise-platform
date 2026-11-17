@@ -1,3 +1,13 @@
+FROM public.ecr.aws/docker/library/node:24-slim AS web
+
+WORKDIR /web
+
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web/ ./
+RUN npm run build
+
 FROM public.ecr.aws/docker/library/python:3.13-slim
 
 WORKDIR /app
@@ -10,6 +20,7 @@ RUN pip install --no-cache-dir -r bff/requirements.txt
 
 COPY bff/ bff/
 COPY public/ public/
+COPY --from=web /web/dist /app/web/dist
 
 RUN useradd -m -u 1000 hrweb && chown -R hrweb:hrweb /app
 USER hrweb

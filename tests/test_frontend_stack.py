@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import zipfile
+from pathlib import Path
 from typing import Any
 
 import aws_cdk as cdk
@@ -104,7 +106,7 @@ def _synth_frontend(
     allowed_cidrs: list[str] | None = None,
     certificate_arn: str = "",
     domain_name: str = "",
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], FrontendStack]:
     app = cdk.App()
     net = NetworkingStack(
         app,
@@ -179,11 +181,25 @@ def _synth_frontend(
         Template.from_stack(fe).to_json(),
         Template.from_stack(rt).to_json(),
         Template.from_stack(net).to_json(),
+        fe,
     )
 
 
+def _bff_source_asset_files(stack: FrontendStack) -> set[str]:
+    staging = stack.node.find_child("BffSourceAsset").node.find_child("Stage")
+    staged = Path(staging.absolute_staged_path)
+    if staged.is_file():
+        with zipfile.ZipFile(staged) as archive:
+            return {name for name in archive.namelist() if not name.endswith("/")}
+    return {
+        path.relative_to(staged).as_posix()
+        for path in staged.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_private_frontend_synthesizes_express_mode_waf_and_dynamodb() -> None:
-    fe_tpl, rt_tpl, net_tpl = _synth_frontend(
+    fe_tpl, rt_tpl, net_tpl, fe = _synth_frontend(
         exposure="private",
         retain_data=True,
         allowed_cidrs=["10.20.0.0/16"],
@@ -209,6 +225,23 @@ def test_private_frontend_synthesizes_express_mode_waf_and_dynamodb() -> None:
     ]
     assert not _resources(fe_tpl, "AWS::ECS::Service")
     assert not _resources(fe_tpl, "AWS::ElasticLoadBalancingV2::LoadBalancer")
+
+    projects = _resources(fe_tpl, "AWS::CodeBuild::Project")
+    assert len(projects) == 1
+    assert projects[0]["Properties"]["TimeoutInMinutes"] == 30
+
+    staged_names = _bff_source_asset_files(fe)
+    assert "Dockerfile" in staged_names
+    assert any(name.startswith("bff/") for name in staged_names)
+    assert not any(name == "tests" or name.startswith("tests/") for name in staged_names)
+    assert not any(
+        part in {"node_modules", ".venv", ".git", "__pycache__"}
+        for name in staged_names
+        for part in name.split("/")
+    )
+    assert not any(
+        name == "web/dist" or name.startswith("web/dist/") for name in staged_names
+    )
 
     waf_acls = _resources(fe_tpl, "AWS::WAFv2::WebACL")
     assert len(waf_acls) == 1
@@ -252,7 +285,7 @@ def test_private_frontend_synthesizes_express_mode_waf_and_dynamodb() -> None:
 
 
 def test_public_frontend_uses_express_mode_https_callback() -> None:
-    fe_tpl, _, _ = _synth_frontend(
+    fe_tpl, _, _, _ = _synth_frontend(
         exposure="public",
         retain_data=False,
         certificate_arn="arn:aws:acm:us-east-1:111111111111:certificate/abc-123",
@@ -271,3 +304,22 @@ def test_public_frontend_uses_express_mode_https_callback() -> None:
         "https://hr.corp.internal/auth/callback"
     ]
     assert clients[0]["Properties"]["LogoutURLs"] == ["https://hr.corp.internal/"]
+
+
+def test_bff_source_asset_exclude_list_covers_vite_and_python_trees() -> None:
+    source = (
+        Path(__file__).resolve().parents[1].joinpath("stacks", "frontend_stack.py")
+    ).read_text()
+    chunk = source[source.index("BffSourceAsset") : source.index("BffBuild")]
+    for pattern in (
+        "node_modules",
+        "web/node_modules",
+        "web/dist",
+        "__pycache__",
+        ".venv",
+        ".git",
+        "tests",
+        "**/__pycache__",
+    ):
+        assert f'"{pattern}"' in chunk
+    assert "IgnoreMode.GLOB" in chunk

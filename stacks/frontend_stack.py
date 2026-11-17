@@ -415,7 +415,23 @@ class FrontendStack(cdk.Stack):
                     )
                 ],
             )
-        source_asset = s3_assets.Asset(self, "BffSourceAsset", path=abs_hr_web_dir)
+        # Hash excludes skip node_modules/dist; Asset exclude keeps them out of the zip.
+        source_asset = s3_assets.Asset(
+            self,
+            "BffSourceAsset",
+            path=abs_hr_web_dir,
+            exclude=[
+                "node_modules",
+                "web/node_modules",
+                "web/dist",
+                "__pycache__",
+                ".venv",
+                ".git",
+                "tests",
+                "**/__pycache__",
+            ],
+            ignore_mode=cdk.IgnoreMode.GLOB,
+        )
 
         build_project = codebuild.Project(
             self,
@@ -427,7 +443,7 @@ class FrontendStack(cdk.Stack):
                 privileged=True,
                 compute_type=codebuild.ComputeType.SMALL,
             ),
-            timeout=cdk.Duration.minutes(20),
+            timeout=cdk.Duration.minutes(30),
             build_spec=codebuild.BuildSpec.from_object(
                 {
                     "version": "0.2",
