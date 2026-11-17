@@ -659,7 +659,7 @@ def test_god_agent_gateway_client_schemas_https_and_m2m_checks(monkeypatch):
 # ── 8. CDK stacks & control-library hardening ──
 
 
-def test_security_stack_enables_file_validation_and_access_logging_in_non_prod():
+def test_security_stack_enables_file_validation_without_s3_server_access_logs():
     from stacks.security_stack import SecurityStack
 
     app = cdk.App()
@@ -678,8 +678,8 @@ def test_security_stack_enables_file_validation_and_access_logging_in_non_prod()
     assert trail["EnableLogFileValidation"] is True
 
     buckets = _resources(tpl, "AWS::S3::Bucket")
-    assert len(buckets) == 2
-    assert any("LoggingConfiguration" in b["Properties"] for b in buckets)
+    assert len(buckets) == 1
+    assert "LoggingConfiguration" not in buckets[0]["Properties"]
 
 
 def test_networking_stack_adds_vpc_flow_logs_without_requiring_org_id():

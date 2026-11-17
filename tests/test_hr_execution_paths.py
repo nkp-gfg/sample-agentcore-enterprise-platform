@@ -281,6 +281,61 @@ def test_trigger_manager_preserves_pool_settings_and_detaches_cleanly():
         }
 
 
+def test_trigger_manager_reads_function_arn_from_ssm_and_skips_when_absent():
+    mod = _load_module(
+        "hr_identity_trigger_mgr_ssm_test",
+        REPO / "use-cases" / "hr-identity" / "trigger_manager" / "handler.py",
+    )
+    fn_arn = "arn:aws:lambda:eu-west-1:111111111111:function:hr-pretoken"
+    fake_cognito = MagicMock()
+    fake_cognito.describe_user_pool.return_value = {
+        "UserPool": {
+            "Id": "eu-west-1_Pool123",
+            "DeletionProtection": "ACTIVE",
+            "UserPoolTier": "ESSENTIALS",
+            "LambdaConfig": {},
+        }
+    }
+    fake_ssm = MagicMock()
+    fake_ssm.get_parameter.return_value = {"Parameter": {"Value": fn_arn}}
+
+    def _client(service_name, region_name=None):
+        del region_name
+        if service_name == "ssm":
+            return fake_ssm
+        return fake_cognito
+
+    event = {
+        "RequestType": "Create",
+        "ResourceProperties": {
+            "UserPoolId": "eu-west-1_Pool123",
+            "FunctionArnParameter": "/agentcore/prod/use-cases/hr-identity/function-arn",
+            "LambdaVersion": "V3_0",
+        },
+    }
+    with patch("boto3.client", side_effect=_client):
+        mod.on_event(event, None)
+    attached = fake_cognito.update_user_pool.call_args.kwargs
+    assert attached["LambdaConfig"]["PreTokenGenerationConfig"]["LambdaArn"] == fn_arn
+
+    missing = MagicMock()
+    missing.exceptions.ParameterNotFoundException = type(
+        "ParameterNotFoundException", (Exception,), {}
+    )
+    missing.get_parameter.side_effect = missing.exceptions.ParameterNotFoundException()
+    fake_cognito.update_user_pool.reset_mock()
+
+    def _missing_client(service_name, region_name=None):
+        del region_name
+        if service_name == "ssm":
+            return missing
+        return fake_cognito
+
+    with patch("boto3.client", side_effect=_missing_client):
+        mod.on_event(event, None)
+    fake_cognito.update_user_pool.assert_not_called()
+
+
 def test_hr_tools_dispatcher_and_handlers_enforce_two_phase_read_and_idempotency(
     monkeypatch,
 ):
