@@ -697,7 +697,7 @@ class FrontendStack(cdk.Stack):
                     "        SupportedIdentityProviders=current.get('SupportedIdentityProviders') or ['COGNITO'],\n"
                     "        ExplicitAuthFlows=current.get('ExplicitAuthFlows') or ['ALLOW_REFRESH_TOKEN_AUTH'],\n"
                     "    )\n"
-                    "    return {'PhysicalResourceId': base}\n"
+                    "    return {'PhysicalResourceId': base, 'Data': {'Url': base}}\n"
                 ),
             )
             callback_fn.add_to_role_policy(
@@ -721,7 +721,7 @@ class FrontendStack(cdk.Stack):
                 "CallbackRegistrarProvider",
                 on_event_handler=callback_fn,
             )
-            CustomResource(
+            callback_resource = CustomResource(
                 self,
                 "CallbackRegistrar",
                 service_token=callback_provider.service_token,
@@ -731,6 +731,9 @@ class FrontendStack(cdk.Stack):
                     "ClientId": self._bff_client_id,
                 },
             )
+            # Docs: read ingress endpoint, then add https://. The service
+            # name is not the hostname.
+            self._frontend_url = callback_resource.get_att("Url").to_string()
 
         # ── 8. SSM Parameters & Outputs (non-secret only) ──────────────────
         ssm.StringParameter(
