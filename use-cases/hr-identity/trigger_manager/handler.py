@@ -102,9 +102,7 @@ def on_event(event: dict, _context) -> dict:
         # have no such parameter, and a delete after hr-identity is gone has
         # nothing to detach.
         if props.get("FunctionArnParameter") or request_type == "Delete":
-            logger.info(
-                "No pre-token Lambda to %s on %s", request_type, user_pool_id
-            )
+            logger.info("No pre-token Lambda to %s on %s", request_type, user_pool_id)
             return {"PhysicalResourceId": physical_id}
         raise ValueError("LambdaArn is required")
 
