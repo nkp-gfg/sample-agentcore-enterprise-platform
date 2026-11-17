@@ -484,6 +484,34 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    def _request_origin(request: Request) -> str:
+        if cfg.oidc_redirect_uri:
+            parts = urlsplit(cfg.oidc_redirect_uri)
+            return f"{parts.scheme}://{parts.netloc}"
+        host = (
+            request.headers.get("x-forwarded-host")
+            or request.headers.get("host")
+            or ""
+        ).split(",")[0].strip()
+        proto = (
+            request.headers.get("x-forwarded-proto") or "https"
+        ).split(",")[0].strip().lower()
+        if proto != "https" or not host.endswith(".on.aws"):
+            raise HTTPException(
+                status_code=400, detail="Public host is not recognized."
+            )
+        return f"https://{host}"
+
+    def _redirect_uri(request: Request) -> str:
+        if cfg.oidc_redirect_uri:
+            return cfg.oidc_redirect_uri
+        return f"{_request_origin(request)}/auth/callback"
+
+    def _logout_uri(request: Request) -> str:
+        if cfg.oidc_logout_uri:
+            return cfg.oidc_logout_uri
+        return f"{_request_origin(request)}/"
+
     def _require_session(request: Request) -> dict[str, Any]:
         sid = request.cookies.get(SESSION_COOKIE_NAME, "")
         session = rt.store.get_session(sid)
@@ -493,9 +521,8 @@ def create_app(
 
     def _require_csrf(request: Request, session: dict[str, Any]) -> None:
         origin = (request.headers.get("origin") or "").strip()
-        if origin and cfg.oidc_redirect_uri:
-            expected_origin = f"{urlsplit(cfg.oidc_redirect_uri).scheme}://{urlsplit(cfg.oidc_redirect_uri).netloc}".lower()
-            if origin.lower() != expected_origin:
+        if origin:
+            if origin.lower() != _request_origin(request).lower():
                 raise HTTPException(
                     status_code=403, detail="Cross-origin request rejected."
                 )
@@ -521,7 +548,7 @@ def create_app(
         }
 
     @app.get("/auth/login")
-    async def auth_login():
+    async def auth_login(request: Request):
         disc = await rt.get_discovery()
         auth_url = _assert_https_url(
             disc["authorization_endpoint"], "authorization_endpoint"
@@ -534,7 +561,7 @@ def create_app(
             {
                 "response_type": "code",
                 "client_id": cfg.oidc_client_id,
-                "redirect_uri": cfg.oidc_redirect_uri,
+                "redirect_uri": _redirect_uri(request),
                 "scope": cfg.oidc_scope,
                 "state": oauth_state,
                 "nonce": nonce,
@@ -562,7 +589,7 @@ def create_app(
             "grant_type": "authorization_code",
             "client_id": cfg.oidc_client_id,
             "code": code,
-            "redirect_uri": cfg.oidc_redirect_uri,
+            "redirect_uri": _redirect_uri(request),
             "code_verifier": str(pkce["verifier"]),
         }
         if cfg.oidc_client_secret:
@@ -655,14 +682,15 @@ def create_app(
                 if cfg.oidc_client_secret:
                     rev_form["client_secret"] = cfg.oidc_client_secret
                 await rt.http().post(rev_url, data=rev_form, timeout=3.0)
-            if disc.get("end_session_endpoint") and cfg.oidc_logout_uri:
+            logout_uri = _logout_uri(request)
+            if disc.get("end_session_endpoint") and logout_uri:
                 end_url = _assert_https_url(
                     disc["end_session_endpoint"], "end_session_endpoint"
                 )
                 logout_url = f"{end_url}?" + urlencode(
                     {
                         "client_id": cfg.oidc_client_id,
-                        "logout_uri": cfg.oidc_logout_uri,
+                        "logout_uri": logout_uri,
                     }
                 )
         except Exception as exc:  # noqa: BLE001

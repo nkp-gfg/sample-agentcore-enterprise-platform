@@ -371,8 +371,14 @@ class FrontendStack(cdk.Stack):
                         cognito.OAuthScope.EMAIL,
                         cognito.OAuthScope.PROFILE,
                     ],
-                    callback_urls=[redirect_uri],
-                    logout_urls=[logout_uri],
+                    callback_urls=(
+                        [redirect_uri]
+                        if domain_name
+                        else ["https://localhost/auth/callback"]
+                    ),
+                    logout_urls=(
+                        [logout_uri] if domain_name else ["https://localhost/"]
+                    ),
                 ),
             )
             bff_client_secret_store = secretsmanager.Secret(
@@ -569,8 +575,6 @@ class FrontendStack(cdk.Stack):
             "BFF_SSM_PREFIX": f"/{project_name}/{environment}",
             "OIDC_ISSUER_URL": issuer_url,
             "OIDC_CLIENT_ID": self._bff_client_id,
-            "OIDC_REDIRECT_URI": redirect_uri,
-            "OIDC_LOGOUT_URI": logout_uri,
             "OIDC_SCOPE": oidc_scope,
             "BFF_SESSION_TABLE": bff_sessions_table.table_name,
             "CHAT_SESSION_TABLE": chat_sessions_table.table_name,
@@ -578,6 +582,9 @@ class FrontendStack(cdk.Stack):
             "COOKIE_SECURE": "true",
             "SESSION_TTL_HOURS": str(session_ttl_hours),
         }
+        if domain_name:
+            container_env["OIDC_REDIRECT_URI"] = redirect_uri
+            container_env["OIDC_LOGOUT_URI"] = logout_uri
         express = cdk.CfnResource(
             self,
             "HrWebExpress",
@@ -622,26 +629,108 @@ class FrontendStack(cdk.Stack):
             resource_arn=load_balancer_arn,
             web_acl_arn=web_acl.attr_arn,
         )
-        cr.AwsCustomResource(
+        idle_fn = _lambda.Function(
             self,
-            "AlbIdleTimeout",
-            on_create=cr.AwsSdkCall(
-                service="ElasticLoadBalancingV2",
-                action="modifyLoadBalancerAttributes",
-                parameters={
-                    "LoadBalancerArn": load_balancer_arn,
-                    "Attributes": [
-                        {"Key": "idle_timeout.timeout_seconds", "Value": "300"}
-                    ],
-                },
-                physical_resource_id=cr.PhysicalResourceId.of(
-                    f"{prefix}-express-alb-idle-timeout"
-                ),
-            ),
-            policy=cr.AwsCustomResourcePolicy.from_sdk_calls(
-                resources=cr.AwsCustomResourcePolicy.ANY_RESOURCE
+            "AlbIdleTimeoutFn",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="index.handler",
+            timeout=cdk.Duration.seconds(60),
+            code=_lambda.Code.from_inline(
+                "import boto3\n"
+                "def handler(event, context):\n"
+                "    if event['RequestType'] != 'Delete':\n"
+                "        boto3.client('elbv2').modify_load_balancer_attributes(\n"
+                "            LoadBalancerArn=event['ResourceProperties']['LoadBalancerArn'],\n"
+                "            Attributes=[{'Key': 'idle_timeout.timeout_seconds', 'Value': '300'}],\n"
+                "        )\n"
+                "    return {'PhysicalResourceId': 'express-alb-idle-timeout'}\n"
             ),
         )
+        idle_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["elasticloadbalancing:ModifyLoadBalancerAttributes"],
+                resources=["*"],
+            )
+        )
+        idle_provider = cr.Provider(
+            self,
+            "AlbIdleTimeoutProvider",
+            on_event_handler=idle_fn,
+        )
+        CustomResource(
+            self,
+            "AlbIdleTimeout",
+            service_token=idle_provider.service_token,
+            properties={"LoadBalancerArn": load_balancer_arn},
+        )
+        if idp_mode != "direct" and not domain_name:
+            # The public hostname is generated (ag-<id>.ecs.<region>.on.aws),
+            # so it is not known until the service exists. Register that
+            # hostname as the Cognito callback after create.
+            callback_fn = _lambda.Function(
+                self,
+                "CallbackRegistrarFn",
+                runtime=_lambda.Runtime.PYTHON_3_13,
+                handler="index.handler",
+                timeout=cdk.Duration.seconds(60),
+                code=_lambda.Code.from_inline(
+                    "import boto3\n"
+                    "def handler(event, context):\n"
+                    "    if event['RequestType'] == 'Delete':\n"
+                    "        return {'PhysicalResourceId': 'bff-callback'}\n"
+                    "    props = event['ResourceProperties']\n"
+                    "    raw = props['Endpoint'].strip().rstrip('/')\n"
+                    "    base = raw if '://' in raw else 'https://' + raw\n"
+                    "    cognito = boto3.client('cognito-idp')\n"
+                    "    current = cognito.describe_user_pool_client(\n"
+                    "        UserPoolId=props['UserPoolId'], ClientId=props['ClientId']\n"
+                    "    )['UserPoolClient']\n"
+                    "    cognito.update_user_pool_client(\n"
+                    "        UserPoolId=props['UserPoolId'],\n"
+                    "        ClientId=props['ClientId'],\n"
+                    "        ClientName=current['ClientName'],\n"
+                    "        CallbackURLs=[base + '/auth/callback'],\n"
+                    "        LogoutURLs=[base + '/'],\n"
+                    "        AllowedOAuthFlows=current.get('AllowedOAuthFlows') or ['code'],\n"
+                    "        AllowedOAuthScopes=current.get('AllowedOAuthScopes') or ['openid', 'email', 'profile'],\n"
+                    "        AllowedOAuthFlowsUserPoolClient=True,\n"
+                    "        SupportedIdentityProviders=current.get('SupportedIdentityProviders') or ['COGNITO'],\n"
+                    "        ExplicitAuthFlows=current.get('ExplicitAuthFlows') or ['ALLOW_REFRESH_TOKEN_AUTH'],\n"
+                    "    )\n"
+                    "    return {'PhysicalResourceId': base}\n"
+                ),
+            )
+            callback_fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=[
+                        "cognito-idp:DescribeUserPoolClient",
+                        "cognito-idp:UpdateUserPoolClient",
+                    ],
+                    resources=[
+                        self.format_arn(
+                            service="cognito-idp",
+                            resource="userpool",
+                            resource_name=user_pool_id,
+                            arn_format=cdk.ArnFormat.SLASH_RESOURCE_NAME,
+                        )
+                    ],
+                )
+            )
+            callback_provider = cr.Provider(
+                self,
+                "CallbackRegistrarProvider",
+                on_event_handler=callback_fn,
+            )
+            CustomResource(
+                self,
+                "CallbackRegistrar",
+                service_token=callback_provider.service_token,
+                properties={
+                    "Endpoint": express.get_att("Endpoint").to_string(),
+                    "UserPoolId": user_pool_id,
+                    "ClientId": self._bff_client_id,
+                },
+            )
 
         # ── 8. SSM Parameters & Outputs (non-secret only) ──────────────────
         ssm.StringParameter(

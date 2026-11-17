@@ -2213,6 +2213,15 @@ else
     check_prereqs
     check_credentials
     setup_venv
+    # A rolled-back frontend create retains the DynamoDB tables and ECR
+    # repository. Creating those names again fails, so reference them.
+    if [ "${FRONTEND_ADOPT_RETAINED:-}" != "1" ] \
+        && [ -n "${PREFIX:-}" ] \
+        && aws dynamodb describe-table --table-name "${PREFIX}-bff-sessions" \
+            --region "${AWS_REGION}" >/dev/null 2>&1; then
+        export FRONTEND_ADOPT_RETAINED=1
+        log_info "Adopting retained frontend tables and ECR repository"
+    fi
 fi
 
 cd "$PROJECT_DIR"

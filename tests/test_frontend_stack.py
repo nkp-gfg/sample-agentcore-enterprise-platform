@@ -202,9 +202,11 @@ def test_private_frontend_synthesizes_express_mode_waf_and_dynamodb() -> None:
     env_map = {e["Name"]: e["Value"] for e in props["PrimaryContainer"]["Environment"]}
     assert env_map["FRONTEND_EXPOSURE"] == "private"
     assert env_map["COOKIE_SECURE"] == "true"
-    assert env_map["OIDC_REDIRECT_URI"] == (
-        "https://hrtest-prod-hr-web.ecs.us-east-1.on.aws/auth/callback"
-    )
+    assert "OIDC_REDIRECT_URI" not in env_map
+    clients = _resources(fe_tpl, "AWS::Cognito::UserPoolClient")
+    assert clients[0]["Properties"]["CallbackURLs"] == [
+        "https://localhost/auth/callback"
+    ]
     assert not _resources(fe_tpl, "AWS::ECS::Service")
     assert not _resources(fe_tpl, "AWS::ElasticLoadBalancingV2::LoadBalancer")
 
