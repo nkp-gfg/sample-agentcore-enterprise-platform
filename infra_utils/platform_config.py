@@ -1735,11 +1735,11 @@ class PlatformConfig(BaseModel):
         # this property valid on a tree where that field does not exist yet.
         migration = getattr(self, "migration", None)
         out = out + (migration.warnings if migration else [])
-        if self.frontend.enabled and not self.frontend.certificate_arn:
+        if self.frontend.enabled and self.frontend.domain_name and not self.frontend.certificate_arn:
             out.append(
-                "frontend.certificate_arn is empty: ALB uses HTTP :80 without "
-                "TLS; set an ACM certificate ARN before configuring HTTPS "
-                "Cognito/Entra OAuth callbacks"
+                "frontend.domain_name is set without frontend.certificate_arn. "
+                "The Express Mode hostname is still HTTPS. A custom domain "
+                "needs an ACM certificate in this Region."
             )
         return out
 
@@ -2917,7 +2917,11 @@ def design_plan(config: PlatformConfig, account: str = "") -> list[str]:
     if config.frontend.enabled:
         fe = config.frontend
         cidrs = ", ".join(fe.allowed_cidrs) if fe.allowed_cidrs else "(default)"
-        tls = "HTTPS (ACM)" if fe.certificate_arn else "HTTP :80 (no ACM cert)"
+        tls = (
+            "HTTPS (customer ACM cert)"
+            if fe.certificate_arn
+            else "HTTPS (ECS Express Mode *.on.aws)"
+        )
         lines += [
             "",
             f"Frontend BFF ({fe.exposure} ALB + WAF -> ECS Fargate + DynamoDB):",

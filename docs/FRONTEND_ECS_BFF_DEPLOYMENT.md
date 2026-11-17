@@ -14,9 +14,9 @@ Single-file deployment reference for the **WAF + switchable public/private ALB +
     - Attached to the ALB in both `exposure: private` (internal ALB in private subnets) and `exposure: public` (internet-facing ALB in public subnets).
     - Enforces per-IP rate limiting (`waf_rate_limit`), `AWSManagedRulesAmazonIpReputationList`, `AWSManagedRulesKnownBadInputsRuleSet`, `AWSManagedRulesCommonRuleSet`, and optional `BlockOutsideAllowedCidrs` (`IPSet` + ALB security group). `SizeRestrictions_BODY` in the common rule set is overridden to count so AG-UI chat bodies over 8 KB are not blocked.
     - `idle_timeout=300s` for long-lived AG-UI SSE streaming; `load_balancer_name` is omitted so flipping `exposure` replaces the ALB scheme cleanly.
-2. **Auto-scaling ARM64 ECS Fargate BFF (`hr-web/Dockerfile`, `hr-web/bff/app.py`):**
-    - Built remotely via CodeBuild (`linux/arm64`) → ECR (no local Docker required).
-    - `min_healthy_percent=100`, `max_healthy_percent=200`, scaling between `frontend.min_capacity` and `frontend.max_capacity` on CPU (60%), memory (70%), and ALB request count (300/target). Scale-out cooldown is 30s; scale-in cooldown is 300s.
+2. **ECS Express Mode BFF (`hr-web/Dockerfile`, `hr-web/bff/app.py`):**
+    - One service runs the UI and the backend. Express Mode creates the HTTPS load balancer, certificate, and `https://<service>.ecs.<region>.on.aws` address.
+    - The image is built remotely via CodeBuild (`linux/amd64`) → ECR. Scaling is between `frontend.min_capacity` and `frontend.max_capacity`. Deployments are canary.
     - Uses confidential `BffClient` (or the direct Entra app registration) so OAuth tokens remain server-side; the browser receives only an `HttpOnly; SameSite=Lax` cookie (`hr_bff_sid`) plus an `X-BFF-CSRF` header.
 3. **DynamoDB sessions and chat persistence (`hr-web/bff/session_store.py`):**
     - `BffSessions` (`{prefix}-bff-sessions`: `PAY_PER_REQUEST`, TTL attribute `ttl`, PITR, customer-managed key when the security stack provides one) stores single-use PKCE state (`pkce#<state>`) and OAuth session tokens (`sid#<session_id>`).
@@ -128,4 +128,4 @@ Run `./scripts/deploy.sh design` and `./scripts/deploy.sh doctor` first and show
 - **Direct agent access blocked:** Calling `https://bedrock-agentcore.<region>.amazonaws.com/runtimes/<arn>/invocations` from outside the VPC is denied by the `AWS::BedrockAgentCore::ResourcePolicy`.
 - **Restart and burst resilience:** After sending a chat message, run `aws ecs update-service --cluster <cluster> --service <service> --force-new-deployment`, reload the browser tab, and confirm `/api/auth/me` and `/api/sessions` restore the active session and the conversation transcript from DynamoDB without signing in again.
 
-Cluster and service names are the `EcsClusterName` and `EcsServiceName` outputs (`{prefix}-frontend` is the cluster name). Session and chat table names are `BffSessionTableName` and `ChatSessionTableName`.
+`EcsClusterName` is `default`. `EcsServiceName` is `{prefix}-hr-web`. The public URL is the `FrontendUrl` output. Session and chat table names are `BffSessionTableName` and `ChatSessionTableName`.
