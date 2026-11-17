@@ -229,6 +229,16 @@ def test_private_frontend_synthesizes_express_mode_waf_and_dynamodb() -> None:
     projects = _resources(fe_tpl, "AWS::CodeBuild::Project")
     assert len(projects) == 1
     assert projects[0]["Properties"]["TimeoutInMinutes"] == 30
+    assert (
+        projects[0]["Properties"]["Environment"]["ComputeType"]
+        == "BUILD_GENERAL1_MEDIUM"
+    )
+    handlers = {
+        fn["Properties"].get("Handler")
+        for fn in _resources(fe_tpl, "AWS::Lambda::Function")
+    }
+    assert "build_trigger_lambda.on_event" in handlers
+    assert "build_trigger_lambda.is_complete" in handlers
 
     staged_names = _bff_source_asset_files(fe)
     assert "Dockerfile" in staged_names

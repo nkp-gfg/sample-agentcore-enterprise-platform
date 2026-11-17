@@ -441,7 +441,7 @@ class FrontendStack(cdk.Stack):
             environment=codebuild.BuildEnvironment(
                 build_image=codebuild.LinuxBuildImage.STANDARD_7_0,
                 privileged=True,
-                compute_type=codebuild.ComputeType.SMALL,
+                compute_type=codebuild.ComputeType.MEDIUM,
             ),
             timeout=cdk.Duration.minutes(30),
             build_spec=codebuild.BuildSpec.from_object(
@@ -475,26 +475,50 @@ class FrontendStack(cdk.Stack):
         ecr_repo.grant_push(build_project)
         source_asset.grant_read(build_project)
 
-        trigger_fn = _lambda.Function(
-            self,
-            "BffBuildTrigger",
-            function_name=f"{prefix}-build-trigger-hr-web-bff",
-            runtime=_lambda.Runtime.PYTHON_3_13,
-            handler="build_trigger_lambda.handler",
-            code=_lambda.Code.from_asset(os.path.join(repo_root, "infra_utils")),
-            timeout=cdk.Duration.minutes(15),
-            memory_size=256,
-        )
-        trigger_fn.add_to_role_policy(
-            iam.PolicyStatement(
+        # The waiter Lambda cannot run for the 30 minute CodeBuild timeout.
+        # Provider is_complete is a new short invocation every 30 seconds.
+        trigger_code = _lambda.Code.from_asset(os.path.join(repo_root, "infra_utils"))
+
+        def _codebuild_poll_policy() -> iam.PolicyStatement:
+            return iam.PolicyStatement(
                 actions=["codebuild:StartBuild", "codebuild:BatchGetBuilds"],
                 resources=[build_project.project_arn],
             )
+
+        on_event_fn = _lambda.Function(
+            self,
+            "BffBuildOnEvent",
+            function_name=f"{prefix}-build-hr-web-on-event",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="build_trigger_lambda.on_event",
+            code=trigger_code,
+            timeout=cdk.Duration.seconds(60),
+            memory_size=256,
+        )
+        is_complete_fn = _lambda.Function(
+            self,
+            "BffBuildIsComplete",
+            function_name=f"{prefix}-build-hr-web-is-complete",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="build_trigger_lambda.is_complete",
+            code=trigger_code,
+            timeout=cdk.Duration.seconds(30),
+            memory_size=256,
+        )
+        on_event_fn.add_to_role_policy(_codebuild_poll_policy())
+        is_complete_fn.add_to_role_policy(_codebuild_poll_policy())
+        build_provider = cr.Provider(
+            self,
+            "BffBuildProvider",
+            on_event_handler=on_event_fn,
+            is_complete_handler=is_complete_fn,
+            query_interval=cdk.Duration.seconds(30),
+            total_timeout=cdk.Duration.minutes(35),
         )
         build_trigger = CustomResource(
             self,
-            "BffBuildTriggerCR",
-            service_token=trigger_fn.function_arn,
+            "BffImageBuild",
+            service_token=build_provider.service_token,
             properties={
                 "ProjectName": build_project.project_name,
                 "EnvironmentOverrides": [
@@ -514,6 +538,7 @@ class FrontendStack(cdk.Stack):
                 "SourceHash": source_hash,
             },
         )
+        build_trigger.node.add_dependency(build_project)
 
         # ── 7. ECS Express Mode service (UI + BFF, HTTPS ALB, scaling) ─
         task_role = iam.Role(
@@ -746,9 +771,12 @@ class FrontendStack(cdk.Stack):
                     "ClientId": self._bff_client_id,
                 },
             )
-            # Docs: read ingress endpoint, then add https://. The service
-            # name is not the hostname.
-            self._frontend_url = callback_resource.get_att("Url").to_string()
+            # Endpoint already includes https://. Do not prefix it again.
+            # Do not GetAtt CallbackRegistrar.Url: that response has no Url.
+            self._frontend_url = express.get_att("Endpoint").to_string()
+            # Keep the registrar. It writes the Cognito callback. SSM does not
+            # read its response.
+            callback_resource.node.add_dependency(express)
 
         # ── 8. SSM Parameters & Outputs (non-secret only) ──────────────────
         ssm.StringParameter(
