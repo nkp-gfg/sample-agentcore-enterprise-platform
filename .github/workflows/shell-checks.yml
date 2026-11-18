@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # Repo-wide rather than changed-files-only: these scripts are the workshop's
       # front door, and a merge can break a file the PR never touched.
@@ -34,7 +34,7 @@ jobs:
       # it (deliberate: a participant may not have the venv yet), so without
       # these two the check reports "platform.yaml value not applied" here.
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.13'
 
