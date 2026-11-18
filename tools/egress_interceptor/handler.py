@@ -21,7 +21,6 @@ is treated generically here (all string leaves are scanned). Validate against li
 traces before relying on it in production; the guardrail logic itself is target-agnostic.
 """
 
-import json
 import logging
 import os
 
@@ -102,10 +101,13 @@ def _blocked_response(point: str, reason: str):
 
 
 def handler(event, context):
-    logger.info("interceptor event: %s", json.dumps(event)[:2000])
+    # The event carries tool arguments and responses unmasked. Never log it;
+    # log only the interception point and request id.
+    request_id = getattr(context, "aws_request_id", None)
     mcp = event.get("mcp", {}) or {}
 
     if "gatewayRequest" in mcp:
+        logger.info("interceptor REQUEST (request %s)", request_id)
         try:
             transformed = _mask_tree(mcp["gatewayRequest"], "INPUT")
         except GuardrailBlocked as exc:
@@ -116,6 +118,7 @@ def handler(event, context):
         }
 
     if "gatewayResponse" in mcp:
+        logger.info("interceptor RESPONSE (request %s)", request_id)
         try:
             transformed = _mask_tree(mcp["gatewayResponse"], "OUTPUT")
         except GuardrailBlocked as exc:
