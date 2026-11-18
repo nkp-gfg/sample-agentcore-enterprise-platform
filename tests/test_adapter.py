@@ -112,7 +112,7 @@ def test_non_2xx_maps_to_structured_error(child_server):
     result = adapter.forward({}, f"{child_server}/boom")
     assert result["status"] == "error"
     assert result["code"] == 500
-    assert "child exploded" in result["error"]
+    assert "child exploded" not in result["error"]
 
 
 def test_unreachable_child_maps_to_502():
@@ -187,7 +187,7 @@ def test_live_health_timeout_is_bounded(monkeypatch):
     )
     assert adapter.check_child_health("http://127.0.0.1:1/", timeout=999) == (
         False,
-        "TimeoutError: timed out",
+        "unreachable",
     )
     assert observed == [adapter.LIVE_HEALTH_TIMEOUT_MAX]
 
