@@ -76,4 +76,15 @@ check-shell:
 	$(BASH) scripts/check-deploy-config.sh
 	$(BASH) scripts/check-workshop-flow.sh
 
-.PHONY: all lint ruff-lint format lint-cicd deploy synth test-agent test-gateway test-memory validate-controls test-controls check-docs check-structure check-shell
+# Hash locks installed by scripts/pip-install-locked.sh (CI and deploy.sh).
+# Rerun after editing requirements.txt or scripts/ci/*.in. Needs uv.
+# --universal covers Python 3.11 (Debian python3 in the cdk-synth image) to 3.13.
+LOCK_FLAGS := --quiet --universal --python-version 3.11 --generate-hashes --custom-compile-command "make lock"
+CI_LOCKS := ruff shell pytest control-library
+lock:
+	uv pip compile $(LOCK_FLAGS) requirements.txt -o requirements.lock
+	for name in $(CI_LOCKS); do \
+		uv pip compile $(LOCK_FLAGS) scripts/ci/$$name.in -o scripts/ci/$$name.lock || exit 1; \
+	done
+
+.PHONY: all lint ruff-lint format lint-cicd deploy synth test-agent test-gateway test-memory validate-controls test-controls check-docs check-structure check-shell lock

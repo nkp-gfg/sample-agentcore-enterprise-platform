@@ -1,3 +1,5 @@
+# Install from the hash lock: bash scripts/pip-install-locked.sh requirements.lock
+# After editing this file, regenerate requirements.lock with `make lock`.
 aws-cdk-lib>=2.265.0
 constructs>=10.8.1,<11.0.0
 

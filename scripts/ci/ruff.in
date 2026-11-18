@@ -1,0 +1,2 @@
+# GitLab `ruff` job and .github/workflows/python-lint.yml. Edit, then `make lock`.
+ruff
