@@ -25,10 +25,10 @@ and issuer come from the platform account's `deployment.federation` block.
 
 | Resource | Name | Notes |
 |---|---|---|
-| ECR repository | `{prefix}-{component}` | Scan on push, keep last 10 images, `empty_on_delete`, AES256 (not KMS — see Gotchas) |
+| ECR repository | `{prefix}-{component}` | Scan on push, **immutable tags**, keep last 10 images, `empty_on_delete`, AES256 (not KMS — see Gotchas) |
 | S3 source asset | — | Zip of `agent-code/` (all patterns share one build context; the Dockerfile copies `shared/`) |
-| CodeBuild project | `{prefix}-build-{component}` | ARM64, privileged, 30 min timeout; builds `-f <pattern>/Dockerfile`, pushes `<source-hash>` + `latest` tags |
-| Build-trigger Lambda + custom resource | `{prefix}-build-trigger-{component}` | Starts a build **only when `SourceHash` changes** — unchanged source is a no-op on `cdk diff` |
+| CodeBuild project | `{prefix}-build-{component}` | ARM64, privileged, 30 min timeout; builds `-f <pattern>/Dockerfile`, pushes the `<source-hash>` tag only |
+| Build-trigger Lambda + custom resource | `{prefix}-build-trigger-{component}` | Starts a build **only when `SourceHash` changes** — unchanged source is a no-op on `cdk diff`. Reuses the image when that tag already exists, then reports FAILED (so the runtime is not updated) unless the ECR scan of the tag's digest is complete with no CRITICAL finding and the tag still names that digest |
 | Baseline guardrail (flag) | `{prefix}-{component}-guardrail` | `require_guardrails` only; same `control-library` artifact as the gateway egress filter |
 | Runtime IAM role | `{prefix}-{component}-runtime-role` | See Security notes |
 | `AWS::BedrockAgentCore::Runtime` | `{project}_{environment}_{component}` (underscores — AgentCore names reject hyphens) | Container URI pinned to the source-hash tag |

@@ -6,7 +6,8 @@ Ports the proven pattern from sample-strands-agent-with-agentcore:
 Source hash tracking ensures:
   - Container rebuilds only when source code changes
   - Unchanged source produces no changes on `cdk diff`
-  - ECR images tagged with both `latest` and source hash
+  - ECR images tagged with the source hash only; tags are immutable, so the
+    tag the runtime starts always names the image whose scan was checked
 """
 
 import json
@@ -48,6 +49,13 @@ from infra_utils.policy_loader import load_control
 from infra_utils.runtime_network import build_network_config
 from infra_utils.runtime_protocol import needs_jwt_authorizer, resolve_protocol
 from infra_utils.source_hash import component_image_tag, compute_source_hash
+
+# Digest-pinned like the agent Dockerfiles: a tag alone lets whoever controls
+# the public repository choose the base image CodeBuild pulls.
+PLACEHOLDER_BASE_IMAGE = (
+    "public.ecr.aws/docker/library/python:3.11-slim"
+    "@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535"
+)
 
 
 class RuntimeStack(cdk.Stack):
@@ -144,6 +152,10 @@ class RuntimeStack(cdk.Stack):
             # dependency tree, and this is the only automatic signal that a base
             # image or package has a known CVE (Checkov CKV_AWS_163).
             image_scan_on_push=True,
+            # The runtime's container URI is a tag. Immutable tags keep that
+            # tag bound to the digest the build trigger checked; a re-push
+            # under the same tag is refused instead of replacing the image.
+            image_tag_mutability=ecr.TagMutability.IMMUTABLE,
             # NOT setting encryption=KMS here, deliberately. ECR encryption is
             # immutable, so changing it requires replacing the repository, and
             # CloudFormation refuses to replace a resource with an explicit
@@ -176,11 +188,8 @@ class RuntimeStack(cdk.Stack):
             placeholder_dir = os.path.join(repo_root, ".cdk-placeholder")
             os.makedirs(placeholder_dir, exist_ok=True)
             placeholder_dockerfile = os.path.join(placeholder_dir, "Dockerfile")
-            if not os.path.exists(placeholder_dockerfile):
-                with open(placeholder_dockerfile, "w") as f:
-                    f.write(
-                        'FROM public.ecr.aws/docker/library/python:3.11-slim\nCMD ["echo","placeholder"]\n'
-                    )
+            with open(placeholder_dockerfile, "w") as f:
+                f.write(f'FROM {PLACEHOLDER_BASE_IMAGE}\nCMD ["echo","placeholder"]\n')
             source_asset = s3_assets.Asset(self, "SourceAsset", path=placeholder_dir)
 
         # ── CodeBuild Project (ARM64, privileged for Docker) ──
@@ -215,14 +224,12 @@ class RuntimeStack(cdk.Stack):
                     "commands": [
                         "cd source/",
                         docker_build_cmd,
-                        "docker tag $REPO_URI:$IMAGE_TAG $REPO_URI:latest",
                     ],
                 },
                 "post_build": {
                     "commands": [
                         "echo Pushing image to ECR...",
                         "docker push $REPO_URI:$IMAGE_TAG",
-                        "docker push $REPO_URI:latest",
                         "echo Build completed on `date`",
                     ],
                 },
@@ -285,6 +292,14 @@ class RuntimeStack(cdk.Stack):
             iam.PolicyStatement(
                 actions=["codebuild:StartBuild", "codebuild:BatchGetBuilds"],
                 resources=[build_project.project_arn],
+            )
+        )
+        # Resolve the pushed tag to its digest and read that digest's scan
+        # before CloudFormation is told the image may be used.
+        trigger_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["ecr:DescribeImages", "ecr:DescribeImageScanFindings"],
+                resources=[repo.repository_arn],
             )
         )
 
@@ -594,7 +609,6 @@ class RuntimeStack(cdk.Stack):
                 '--build-arg CHILD_USER="$SOURCE_USER" '
                 "-f adapter/Dockerfile -t $REPO_URI:$IMAGE_TAG adapter/"
             ),
-            "docker tag $REPO_URI:$IMAGE_TAG $REPO_URI:latest",
         ]
         return {
             "pre_build": {"commands": pre_build},
@@ -603,7 +617,6 @@ class RuntimeStack(cdk.Stack):
                 "commands": [
                     "echo Pushing image to ECR...",
                     "docker push $REPO_URI:$IMAGE_TAG",
-                    "docker push $REPO_URI:latest",
                     "echo Build completed on `date`",
                 ],
             },
