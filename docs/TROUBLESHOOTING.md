@@ -288,6 +288,11 @@ authorizer (`infra_utils/runtime_protocol.py`) — sending a bearer token to one
 is rejected exactly like sending SigV4 to the orchestrator. Prefer
 `scripts/invoke.py`, which picks the right mechanism per target.
 
+Among the runtime roles, only the orchestrator's is granted `InvokeAgentRuntime`,
+and only on the code-agent and research-agent runtime ARNs
+(`RuntimeStack.grant_invoke_runtimes`). The sub-agent roles cannot invoke any
+runtime, so a compromised sub-agent cannot drive its sibling.
+
 ### The agent reports no tools, or only the code interpreter
 
 First: is this the `orchestrator` pattern? It ships with no tools by design.
