@@ -37,7 +37,9 @@ SYSTEM_PROMPT = (
 )
 
 
-def _create_agent(user_id: str, session_id: str) -> Agent:
+def _create_agent(
+    user_id: str, session_id: str, code_tools: StrandsCodeInterpreterTools
+) -> Agent:
     """Create a Strands agent with Gateway MCP tools, Memory, and Code Interpreter."""
     tools = []
 
@@ -53,7 +55,6 @@ def _create_agent(user_id: str, session_id: str) -> Agent:
 
     # Code Interpreter
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    code_tools = StrandsCodeInterpreterTools(region)
     tools.append(code_tools.execute_python_securely)
 
     # Memory (optional — degrade gracefully if not configured)
@@ -105,13 +106,16 @@ async def invocations(payload, context: RequestContext):
         }
         return
 
+    code_tools = StrandsCodeInterpreterTools(
+        os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    )
     try:
         # Identity comes from the verified JWT, never from the payload. This is
         # the Memory actor_id below, so an unverified fallback would let every
         # caller share one actor's conversation history.
         user_id = extract_user_id_from_context(context)
 
-        agent = _create_agent(user_id, session_id)
+        agent = _create_agent(user_id, session_id, code_tools)
 
         async for event in agent.stream_async(user_query):
             yield json.loads(json.dumps(dict(event), default=str))
@@ -125,6 +129,9 @@ async def invocations(payload, context: RequestContext):
     except Exception as e:
         logger.exception("Agent run failed")
         yield {"status": "error", "error": str(e)}
+
+    finally:
+        code_tools.cleanup()
 
 
 if __name__ == "__main__":

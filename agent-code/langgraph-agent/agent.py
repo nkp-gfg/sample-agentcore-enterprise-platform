@@ -60,7 +60,7 @@ def _create_checkpointer() -> AgentCoreMemorySaver:
     )
 
 
-async def create_langgraph_agent():
+async def create_langgraph_agent(code_tools: LangGraphCodeInterpreterTools):
     """Create a LangGraph agent with Gateway tools, Memory, and Code Interpreter."""
     tools = []
     try:
@@ -72,8 +72,6 @@ async def create_langgraph_agent():
             "[AGENT] Gateway not available, continuing without gateway tools: %s", e
         )
 
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    code_tools = LangGraphCodeInterpreterTools(region)
     tools.append(code_tools.execute_python_securely)
 
     return create_agent(
@@ -97,10 +95,13 @@ async def invocations(payload, context: RequestContext):
         }
         return
 
+    code_tools = LangGraphCodeInterpreterTools(
+        os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    )
     try:
         user_id = extract_user_id_from_context(context)
 
-        graph = await create_langgraph_agent()
+        graph = await create_langgraph_agent(code_tools)
 
         config = {"configurable": {"thread_id": session_id, "actor_id": user_id}}
 
@@ -116,6 +117,9 @@ async def invocations(payload, context: RequestContext):
         error_msg = str(e) if str(e) else f"{type(e).__name__}: {e!r}"
         logger.exception("Agent run failed")
         yield {"status": "error", "error": error_msg}
+
+    finally:
+        code_tools.cleanup()
 
 
 if __name__ == "__main__":
