@@ -57,8 +57,10 @@ export IDP_CLIENT_SECRET='<entra-actor-app-secret>'  # From Azure portal or Secr
 **Deploy:**
 ```bash
 # The secret goes to Secrets Manager first — CDK only ever receives its NAME.
-aws secretsmanager create-secret --name agentcore-workshop-dev-idp-client-secret \
-  --secret-string "$IDP_CLIENT_SECRET"
+# It travels on stdin: process arguments are readable by every local user.
+printf '%s' "$IDP_CLIENT_SECRET" | aws secretsmanager create-secret \
+  --name agentcore-workshop-dev-idp-client-secret \
+  --secret-string file:///dev/stdin
 
 cdk deploy agentcore-workshop-dev-auth \
   -c idp_type=entra_id \

@@ -104,13 +104,17 @@ export CDK_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
 # Store the IdP client secret in Secrets Manager. CDK only ever receives the
 # secret NAME — the auth stack resolves the value at deploy time via a
 # {{resolve:secretsmanager:...}} dynamic reference, so the plaintext never
-# appears in process listings or the synthesized template.
+# appears in process listings or the synthesized template. The value reaches the
+# CLI on stdin only (printf is a builtin): process arguments are readable by
+# every local user.
 IDP_SECRET_NAME="${PREFIX}-idp-client-secret"
-if ! aws secretsmanager create-secret --name "$IDP_SECRET_NAME" \
-    --secret-string "$IDP_CLIENT_SECRET" --region "$CDK_DEFAULT_REGION" &>/dev/null; then
+if ! printf '%s' "$IDP_CLIENT_SECRET" | aws secretsmanager create-secret \
+    --name "$IDP_SECRET_NAME" --secret-string file:///dev/stdin \
+    --region "$CDK_DEFAULT_REGION" &>/dev/null; then
     # Secret already exists — update the value (IdP secrets rotate).
-    aws secretsmanager put-secret-value --secret-id "$IDP_SECRET_NAME" \
-        --secret-string "$IDP_CLIENT_SECRET" --region "$CDK_DEFAULT_REGION" >/dev/null
+    printf '%s' "$IDP_CLIENT_SECRET" | aws secretsmanager put-secret-value \
+        --secret-id "$IDP_SECRET_NAME" --secret-string file:///dev/stdin \
+        --region "$CDK_DEFAULT_REGION" >/dev/null
 fi
 log_info "IdP client secret stored in Secrets Manager: $IDP_SECRET_NAME"
 
