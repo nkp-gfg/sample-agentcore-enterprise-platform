@@ -15,6 +15,16 @@ from .models import CodeIntExecutionResult
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Returned to the caller in place of the AWS error, whose message can name the
+# denied action and resource of the runtime role.
+EXECUTION_FAILED = "Code execution failed"
+
+
+def _error_code(exc: BaseException) -> str:
+    if isinstance(exc, ClientError):
+        return exc.response.get("Error", {}).get("Code") or type(exc).__name__
+    return type(exc).__name__
+
 
 class CodeInterpreterClient:
     """Client for AgentCore Code Interpreter."""
@@ -26,16 +36,11 @@ class CodeInterpreterClient:
         self.ci_client = boto3.client("bedrock-agentcore", region_name=region)
 
     def _create_sessionid(self) -> str:
-        try:
-            session_response = self.ci_client.start_code_interpreter_session(
-                codeInterpreterIdentifier="aws.codeinterpreter.v1",
-                name="mcpInteractionSession",
-                sessionTimeoutSeconds=900,
-            )
-        except ClientError as e:
-            logging.error("***** Exception in create session %s", str(e))
-            raise Exception(f"Failed to create session: {str(e)}")
-
+        session_response = self.ci_client.start_code_interpreter_session(
+            codeInterpreterIdentifier="aws.codeinterpreter.v1",
+            name="mcpInteractionSession",
+            sessionTimeoutSeconds=900,
+        )
         code_int_session_id = session_response["sessionId"]
         return code_int_session_id
 
@@ -43,9 +48,12 @@ class CodeInterpreterClient:
         self, operation: str, args: dict = None, code_int_session_id: str = ""
     ) -> CodeIntExecutionResult:
         start_time = time.time()
+        failed_operation = operation
         try:
             if not code_int_session_id:
+                failed_operation = "startCodeInterpreterSession"
                 code_int_session_id = self._create_sessionid()
+                failed_operation = operation
 
             response = self.ci_client.invoke_code_interpreter(
                 codeInterpreterIdentifier="aws.codeinterpreter.v1",
@@ -65,13 +73,15 @@ class CodeInterpreterClient:
                 execution_time=execution_time,
                 success=True,
             )
-        except ClientError as e:
-            logging.error("***** Exception in code interpreter invocation %s", str(e))
+        except Exception as e:  # noqa: BLE001 — the tool result must never carry the error text
+            logger.error(
+                "Code interpreter %s failed: %s", failed_operation, _error_code(e)
+            )
             execution_time = time.time() - start_time
             return CodeIntExecutionResult(
                 output="",
                 code_int_session_id=code_int_session_id,
-                error=str(e),
+                error=EXECUTION_FAILED,
                 execution_time=execution_time,
                 success=False,
             )
