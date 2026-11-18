@@ -85,10 +85,11 @@ into the orchestrator runtime's environment.
   principal outside the AWS Organization (`aws:PrincipalOrgID`), with a
   `aws:ViaAWSService: false` guard so service-linked access keeps working.
 - Data-plane access comes from the **runtime role**
-  (`stacks/runtime_stack.py`): `CreateEvent`, `GetEvent`, `ListEvents`,
-  `DeleteEvent`, `ListSessions`, `RetrieveMemoryRecords` and more — currently
-  on `Resource: "*"`, knowingly, because scoping needs ARNs that do not exist
-  when the role is built; tracked as its own task (see the code comment).
+  (`stacks/runtime_stack.py`, statement `AgentCoreMemory`): `CreateEvent`,
+  `GetEvent`, `ListEvents`, `DeleteEvent`, `ListSessions`,
+  `RetrieveMemoryRecords`, scoped to this deployment's memory ARN. Only the
+  orchestrator (the runtime that receives `MEMORY_ID`) gets the statement;
+  the A2A runtimes have no memory data-plane permissions at all.
 - Tenant isolation inside one memory is `actor_id` — application-level, backed
   by the JWT verification in `agent-code/shared/auth.py`. Account isolation in
   a federation is the harder boundary.
