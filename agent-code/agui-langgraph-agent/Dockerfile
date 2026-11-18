@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # python 3.12: copilotkit==0.1.83 requires Python >=3.10,<3.13
-FROM public.ecr.aws/docker/library/python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 WORKDIR /app
 
