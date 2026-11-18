@@ -19,7 +19,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
-from code_int_mcp.server import code_int_mcp_server
+from code_int_mcp.server import code_int_mcp_server, code_interpreter_turn
 from shared.auth import extract_user_id_from_context, get_gateway_access_token
 from shared.ssm import get_ssm_parameter
 
@@ -229,19 +229,20 @@ Your response should:
                         _session_map[runtime_session_id] = msg.session_id
                     yield {"claude_session_id": msg.session_id}
 
-    try:
-        async for event in _process_messages(_build_options(claude_session_id)):
-            yield event
-    except ProcessError:
-        if claude_session_id:
-            logger.warning(
-                "Resume failed for session %s, starting fresh session",
-                claude_session_id,
-            )
-            async for event in _process_messages(_build_options(None)):
+    with code_interpreter_turn():
+        try:
+            async for event in _process_messages(_build_options(claude_session_id)):
                 yield event
-        else:
-            raise
+        except ProcessError:
+            if claude_session_id:
+                logger.warning(
+                    "Resume failed for session %s, starting fresh session",
+                    claude_session_id,
+                )
+                async for event in _process_messages(_build_options(None)):
+                    yield event
+            else:
+                raise
 
 
 if __name__ == "__main__":
