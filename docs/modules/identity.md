@@ -93,8 +93,12 @@ orchestrator and research-agent runtimes, whose
   Manager secret, and `GetResourceOauth2Token` reads it with the **caller's**
   identity — so the runtime role (`stacks/runtime_stack.py`) grants
   `secretsmanager:GetSecretValue` on
-  `bedrock-agentcore-identity!default/oauth2/*`. Without it, gateway tool
-  loading fails and takes the whole agent invocation down with it.
+  `bedrock-agentcore-identity!default/oauth2/{prefix}-gateway-m2m-??????`.
+  Without it, gateway tool loading fails and takes the whole agent invocation
+  down with it. The grant names only the gateway provider: the Google, GitHub
+  and Notion providers (and any other workload's) share the same vault path,
+  so an agent that needs one of them gets its own role scoped to that
+  provider rather than a wider resource on the shared runtime role.
 - The unverified-userId token path (`GetWorkloadAccessTokenForUserId`) is
   denied by an org-level SCP in `control-library/terraform/org-guardrails`, not by this stack
   — see [Security controls](../SECURITY_CONTROLS.md).
