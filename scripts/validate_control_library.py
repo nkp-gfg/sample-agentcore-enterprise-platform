@@ -9,16 +9,18 @@ Checks (no third-party deps required):
      leaving no unresolved tokens.
   5. Every *.json under control-library/ is referenced by the catalog (orphan check; warns).
 
-Optional: if ``checkov`` is on PATH, run it over control-library/ as an extra gate.
+Optional: if this interpreter has the checkov version pinned in
+``requirements-control-library.txt`` installed, run it over control-library/ as
+an extra gate.
 
 Exit code 0 on success, 1 on any error. Warnings do not fail the build.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +35,7 @@ from infra_utils.policy_loader import (  # noqa: E402
 
 _TOKEN_RE = re.compile(r"<<\s*([A-Za-z0-9_]+)\s*>>")
 _LIBRARY_ROOT = Path(__file__).resolve().parents[1] / "control-library"
+_CHECKOV_LOCK = Path(__file__).resolve().parents[1] / "requirements-control-library.txt"
 _POLICY_TYPES = {"SCP", "RCP", "RESOURCE_POLICY", "IAM", "VPCE"}
 
 errors: list[str] = []
@@ -115,14 +118,47 @@ def validate() -> None:
             _warn(f"orphan file not in catalog: {json_file.relative_to(_LIBRARY_ROOT)}")
 
 
+def _pinned_checkov_version() -> str | None:
+    if not _CHECKOV_LOCK.is_file():
+        return None
+    match = re.search(r"^checkov==(\S+)", _CHECKOV_LOCK.read_text(), re.MULTILINE)
+    return match.group(1) if match else None
+
+
 def run_checkov() -> None:
-    if not shutil.which("checkov"):
+    # Only the checkov installed into this interpreter from the hash-locked
+    # requirements file is run; a checkov found elsewhere on PATH is not.
+    install_hint = (
+        f"pip install --require-hashes --only-binary=:all: -r {_CHECKOV_LOCK.name}"
+    )
+    pinned = _pinned_checkov_version()
+    if pinned is None:
+        _err(f"no checkov== pin found in {_CHECKOV_LOCK.name}")
+        return
+    try:
+        installed = importlib.metadata.version("checkov")
+    except importlib.metadata.PackageNotFoundError:
         _warn(
-            "checkov not installed — skipping deep policy scan (install for full CI gate)"
+            "checkov not installed — skipping deep policy scan "
+            f"(for the full CI gate: {install_hint})"
+        )
+        return
+    if installed != pinned:
+        _warn(
+            f"checkov {installed} is not the pinned {pinned} — skipping deep policy "
+            f"scan (for the full CI gate: {install_hint})"
         )
         return
     result = subprocess.run(
-        ["checkov", "-d", str(_LIBRARY_ROOT), "--quiet", "--compact"],
+        [
+            sys.executable,
+            "-m",
+            "checkov.main",
+            "-d",
+            str(_LIBRARY_ROOT),
+            "--quiet",
+            "--compact",
+        ],
         capture_output=True,
         text=True,
         check=False,
