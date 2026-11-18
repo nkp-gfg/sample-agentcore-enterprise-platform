@@ -43,6 +43,7 @@ agent-code/claude-sdk-multi-agent/
 │   ├── client.py             # boto3 wrapper for AgentCore Code Interpreter API
 │   └── models.py             # Pydantic result model
 ├── requirements.txt          # Python dependencies
+├── requirements.lock.txt     # Hash-locked set the image installs (make lock-requirements)
 ├── Dockerfile                # Container build (Python 3.13 + Node.js + claude-code CLI)
 └── README.md
 ```

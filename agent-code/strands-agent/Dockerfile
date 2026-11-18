@@ -4,9 +4,13 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
 
-COPY strands-agent/requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir aws-opentelemetry-distro==0.16.0
+# halo has no py3 wheel: it is built from its hashed sdist with the hashed
+# setuptools from build-requirements.lock.txt (see scripts/lock_requirements.py).
+COPY strands-agent/build-requirements.lock.txt build-requirements.txt
+COPY strands-agent/requirements.lock.txt requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r build-requirements.txt && \
+    pip install --no-cache-dir --require-hashes --only-binary :all: --no-binary halo \
+        --no-build-isolation -r requirements.txt
 
 COPY shared/ shared/
 

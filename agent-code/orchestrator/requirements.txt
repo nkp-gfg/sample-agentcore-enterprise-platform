@@ -1,2 +1,5 @@
+# The image installs requirements.lock.txt (exact versions + sha256 hashes).
+# After editing this file, run: python scripts/lock_requirements.py
 strands-agents
 bedrock-agentcore
+aws-opentelemetry-distro==0.16.0

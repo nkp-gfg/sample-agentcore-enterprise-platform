@@ -13,9 +13,8 @@ ENV DOCKER_CONTAINER=1 \
     PYTHONUNBUFFERED=1
 
 # Copy and install agent-specific requirements
-COPY agui-langgraph-agent/requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir aws-opentelemetry-distro==0.10.1
+COPY agui-langgraph-agent/requirements.lock.txt requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r requirements.txt
 
 # Copy shared utilities
 COPY shared/ shared/
