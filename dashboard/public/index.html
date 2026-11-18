@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
 <title>EBA Console · AgentCore Platform Accelerator</title>
-<!-- No CDN, no fonts, no framework: `python3 -m http.server` is the whole stack. -->
+<!-- No CDN, no fonts, no framework: `python3 dashboard/server.py` is the whole stack. -->
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="graph.css">
@@ -188,7 +188,7 @@
     </div>
     <div class="console-banner console-banner--warning" id="consoleRequired" hidden role="status">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19zM12 9v4M12 17h.01"/></svg>
-      <div><b>Interactive server is not running.</b> Start <code>python dashboard/server.py</code>; the status-only server cannot invoke agents.</div>
+      <div><b>Interactive console is not available.</b> Start <code>python dashboard/server.py</code> without <code>--status-only</code> and open the exact link it prints.</div>
     </div>
     <div class="playground-shell">
       <div class="chat-panel">
@@ -692,7 +692,18 @@ function renderArchitecture(data) {
 async function fetchStatus() {
   if (document.hidden) return;          // nothing to draw for a background tab
   try {
-    const res = await fetch('status.json?t=' + Date.now(), { cache: 'no-store' });
+    const headers = (window.EbaConsole && window.EbaConsole.authHeaders()) || {};
+    const res = await fetch('status.json?t=' + Date.now(), { cache: 'no-store', headers });
+    if (res.status === 403) {
+      lastStatus = null;
+      showUnavailable(
+        'Console link required',
+        'Open the EBA Console link printed by dashboard/server.py. It carries the access token for this server process.',
+        null
+      );
+      setLive('offline', 'Access token required');
+      return;
+    }
     if (!res.ok) throw new Error(res.status);
     const data = sanitizeStatus(await res.json());
     if (data.poll_error || data.available === false) {
