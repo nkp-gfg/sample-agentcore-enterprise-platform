@@ -267,11 +267,11 @@ grep -c '"Null":' /tmp/vpce-synth.yaml                              # → 1 (Nul
 rm -f cdk.context.json /tmp/vpce-synth.yaml && rm -rf cdk.out
 ```
 
-Also confirm the tightened execution role scopes SSM to the project path (no `"*"`):
+Also confirm the tightened execution role scopes SSM to the environment path (no `"*"`):
 
 ```bash
-grep -A2 '"ssm:GetParameter"' -r infra_utils/agentcore_role.py
-# resources = arn:aws:ssm:*:*:parameter/{project_name}/*
+grep -A4 'def environment_parameters_arn' infra_utils/agentcore_role.py
+# ARN pattern for /{project_name}/{environment}/* in the scope's own region and account.
 ```
 
 ### A7c. Observability alerting synthesizes only when enabled (item 7)

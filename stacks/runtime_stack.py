@@ -42,6 +42,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from infra_utils.agentcore_role import environment_parameters_arn
 from infra_utils.jwt_authorizer import custom_jwt_authorizer
 from infra_utils.platform_config import allowed_model_resources
 from infra_utils.policy_loader import load_control
@@ -373,6 +374,7 @@ class RuntimeStack(cdk.Stack):
             runtime_role,
             repo.repository_arn,
             project_name=project_name,
+            environment=environment,
             allowed_models=allowed_models,
             guardrail=guardrail,
         )
@@ -623,6 +625,7 @@ class RuntimeStack(cdk.Stack):
         ecr_repo_arn: str,
         *,
         project_name: str,
+        environment: str,
         allowed_models: list[str] | None = None,
         guardrail: bedrock.CfnGuardrail | None = None,
     ) -> None:
@@ -706,15 +709,20 @@ class RuntimeStack(cdk.Stack):
                 ),
             ),
             # SSM Parameter Store (cross-stack discovery), scoped to this
-            # project's own parameter path. On "*" the agent could read every
-            # parameter in the account, which is the classic data-exfiltration
-            # path Checkov CKV_AWS_108 looks for. infra_utils/agentcore_role.py
-            # — the file that calls itself the reference policy — already scoped
-            # these actions this way; this makes the two agree.
+            # environment's own parameter path in this region and account. On
+            # "*" the agent could read every parameter in the account (Checkov
+            # CKV_AWS_108); on /{project}/* a dev runtime could read prod's auth
+            # client ids and machine-secret name, since environments that share
+            # a project name publish side by side. infra_utils/agentcore_role.py
+            # builds the same ARN.
             iam.PolicyStatement(
                 sid="SSMAccess",
                 actions=["ssm:GetParameter", "ssm:GetParameters"],
-                resources=[f"arn:aws:ssm:*:*:parameter/{project_name}/*"],
+                resources=[
+                    environment_parameters_arn(
+                        role, project_name=project_name, environment=environment
+                    )
+                ],
             ),
             # AgentCore service access (Gateway, Memory, A2A, Registry, etc.).
             # Still "*", and knowingly so: scoping these needs the gateway,

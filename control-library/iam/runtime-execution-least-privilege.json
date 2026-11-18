@@ -63,7 +63,7 @@
         "ssm:GetParameter",
         "ssm:GetParameters"
       ],
-      "Resource": "arn:aws:ssm:<<region>>:<<account_id>>:parameter/<<project>>/*"
+      "Resource": "arn:aws:ssm:<<region>>:<<account_id>>:parameter/<<project>>/<<environment>>/*"
     }
   ]
 }

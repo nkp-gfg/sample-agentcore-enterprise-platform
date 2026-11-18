@@ -151,8 +151,14 @@ def test_code_interpreter_session_actions_are_complete_and_scoped():
     assert 'resource_name="aws.codeinterpreter.v1"' in source
 
 
-def test_ssm_reads_are_scoped_to_the_project_path():
+def test_ssm_reads_are_scoped_to_the_environment_path():
     source = RUNTIME_STACK.read_text()
-    assert "arn:aws:ssm:*:*:parameter/{project_name}/*" in source, (
-        "SSM reads must be scoped to this project's parameter path"
+    assert "parameter/{project_name}/*" not in source, (
+        "a project-wide SSM path lets one environment read another's parameters"
     )
+    assert (
+        "environment_parameters_arn(\n"
+        "                        role, project_name=project_name, environment=environment\n"
+    ) in source, "SSM reads must be scoped to this environment's parameter path"
+    helper = (REPO / "infra_utils" / "agentcore_role.py").read_text()
+    assert 'resource_name=f"{project_name}/{environment}/*"' in helper

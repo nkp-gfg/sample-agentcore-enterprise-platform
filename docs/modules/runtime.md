@@ -95,7 +95,7 @@ can be scoped is scoped (each wildcard in the code says why it exists):
 | `CloudWatchLogs` (incl. `logs:PutResourcePolicy`) | `/aws/bedrock-agentcore/runtimes/*` — account-wide would let the agent open any log group to another account |
 | `CloudWatchMetrics` | `*` with a `cloudwatch:namespace = bedrock-agentcore` condition |
 | `BedrockModels` | Wildcard foundation-model + inference-profile ARNs by default; scoped to `agents.allowed_models` when set. A geo-prefixed entry (`us.`…) emits **both** the profile ARN and the base foundation-model ARN — profile-only scoping breaks invokes |
-| `SSMAccess` | `parameter/{project}/*` only |
+| `SSMAccess` | `parameter/{project}/{environment}/*` in the stack's own region and account — environments that share a project name cannot read each other's parameters |
 | `AgentCoreAccess` | `*`, **knowingly**: scoping it needs the gateway, memory, and sibling-runtime ARNs, and the A2A targets do not exist yet when the role is built. Tracked as its own task — getting it wrong breaks every live-verified path |
 | `AgentCoreIdentityTokenVaultSecrets` | `secretsmanager:GetSecretValue` on `bedrock-agentcore-identity!default/oauth2/*` only — without it the gateway MCP token fetch fails and Strands aborts loading tools |
 
