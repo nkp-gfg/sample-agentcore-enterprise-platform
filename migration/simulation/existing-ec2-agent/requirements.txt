@@ -1,1 +1,7 @@
-strands-agents>=1.0.0
+# Installed with `pip install --require-hashes`: every artifact pip downloads,
+# including the transitive closure in requirements-lock.txt, must match a
+# hash listed here or the build fails before any package code runs.
+strands-agents==1.52.0 \
+    --hash=sha256:768ff0e865df9f18154a2111f71e0c7683b8505e897704b89981cf7f11667bee \
+    --hash=sha256:e79f08527cf3b03ace3ead081f71ee43ee33de7285a4faa9ecafaef4618afeb0
+-r requirements-lock.txt

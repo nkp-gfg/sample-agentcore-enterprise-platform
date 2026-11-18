@@ -35,12 +35,21 @@ RUN if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/
         fi; \
     fi
 
-# Same floor the agent patterns pin (agent-code/strands-agent/requirements.txt).
+# The adapter deps are installed as root into the image that becomes the
+# runtime, so every artifact is pinned by hash (requirements.txt and
+# requirements-lock.txt) and pip refuses anything else before running it.
+# The child command may depend on the source image's WORKDIR (for example
+# CMD ["python","server.py"]), which this file cannot name: a relative WORKDIR
+# followed by `WORKDIR ..` steps in and back out without knowing it.
 # --break-system-packages: Debian/Ubuntu-based source images mark the system
 # python externally managed (PEP 668); pip<23 ignores the unknown flag path via
-# fallback, so try with it first and retry without.
-RUN python3 -m pip install --no-cache-dir --break-system-packages "bedrock-agentcore>=1.21.0" boto3 \
-    || python3 -m pip install --no-cache-dir "bedrock-agentcore>=1.21.0" boto3
+# fallback, so try with it first and retry without. Both attempts check hashes.
+WORKDIR .adapter-requirements
+COPY requirements.txt requirements-lock.txt ./
+RUN python3 -m pip install --no-cache-dir --break-system-packages --require-hashes -r requirements.txt \
+    || python3 -m pip install --no-cache-dir --require-hashes -r requirements.txt
+WORKDIR ..
+RUN rm -rf .adapter-requirements
 
 COPY adapter.py /opt/adapter/adapter.py
 
