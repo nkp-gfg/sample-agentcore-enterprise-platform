@@ -28,9 +28,9 @@ Off by default.
 | VPC | `10.0.0.0/16`, max 2 AZs, 1 NAT gateway |
 | Subnets | One public + one private (`PRIVATE_WITH_EGRESS`) `/24` per AZ |
 | Runtime security group | No inbound rules; egress limited to TCP 443 (every dependency — Bedrock, AgentCore, Secrets Manager, ECR, CloudWatch Logs — is HTTPS) |
-| Interface endpoints | Bedrock Runtime, ECR (API + Docker), CloudWatch Logs, AgentCore Gateway (`com.amazonaws.<region>.bedrock-agentcore.gateway`) |
+| Interface endpoints | Bedrock Runtime, ECR (API + Docker), CloudWatch Logs, AgentCore Gateway (`com.amazonaws.<region>.bedrock-agentcore.gateway`, only when `org_id` is set) |
 | Gateway endpoint | S3 (free; ECR image layers live in S3) |
-| Endpoint policy | On the AgentCore endpoint, org-scoped via `control-library/vpce/agentcore-in-org.json` — only when `org_id` is set |
+| Endpoint policy | On the AgentCore endpoint, org-scoped via `control-library/vpce/agentcore-in-org.json`. Without `org_id` the AgentCore endpoint is not created (synth warning), so it never falls back to the AWS default full-access policy; AgentCore traffic then goes through the NAT gateway |
 | SSM parameters | `/<project>/<env>/networking/{vpc-id,private-subnet-ids,runtime-security-group-id}` plus `migration-dependency-probe-name` when private migration dependencies are declared |
 | Outputs | `VpcId`, `PrivateSubnetIds`, `RuntimeSecurityGroupId` |
 
