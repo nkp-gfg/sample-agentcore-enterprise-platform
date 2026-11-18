@@ -10,25 +10,39 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   full-scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_findings: ${{ steps.scan-summary.outputs.has_findings }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: '3.10'
 
+      # ASH v3.2.2 source archive for commit 65ac41970da8207d4457aeada0ba27065aaf43a8.
+      # Keep the URL, digest, and the copy in ash-security-scan.yml in sync.
       - name: Install ASH
-        run: pip install git+https://github.com/awslabs/automated-security-helper.git@v3.2.2
+        run: |
+          set -e -o pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/ash.tar.gz" \
+            https://codeload.github.com/awslabs/automated-security-helper/tar.gz/65ac41970da8207d4457aeada0ba27065aaf43a8
+          echo "eac4104bb76704b96de7623eb559a6e233ea8d5133c9d86dc1259437d12454a3  $RUNNER_TEMP/ash.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/ash"
+          tar -xzf "$RUNNER_TEMP/ash.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/ash"
+          pip install "$RUNNER_TEMP/ash"
 
+      # Any revision other than LOCAL makes ASH clone itself by tag while building the scan image.
       - name: Run ASH full repository scan
         run: |
           cat > .ash_config.yaml << 'EOF'
@@ -39,7 +53,9 @@ jobs:
                 include_detailed_findings: true
                 max_detailed_findings: 1000
           EOF
-          ash --mode container --config .ash_config.yaml 2>&1 | tee ash-output.log
+          (cd "$RUNNER_TEMP/ash" && ash --mode container --ash-revision-to-install LOCAL \
+            --source-dir "$GITHUB_WORKSPACE" --output-dir "$GITHUB_WORKSPACE/.ash/ash_output" \
+            --config .ash_config.yaml) 2>&1 | tee ash-output.log
         continue-on-error: true
 
       - name: Generate scan summary
@@ -83,8 +99,25 @@ jobs:
             ash-summary.md
           retention-days: 90
 
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## ASH Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f "ash-summary.md" ]; then cat ash-summary.md >> $GITHUB_STEP_SUMMARY; fi
+
+  report-issue:
+    needs: full-scan
+    if: github.event_name == 'schedule' && needs.full-scan.outputs.has_findings == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Download ASH results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ash-full-scan-${{ github.run_id }}
+
       - name: Create issue for critical findings (monthly scan)
-        if: github.event_name == 'schedule' && steps.scan-summary.outputs.has_findings == 'true'
         uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -99,9 +132,3 @@ jobs:
                 labels: ['security', 'automated-scan']
               });
             }
-
-      - name: Job summary
-        if: always()
-        run: |
-          echo "## ASH Security Scan Results" >> $GITHUB_STEP_SUMMARY
-          if [ -f "ash-summary.md" ]; then cat ash-summary.md >> $GITHUB_STEP_SUMMARY; fi
