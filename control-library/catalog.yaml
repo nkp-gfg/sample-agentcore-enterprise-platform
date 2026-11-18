@@ -281,10 +281,10 @@ controls:
         required: false
         default: "MCP"
         description: Allowed Gateway protocolType (bedrock-agentcore:ProtocolType).
-    # A Null guard scopes the deny to requests that include ProtocolType, so UpdateGateway
-    # calls that don't touch the protocol are not blocked. Known gap: CreateGateway with
-    # protocolType explicitly omitted falls back to the service default, which this SCP
-    # does not constrain.
+    # INTENTIONALLY denies when ProtocolType is absent (plain StringNotEquals, no Null guard):
+    # an omitted protocol on CreateGateway falls back to the service default, and
+    # UpdateGateway replaces the whole configuration, resetting an omitted protocolType.
+    # Callers must send protocolType = allowed_protocol on every Create/UpdateGateway.
     validate: [checkov, access-analyzer]
 
   - id: scp.gateway.targets-require-private-endpoint
