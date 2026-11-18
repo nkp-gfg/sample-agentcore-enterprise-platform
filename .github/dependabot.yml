@@ -11,6 +11,7 @@ updates:
   - package-ecosystem: "pip"
     directories:
       - "/"
+      - "/.github/ci"
       - "/agent-code/*"
     schedule:
       interval: "weekly"

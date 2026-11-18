@@ -1,0 +1,3 @@
+# ruff jobs (.gitlab-ci.yml, .github/workflows/python-lint.yml).
+# Regenerate the hash-locked .txt with `make ci-locks`.
+ruff

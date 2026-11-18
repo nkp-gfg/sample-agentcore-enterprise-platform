@@ -1,0 +1,5 @@
+# control-library jobs (.gitlab-ci.yml, .github/workflows/control-library.yml).
+# requirements.txt is included because the GitHub job also runs tests/.
+# Regenerate the hash-locked .txt with `make ci-locks`.
+-r ../../requirements.txt
+checkov

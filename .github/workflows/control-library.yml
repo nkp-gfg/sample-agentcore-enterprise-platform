@@ -8,6 +8,7 @@ on:
       - 'infra_utils/policy_loader.py'
       - 'scripts/validate_control_library.py'
       - 'tests/**'
+      - '.github/ci/control-library-requirements.txt'
   pull_request:
     branches: [ main ]
     paths:
@@ -15,6 +16,7 @@ on:
       - 'infra_utils/policy_loader.py'
       - 'scripts/validate_control_library.py'
       - 'tests/**'
+      - '.github/ci/control-library-requirements.txt'
 
 permissions:
   contents: read
@@ -32,7 +34,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt checkov
+        run: 'pip install --require-hashes --only-binary :all: -r .github/ci/control-library-requirements.txt'
 
       - name: Validate control-library against catalog (+ checkov scan)
         run: python scripts/validate_control_library.py
