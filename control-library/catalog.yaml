@@ -113,7 +113,7 @@ controls:
 
   # ── Item 2: least-privilege AgentCore Runtime execution role policy (account scope, CDK) ──
   # Reference least-privilege policy for a Runtime execution role. Consumed as a template;
-  # scope the ECR repo prefix / SSM path to your project.
+  # scope the ECR repo prefix / SSM path to your project and environment.
   - id: iam.runtime-execution-least-privilege
     file: iam/runtime-execution-least-privilege.json
     type: IAM
@@ -130,7 +130,13 @@ controls:
         description: AWS account ID that owns the runtime.
       project:
         required: true
-        description: Project name; scopes the SSM parameter path (/project/*).
+        description: Project name; first segment of the SSM parameter path.
+      environment:
+        required: true
+        description: >-
+          Environment name; second segment of the SSM parameter path
+          (/project/environment/*), so a runtime cannot read another
+          environment's parameters. Must be a literal name, not a wildcard.
       ecr_repo_prefix:
         required: false
         default: "bedrock-agentcore-"
