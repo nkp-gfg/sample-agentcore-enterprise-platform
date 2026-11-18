@@ -14,6 +14,8 @@ from aws_cdk import aws_bedrockagentcore as agentcore
 from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
+from infra_utils.platform_config import check_idp_client_id, check_secret_name
+
 
 class IdentityStack(cdk.Stack):
     def __init__(
@@ -49,6 +51,8 @@ class IdentityStack(cdk.Stack):
             ("github", github_client_id, github_client_secret_name),
             ("notion", notion_client_id, notion_client_secret_name),
         ):
+            check_idp_client_id(f"{vendor}_client_id", cid)
+            check_secret_name(f"{vendor}_client_secret_name", secret_name)
             if cid and not secret_name:
                 raise ValueError(
                     f"{vendor}_client_id is set but '{vendor}_client_secret_name' is missing "

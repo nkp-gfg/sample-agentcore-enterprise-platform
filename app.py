@@ -27,6 +27,8 @@ import aws_cdk as cdk
 from infra_utils.platform_config import (
     PlatformConfig,
     apply_environment_overrides,
+    check_idp_client_id,
+    has_dynamic_reference,
     load_platform_config,
     to_env,
 )
@@ -61,24 +63,37 @@ if os.path.exists(_config_path):
     _yaml_env = to_env(platform_config)
 
 
+def _literal(name: str, value):
+    # Context and env bypass PlatformConfig validation. A dynamic reference
+    # here would be resolved by CloudFormation into a resource property.
+    if isinstance(value, str) and has_dynamic_reference(value):
+        raise ValueError(
+            f"{name} must not contain a CloudFormation dynamic reference "
+            "({{resolve:...}})"
+        )
+    return value
+
+
 def cfg(context_key: str, env_key: str, default: str) -> str:
     """context > env > platform.yaml > legacy default."""
-    return (
+    return _literal(
+        f"{context_key} / {env_key}",
         app.node.try_get_context(context_key)
         or os.environ.get(env_key, "")
         or _yaml_env.get(env_key, "")
-        or default
+        or default,
     )
 
 
 # ── Configuration (context, environment, or platform.yaml) ──
 project = cfg("project", "PROJECT_NAME", "agentcore-workshop")
 env_name = cfg("environment", "ENVIRONMENT", "dev")
-region = (
+region = _literal(
+    "region",
     app.node.try_get_context("region")
     or os.environ.get("CDK_DEFAULT_REGION", "")
     or _yaml_env.get("AWS_REGION", "")
-    or "us-east-1"
+    or "us-east-1",
 )
 account = os.environ.get("CDK_DEFAULT_ACCOUNT", "")
 
@@ -132,7 +147,10 @@ retain_legacy_m2m_client = (
 transition_m2m_consumers = (
     app.node.try_get_context("transition_m2m_consumers") == "true"
 )
-retired_m2m_client_id = app.node.try_get_context("retired_m2m_client_id") or ""
+retired_m2m_client_id = check_idp_client_id(
+    "retired_m2m_client_id",
+    app.node.try_get_context("retired_m2m_client_id") or "",
+)
 
 
 # Security control feature flags (control-library / scope-split model).
@@ -799,7 +817,10 @@ if runtime_orchestrator:
     # to the replacement. This is intentionally not an environment or
     # platform.yaml setting: steady state must always consume the live export.
     monitored_resources["runtime-orchestrator"] = (
-        app.node.try_get_context("runtime_observability_arn_override")
+        _literal(
+            "runtime_observability_arn_override",
+            app.node.try_get_context("runtime_observability_arn_override"),
+        )
         or runtime_orchestrator.runtime_arn
     )
 if runtime_code_agent:

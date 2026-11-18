@@ -71,6 +71,86 @@ _BLOB_RE = re.compile(r"^[A-Za-z0-9+=]{32,}$")
 # repeating-digit id, so accepting it costs nothing.
 _ACCOUNT_SENTINELS = {"000000000000", "123456789012"}
 
+# ── CloudFormation dynamic references ──
+# CloudFormation resolves {{resolve:secretsmanager|ssm|ssm-secure:...}} in any
+# resource property, even mid-string. A manifest value carrying one makes the
+# deploy role fetch that secret and store it wherever the value lands (Cognito
+# provider details, plaintext SSM parameters, runtime environment). No manifest
+# field is a place for one, so these are hard errors that
+# PLATFORM_ALLOW_PLACEHOLDERS cannot relax.
+_DYNAMIC_REFERENCE_RE = re.compile(r"\{\{\s*resolve\s*:", re.IGNORECASE)
+# Entra/PingOne client ids are GUIDs, Okta's are alphanumeric, PingFederate's
+# are admin-chosen tokens; none needs more than this.
+_IDP_CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,255}$")
+_IDP_TENANT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+# RFC 3986 characters only: no braces, whitespace, quotes or angle brackets.
+_URL_CHARS_RE = re.compile(r"^[A-Za-z0-9._~%/:?#\[\]@!$&'()*+,;=-]{1,2048}$")
+
+
+def has_dynamic_reference(value: str) -> bool:
+    return bool(_DYNAMIC_REFERENCE_RE.search(value))
+
+
+def check_idp_client_id(field: str, value: str) -> str:
+    """Hard shape check for an IdP/OIDC client id. The value is not echoed."""
+    if value and not _IDP_CLIENT_ID_RE.fullmatch(value):
+        if _SENTINEL_RE.search(value) and not has_dynamic_reference(value):
+            raise ValueError(
+                f"{field} is a placeholder ({value!r}): put your IdP app "
+                "registration's client id here"
+            )
+        raise ValueError(
+            f"{field} is not an IdP client id (value not shown): use only "
+            "letters, digits, '.', '_' and '-', as issued by your IdP"
+        )
+    return value
+
+
+def check_idp_tenant_id(field: str, value: str) -> str:
+    if value and not _IDP_TENANT_ID_RE.fullmatch(value):
+        raise ValueError(
+            f"{field} is not a tenant id (value not shown): use only letters, "
+            "digits, '.', '_' and '-' (Entra: the directory id UUID)"
+        )
+    return value
+
+
+def check_url_chars(field: str, value: str) -> str:
+    if value and not _URL_CHARS_RE.fullmatch(value):
+        raise ValueError(
+            f"{field} contains characters that are not valid in a URL (value not shown)"
+        )
+    return value
+
+
+def check_secret_name(field: str, value: str) -> str:
+    if value and not _SECRET_NAME_RE.fullmatch(value):
+        raise ValueError(
+            f"{field} is not a Secrets Manager secret NAME (value not shown): "
+            "use only letters, digits and /_+=.@-"
+        )
+    return value
+
+
+def _dynamic_reference_paths(value: object, path: str = "") -> list[str]:
+    if isinstance(value, str):
+        return [path or "<root>"] if has_dynamic_reference(value) else []
+    if isinstance(value, dict):
+        out: list[str] = []
+        for k, v in value.items():
+            key = str(k)
+            child = f"{path}.{key}" if path else key
+            if has_dynamic_reference(key):
+                out.append(child)
+            out += _dynamic_reference_paths(v, child)
+        return out
+    if isinstance(value, (list, tuple)):
+        out = []
+        for i, v in enumerate(value):
+            out += _dynamic_reference_paths(v, f"{path}[{i}]")
+        return out
+    return []
+
 
 def _single_line_reference(value: str, label: str = "reference") -> str:
     """Reject terminal controls and ambiguous surrounding whitespace."""
@@ -107,6 +187,21 @@ class FederationConfig(BaseModel):
     issuer_url: str = ""  # platform Cognito issuer; discovery URL is derived
     m2m_client_id: str = ""
     m2m_client_secret_name: str = ""  # Secrets Manager NAME in the workload account
+
+    @field_validator("m2m_client_id")
+    @classmethod
+    def _m2m_client_id_shape(cls, v: str) -> str:
+        return check_idp_client_id("deployment.federation.m2m_client_id", v)
+
+    @field_validator("gateway_url", "issuer_url")
+    @classmethod
+    def _url_shape(cls, v: str, info) -> str:
+        return check_url_chars(f"deployment.federation.{info.field_name}", v)
+
+    @field_validator("m2m_client_secret_name")
+    @classmethod
+    def _secret_name_shape(cls, v: str) -> str:
+        return check_secret_name("deployment.federation.m2m_client_secret_name", v)
 
     @property
     def discovery_url(self) -> str:
@@ -252,6 +347,21 @@ class IdentityConfig(BaseModel):
     issuer_url: str = ""
     # Secrets Manager secret NAME — the secret itself never goes in this file.
     client_secret_name: str = ""
+
+    @field_validator("client_id")
+    @classmethod
+    def _client_id_shape(cls, v: str) -> str:
+        return check_idp_client_id("identity.client_id", v)
+
+    @field_validator("tenant_id")
+    @classmethod
+    def _tenant_id_shape(cls, v: str) -> str:
+        return check_idp_tenant_id("identity.tenant_id", v)
+
+    @field_validator("issuer_url")
+    @classmethod
+    def _issuer_url_shape(cls, v: str) -> str:
+        return check_url_chars("identity.issuer_url", v)
 
     @property
     def direct_issuer_url(self) -> str:
@@ -1414,6 +1524,19 @@ class PlatformConfig(BaseModel):
     migration: MigrationConfig | None = None
 
     model_config = {"extra": "forbid"}  # a typo'd key is an error, not a no-op
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_dynamic_references(cls, data: object) -> object:
+        paths = _dynamic_reference_paths(data)
+        if paths:
+            raise ValueError(
+                "CloudFormation dynamic references ({{resolve:...}}) are not "
+                f"allowed in platform.yaml: {', '.join(paths)}. A deploy would "
+                "resolve the referenced secret and store it in clear; reference "
+                "secrets only through the *_secret_name fields"
+            )
+        return data
 
     @model_validator(mode="after")
     def _derived_names_fit_service_limits(self) -> PlatformConfig:

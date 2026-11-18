@@ -14,6 +14,33 @@ from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
+from infra_utils.platform_config import (
+    check_idp_client_id,
+    check_idp_tenant_id,
+    check_secret_name,
+    check_url_chars,
+    has_dynamic_reference,
+)
+
+
+def _check_idp_config(idp_config: dict) -> None:
+    """idp_config reaches this stack from cdk context and env as well as
+    platform.yaml, so its values are checked here, where they are written into
+    Cognito provider details and the /auth/* SSM parameters."""
+    for key, value in idp_config.items():
+        if not isinstance(value, str):
+            raise TypeError(f"idp_{key} must be a string")
+        if has_dynamic_reference(value):
+            raise ValueError(
+                f"idp_{key} must not contain a CloudFormation dynamic reference"
+            )
+    check_idp_client_id("idp_client_id", idp_config.get("client_id", ""))
+    check_idp_tenant_id("idp_tenant_id", idp_config.get("tenant_id", ""))
+    check_url_chars("idp_issuer_url", idp_config.get("issuer_url", ""))
+    check_secret_name(
+        "idp_client_secret_name", idp_config.get("client_secret_name", "")
+    )
+
 
 class AuthStack(cdk.Stack):
     def __init__(
@@ -53,7 +80,8 @@ class AuthStack(cdk.Stack):
         lifecycle_policy = (
             cdk.RemovalPolicy.RETAIN if retain_data else cdk.RemovalPolicy.DESTROY
         )
-        idp_config = idp_config or {}
+        idp_config = dict(idp_config or {})
+        _check_idp_config(idp_config)
         external_idp_types = ("entra_id", "okta", "ping")
 
         if idp_type not in ("cognito", *external_idp_types):
