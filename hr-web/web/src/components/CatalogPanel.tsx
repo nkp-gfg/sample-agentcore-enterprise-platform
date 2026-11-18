@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { A2uiSurface } from "@a2ui/react";
 import { toast } from "sonner";
 import { GALLERY, galleryAckUpdate, type GallerySpecimen } from "@/a2ui/gallery.ts";
@@ -9,27 +8,24 @@ import { cn } from "@/lib/utils";
 
 export function CatalogPanel() {
   const [specimenId, setSpecimenId] = useState(GALLERY[0]?.id ?? "");
-  const surfacesRef = useRef<HrSurfaces | null>(null);
-  if (surfacesRef.current === null) {
-    const surfaces = new HrSurfaces((action) => {
+  const [surfaces] = useState(() => {
+    const created = new HrSurfaces((action) => {
       if (action.name !== "gallery_ack") {
         toast.message("Sample only. This button does not submit or approve.");
         return;
       }
-      surfaces.apply([galleryAckUpdate()]);
+      created.apply([galleryAckUpdate()]);
       toast.success("Card updated locally.");
     });
-    surfaces.apply(GALLERY.flatMap((item) => item.messages));
-    surfacesRef.current = surfaces;
-  }
-  const surfaces = surfacesRef.current;
+    created.apply(GALLERY.flatMap((item) => item.messages));
+    return created;
+  });
 
   useEffect(() => {
     return () => {
-      surfacesRef.current?.dispose();
-      surfacesRef.current = null;
+      surfaces.dispose();
     };
-  }, []);
+  }, [surfaces]);
 
   const version = useSyncExternalStore(
     surfaces.subscribe,

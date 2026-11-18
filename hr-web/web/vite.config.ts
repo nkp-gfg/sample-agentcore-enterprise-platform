@@ -17,6 +17,17 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/@a2ui/")) return "a2ui";
+          if (id.includes("node_modules/react-markdown") || id.includes("node_modules/mdast") || id.includes("node_modules/micromark")) {
+            return "markdown";
+          }
+          if (id.includes("node_modules/react-dom") || id.includes("node_modules/react/")) return "react";
+        },
+      },
+    },
   },
   server: {
     proxy: {

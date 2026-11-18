@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import ReactMarkdown from "react-markdown";
 import { Ellipsis, History, LayoutGrid, LogOut, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { A2uiSurface } from "@a2ui/react";
 import { BrandMark } from "@/components/BrandMark.tsx";
-import { CatalogPanel } from "@/components/CatalogPanel.tsx";
+const CatalogPanel = lazy(() =>
+  import("@/components/CatalogPanel.tsx").then((module) => ({ default: module.CatalogPanel })),
+);
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -89,7 +91,7 @@ function formatRelativeTime(timestamp: number): string {
   }
 }
 
-function SurfaceColumn({ surfaces }: { surfaces: HrSurfaces }) {
+const SurfaceColumn = memo(function SurfaceColumn({ surfaces }: { surfaces: HrSurfaces }) {
   const version = useSyncExternalStore(surfaces.subscribe, surfaces.getVersion, surfaces.getVersion);
   const ids = surfaces.ids();
   return (
@@ -121,7 +123,51 @@ function SurfaceColumn({ surfaces }: { surfaces: HrSurfaces }) {
       </ScrollArea>
     </aside>
   );
-}
+});
+
+const MessageArticle = memo(function MessageArticle({ message }: { message: ChatMessage }) {
+  return (
+    <article
+      className={
+        message.role === "user"
+          ? "ml-auto max-w-[36rem] rounded-2xl bg-primary px-3.5 py-2.5 text-primary-foreground [content-visibility:auto]"
+          : message.role === "error"
+            ? "max-w-[40rem] rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-red-950 [content-visibility:auto]"
+            : message.role === "system"
+              ? "max-w-[40rem] text-sm text-muted-foreground [content-visibility:auto]"
+              : "max-w-[40rem] rounded-2xl bg-card px-3.5 py-2.5 ring-1 ring-border [content-visibility:auto]"
+      }
+    >
+      <div className="mb-1 flex items-baseline justify-between gap-3 text-[11px] opacity-70">
+        <span>{message.meta}</span>
+        <time dateTime={new Date(message.timestamp).toISOString()}>{formatTime(message.timestamp)}</time>
+      </div>
+      <MessageBody message={message} />
+      {message.traces.length > 0 ? (
+        <ul className="mt-2 space-y-1 border-t border-current/10 pt-2">
+          {message.traces.map((trace, index) => (
+            <li key={`${message.id}-trace-${index}`} className="text-xs">
+              <details>
+                <summary className="cursor-pointer">
+                  {trace.kind === "deny" ? "Denied" : trace.kind === "allow" ? "Allowed" : "Tool"}
+                  {" · "}
+                  {trace.label}
+                </summary>
+                {trace.detail !== undefined ? (
+                  <pre className="mt-1 overflow-x-auto whitespace-pre-wrap font-mono text-[11px]">
+                    {typeof trace.detail === "string"
+                      ? trace.detail
+                      : JSON.stringify(trace.detail, null, 2)}
+                  </pre>
+                ) : null}
+              </details>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </article>
+  );
+});
 
 function MessageBody({ message }: { message: ChatMessage }) {
   if (message.role === "assistant" && message.text && !message.pending) {
@@ -141,6 +187,14 @@ export function WorkspaceScreen({
 }) {
   const [view, setView] = useState<"chat" | "catalog">("chat");
   const [draft, setDraft] = useState("");
+  const sendRef = useRef(workspace.sendMessage);
+  sendRef.current = workspace.sendMessage;
+  const submit = useCallback((text: string) => {
+    const message = text.trim();
+    if (!message) return;
+    setDraft("");
+    void sendRef.current(message);
+  }, []);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState("");
   const [historyError, setHistoryError] = useState("");
@@ -189,13 +243,6 @@ export function WorkspaceScreen({
       setHistoryError(message);
       toast.error(message);
     }
-  }
-
-  function submit(text: string) {
-    const message = text.trim();
-    if (!message || workspace.busy) return;
-    setDraft("");
-    void workspace.sendMessage(message);
   }
 
   return (
@@ -272,7 +319,11 @@ export function WorkspaceScreen({
         </div>
       </header>
 
-      {view === "catalog" ? <CatalogPanel /> : (
+      {view === "catalog" ? (
+        <Suspense fallback={<p className="p-6 text-sm text-muted-foreground">Loading catalog…</p>}>
+          <CatalogPanel />
+        </Suspense>
+      ) : (
       <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(16rem,38vh)] lg:grid-cols-[minmax(0,1.15fr)_minmax(20rem,0.85fr)] lg:grid-rows-1">
         <section className="flex min-h-0 flex-col" aria-label="Conversation">
           <ScrollArea className="min-h-0 flex-1">
@@ -304,46 +355,7 @@ export function WorkspaceScreen({
               ) : null}
               <div className="flex flex-col gap-3" aria-live="polite">
                 {workspace.messages.map((message) => (
-                  <article
-                    key={message.id}
-                    className={
-                      message.role === "user"
-                        ? "ml-auto max-w-[36rem] rounded-2xl bg-primary px-3.5 py-2.5 text-primary-foreground"
-                        : message.role === "error"
-                          ? "max-w-[40rem] rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-red-950"
-                          : message.role === "system"
-                            ? "max-w-[40rem] text-sm text-muted-foreground"
-                            : "max-w-[40rem] rounded-2xl bg-card px-3.5 py-2.5 ring-1 ring-border"
-                    }
-                  >
-                    <div className="mb-1 flex items-baseline justify-between gap-3 text-[11px] opacity-70">
-                      <span>{message.meta}</span>
-                      <time dateTime={new Date(message.timestamp).toISOString()}>{formatTime(message.timestamp)}</time>
-                    </div>
-                    <MessageBody message={message} />
-                    {message.traces.length > 0 ? (
-                      <ul className="mt-2 space-y-1 border-t border-current/10 pt-2">
-                        {message.traces.map((trace, index) => (
-                          <li key={`${message.id}-trace-${index}`} className="text-xs">
-                            <details>
-                              <summary className="cursor-pointer">
-                                {trace.kind === "deny" ? "Denied" : trace.kind === "allow" ? "Allowed" : "Tool"}
-                                {" · "}
-                                {trace.label}
-                              </summary>
-                              {trace.detail !== undefined ? (
-                                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap font-mono text-[11px]">
-                                  {typeof trace.detail === "string"
-                                    ? trace.detail
-                                    : JSON.stringify(trace.detail, null, 2)}
-                                </pre>
-                              ) : null}
-                            </details>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                  </article>
+                  <MessageArticle key={message.id} message={message} />
                 ))}
               </div>
               <div id="chat-end" />
