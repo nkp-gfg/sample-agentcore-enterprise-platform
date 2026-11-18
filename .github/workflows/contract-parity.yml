@@ -35,7 +35,7 @@ jobs:
       - name: Install CDK and app dependencies
         run: |
           npm install -g aws-cdk
-          pip install -r requirements.txt
+          pip install --require-hashes --only-binary ':all:' -r .github/requirements/app.txt
 
       - name: Preset ↔ synth parity
         run: PY=python3 bash scripts/check-contract.sh

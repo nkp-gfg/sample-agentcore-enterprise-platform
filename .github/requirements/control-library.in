@@ -1,0 +1,4 @@
+# Control-library validation with the checkov gate, plus the tests/ suite
+# (control-library.yml, .gitlab-ci.yml `control-library`).
+-r ../../requirements.txt
+checkov

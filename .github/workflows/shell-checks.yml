@@ -38,8 +38,11 @@ jobs:
         with:
           python-version: '3.13'
 
+      # Hash-pinned lockfile: pip refuses any artifact whose hash is not listed,
+      # so a new or replaced release on the index fails this step instead of
+      # running. Regenerate with scripts/lock-ci-requirements.sh.
       - name: Install the config dependencies
-        run: pip install "pydantic>=2.13.4,<3" "pyyaml>=6.0.3"
+        run: pip install --require-hashes --only-binary ':all:' -r .github/requirements/config.txt
 
       # No AWS, no network: both scripts stub the CLI and run deploy.sh's
       # functions in a sandbox.

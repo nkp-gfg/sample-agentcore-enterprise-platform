@@ -1,0 +1,6 @@
+# The lightweight tests/ run (.gitlab-ci.yml `pytest`). boto3 and colorama are
+# imported by scripts/utils.py, which the scripts tests import.
+pyyaml>=6.0.3
+pytest>=9.1.1
+boto3>=1.43.72
+colorama>=0.4.6
