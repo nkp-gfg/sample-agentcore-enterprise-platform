@@ -10,9 +10,10 @@
 # auth never need it — the caller's verified token arrives with the request and
 # GetWorkloadAccessTokenForJWT is the path that checks it.
 #
-# Reads the same control-library artifact the CDK app would, and injects the exemption
-# pattern with replace() rather than templatefile() so ${aws:...} policy variables in the
-# body are never touched.
+# Reads the same control-library artifacts the CDK app would. With no exemption configured
+# the policy is the unconditional deny, verbatim. Only an explicit, validated role ARN selects
+# the exempting variant, injected with replace() rather than templatefile() so ${aws:...}
+# policy variables in the body are never touched.
 # ═══════════════════════════════════════════════════════════════
 
 locals {
@@ -20,10 +21,18 @@ locals {
     "${path.module}/${var.control_library_path}/scp/identity/deny-workload-token-for-userid.json"
   )
 
-  identity_userid_scp_rendered = replace(
-    local.identity_userid_scp_source,
-    "<<approved_principal_arn_pattern>>",
-    var.identity_approved_principal_arn_pattern
+  identity_userid_scp_except_principal_source = file(
+    "${path.module}/${var.control_library_path}/scp/identity/deny-workload-token-for-userid-except-principal.json"
+  )
+
+  identity_userid_scp_rendered = (
+    var.identity_approved_principal_arn == ""
+    ? local.identity_userid_scp_source
+    : replace(
+      local.identity_userid_scp_except_principal_source,
+      "<<approved_principal_arn>>",
+      var.identity_approved_principal_arn
+    )
   )
 }
 

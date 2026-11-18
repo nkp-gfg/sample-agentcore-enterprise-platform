@@ -112,25 +112,31 @@ def test_cedar_permit_substitutes_read_action():
 
 def test_identity_userid_scp_denies_by_default():
     # GetWorkloadAccessTokenForUserId takes userId as an unverified string, so the shipped
-    # default must exempt nobody. If someone gives the exemption param a real-looking
-    # default, the control silently stops denying.
+    # default must exempt nobody. Any principal-ARN exemption, even one naming a role that
+    # "does not exist", is a role name an account administrator can create.
     doc = load_control("scp.identity.deny-workload-token-for-userid")
+    assert len(doc["Statement"]) == 1
     statement = doc["Statement"][0]
     assert statement["Effect"] == "Deny"
     assert statement["Action"] == "bedrock-agentcore:GetWorkloadAccessTokenForUserId"
-    exempt = statement["Condition"]["ArnNotLike"]["aws:PrincipalArn"]
-    assert "__no_principal_may_mint_tokens_by_userid__" in exempt
+    assert statement["Resource"] == "*"
+    assert "Condition" not in statement
 
 
-def test_identity_userid_scp_exemption_is_overridable():
+def test_identity_userid_scp_exemption_requires_an_exact_principal():
+    with pytest.raises(ValueError, match="missing required params"):
+        load_control("scp.identity.deny-workload-token-for-userid-except-principal")
     doc = load_control(
-        "scp.identity.deny-workload-token-for-userid",
-        {
-            "approved_principal_arn_pattern": "arn:aws:iam::111122223333:role/break-glass"
-        },
+        "scp.identity.deny-workload-token-for-userid-except-principal",
+        {"approved_principal_arn": "arn:aws:iam::111122223333:role/break-glass"},
     )
-    exempt = doc["Statement"][0]["Condition"]["ArnNotLike"]["aws:PrincipalArn"]
-    assert exempt == "arn:aws:iam::111122223333:role/break-glass"
+    condition = doc["Statement"][0]["Condition"]
+    # Exact match only: ArnNotLike / ArnNotEquals would treat * and ? as wildcards.
+    assert list(condition) == ["StringNotEquals"]
+    assert (
+        condition["StringNotEquals"]["aws:PrincipalArn"]
+        == "arn:aws:iam::111122223333:role/break-glass"
+    )
 
 
 def test_identity_credential_provider_policy_names_one_provider():

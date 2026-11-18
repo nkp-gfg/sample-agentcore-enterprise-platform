@@ -147,14 +147,18 @@ identity anywhere in the call. Agents behind Runtime or Gateway inbound auth nev
 the caller's verified token arrives with the request, and `GetWorkloadAccessTokenForJWT` is
 the path that checks it.
 
-The exemption parameter defaults to a role ARN that cannot exist, so the control denies
-everyone until an operator supplies a real pattern. Narrow it only for a genuine break-glass
-or migration path, and prefer removing the need over widening the pattern:
+By default the SCP is an unconditional deny with no exemption. Do not exempt a principal by
+pattern or by a "role that does not exist": a role name is not reserved, so any administrator
+of a covered account can create a role with that name and step outside the deny. For a genuine
+break-glass or migration path, create the role first in one account whose administrators are
+already trusted with every user's vault credentials (any administrator of that account can
+re-trust the role), then pass its exact ARN. The module rejects wildcards and matches with
+`StringNotEquals`, and prefer removing the need over adding the exemption:
 
 ```bash
 terraform -chdir=control-library/terraform/org-guardrails apply \
   -var 'target_ids=["ou-example-11111111"]' \
-  -var 'identity_approved_principal_arn_pattern=arn:aws:iam::111122223333:role/break-glass'
+  -var 'identity_approved_principal_arn=arn:aws:iam::111122223333:role/break-glass'
 ```
 
 If you need the userId path for a specific service and want something narrower than an ARN

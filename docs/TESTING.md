@@ -128,8 +128,8 @@ configured, not who may invoke one.
 ### A4c. Identity SCP denies the unverified-userId token path
 
 `GetWorkloadAccessTokenForUserId` accepts the user identifier as an unverified string, so the
-shipped default must exempt nobody. The exemption param defaults to a role ARN that cannot
-exist, which makes the control a blanket deny until an operator supplies a real pattern.
+shipped default must exempt nobody. With `identity_approved_principal_arn` left empty the SCP
+has no condition at all, so no role an account administrator creates falls outside it.
 
 ```bash
 cd control-library/terraform/org-guardrails
@@ -142,9 +142,13 @@ VARS='-var target_ids=["ou-example-11111111"]'
 printf 'length(regexall("<<", local.identity_userid_scp_rendered))\n' | terraform console $VARS   # → 0
 printf 'jsondecode(local.identity_userid_scp_rendered).Statement[0]\n' | terraform console $VARS  # → Deny on GetWorkloadAccessTokenForUserId
 
-# The default exemption names a role that does not exist, so nothing is exempt:
-printf 'jsondecode(local.identity_userid_scp_rendered).Statement[0].Condition.ArnNotLike["aws:PrincipalArn"]\n' \
-  | terraform console $VARS                                                                      # → arn:aws:iam::*:role/__no_principal_may_mint_tokens_by_userid__
+# The default has no exemption condition, so nothing is exempt:
+printf 'contains(keys(jsondecode(local.identity_userid_scp_rendered).Statement[0]), "Condition")\n' \
+  | terraform console $VARS                                                                      # → false
+
+# An exemption must be one exact role ARN; a wildcard or placeholder is rejected at plan time:
+printf 'var.identity_approved_principal_arn\n' \
+  | terraform console $VARS -var 'identity_approved_principal_arn=arn:aws:iam::*:role/break-glass' # → Invalid value for variable
 
 # Sid must not collide with the consolidated gateway SCP's statements:
 printf 'contains(local.gateway_scp_statements[*].Sid, "DenyWorkloadTokenForUserId")\n' \

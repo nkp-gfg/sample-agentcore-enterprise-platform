@@ -187,6 +187,10 @@ controls:
   # user's stored credentials in the token vault — no JWT, no proof of identity. Agents behind
   # Runtime or Gateway inbound auth never need it: the caller's token arrives in the request
   # and GetWorkloadAccessTokenForJWT is the verified path.
+  #
+  # The default carries no exemption at all. An exemption that names a role by pattern or by a
+  # "does not exist" placeholder is not a deny: any account administrator can create a role
+  # with that name and step outside it.
   - id: scp.identity.deny-workload-token-for-userid
     file: scp/identity/deny-workload-token-for-userid.json
     type: SCP
@@ -194,15 +198,25 @@ controls:
     attach_to: [OU, ACCOUNT]
     engine: [terraform]
     default_mode: enforce
+    validate: [checkov, access-analyzer]
+
+  # Break-glass variant: same deny, exempting exactly one role ARN (StringNotEquals, so
+  # wildcards are literal characters, not patterns). Opt-in only; there is no default.
+  - id: scp.identity.deny-workload-token-for-userid-except-principal
+    file: scp/identity/deny-workload-token-for-userid-except-principal.json
+    type: SCP
+    scope: org
+    attach_to: [OU, ACCOUNT]
+    engine: [terraform]
+    default_mode: enforce
     params:
-      approved_principal_arn_pattern:
-        required: false
-        default: "arn:aws:iam::*:role/__no_principal_may_mint_tokens_by_userid__"
+      approved_principal_arn:
+        required: true
         description: >-
-          Principal ARN pattern exempted from the deny (aws:PrincipalArn, ArnNotLike). The
-          default names a role that does not exist, so the control is a blanket deny until a
-          real pattern is supplied. Narrow to a specific break-glass role ARN if a migration
-          or batch job genuinely needs the userId path.
+          Exact IAM role ARN exempted from the deny (aws:PrincipalArn, StringNotEquals), in
+          one specific 12-digit account. Any administrator of that account can create or
+          re-trust the role, so choose an account whose administrators are already trusted
+          with every user's vault credentials, and create the role before attaching.
     validate: [checkov, access-analyzer]
 
   # ── Gateway configuration guardrails (org scope, Terraform) ──
