@@ -21,8 +21,11 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
 
+# Job images are pinned to a multi-arch index digest; the tag beside it is
+# informational only. Bump the digest in a reviewed MR — never drop it to
+# follow a moving tag, or whoever publishes that tag runs code with the job token.
 default:
-  image: public.ecr.aws/docker/library/python:3.13-slim
+  image: public.ecr.aws/docker/library/python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90  # 3.13.18
   interruptible: true
 
 variables:
@@ -135,7 +138,7 @@ pytest:
 
 cdk-synth:
   stage: synth
-  image: public.ecr.aws/docker/library/node:22-slim
+  image: public.ecr.aws/docker/library/node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee  # 22.23.5
   <<: *pip-cache
   before_script:
     - apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv > /dev/null
@@ -169,7 +172,7 @@ cdk-synth:
 terraform:
   stage: terraform
   image:
-    name: public.ecr.aws/hashicorp/terraform:1.9
+    name: public.ecr.aws/hashicorp/terraform:1.9@sha256:18f9986038bbaf02cf49db9c09261c778161c51dcc7fb7e355ae8938459428cd  # 1.9.8
     entrypoint: [""]
   script:
     - terraform fmt -check -recursive control-library/terraform/
