@@ -92,12 +92,19 @@ orchestrator and research-agent runtimes, whose
 - The token vault stores each provider's secret in an AgentCore-owned Secrets
   Manager secret, and `GetResourceOauth2Token` reads it with the **caller's**
   identity — so the runtime role (`stacks/runtime_stack.py`) grants
-  `secretsmanager:GetSecretValue` on
-  `bedrock-agentcore-identity!default/oauth2/*`. Without it, gateway tool
-  loading fails and takes the whole agent invocation down with it.
+  `secretsmanager:GetSecretValue` on that one provider's secret,
+  `bedrock-agentcore-identity!default/oauth2/<GATEWAY_CREDENTIAL_PROVIDER_NAME>-??????`.
+  Without it, gateway tool loading fails and takes the whole agent invocation
+  down with it.
+- AgentCore does not bind a workload identity to the providers it may read, so
+  each runtime role is the fence: workload tokens only for that runtime's own
+  identity, `GetResourceOauth2Token` only for its configured provider, and no
+  `CreateWorkloadIdentity`. A runtime without `GATEWAY_CREDENTIAL_PROVIDER_NAME`
+  (code-agent) can read no provider at all.
 - The unverified-userId token path (`GetWorkloadAccessTokenForUserId`) is
-  denied by an org-level SCP in `control-library/terraform/org-guardrails`, not by this stack
-  — see [Security controls](../SECURITY_CONTROLS.md).
+  denied on every runtime role and by an org-level SCP in
+  `control-library/terraform/org-guardrails` — see
+  [Security controls](../SECURITY_CONTROLS.md).
 
 ## Verification
 

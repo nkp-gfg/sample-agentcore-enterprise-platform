@@ -152,8 +152,9 @@ controls:
   # specific ARN they target.
   # https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/scope-credential-provider-access.html
   #
-  # Consumed as a template; the deployed role in infra_utils/agentcore_role.py does not read
-  # AgentCore Identity today.
+  # Consumed as a template. stacks/runtime_stack.py applies the same shape to every runtime
+  # role: its own workload identity, its one GATEWAY_CREDENTIAL_PROVIDER_NAME provider, and the
+  # userId deny.
   - id: iam.identity-credential-provider-scoped
     file: iam/identity-credential-provider-scoped.json
     type: IAM

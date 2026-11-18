@@ -303,9 +303,11 @@ and telling them apart saves time:
   `GATEWAY_CREDENTIAL_PROVIDER_NAME` unset, or the gateway URL unresolvable.
   Check both env vars on the runtime, and look for `[GATEWAY]` warnings in the
   container logs — the client logs why it gave up.
-- **The invoke fails outright** — if the runtime role cannot read the vault's
-  secret (`secretsmanager:GetSecretValue` on
-  `bedrock-agentcore-identity!default/oauth2/*`), the token fetch raises
+- **The invoke fails outright** — if the runtime role cannot call
+  `GetResourceOauth2Token` for the configured provider, or cannot read the
+  vault's secret (`secretsmanager:GetSecretValue` on
+  `bedrock-agentcore-identity!default/oauth2/<provider>-??????`), the token
+  fetch raises
   AccessDenied inside the MCP client and the agent aborts rather than degrading.
   An invoke that errors instead of answering points here.
 
