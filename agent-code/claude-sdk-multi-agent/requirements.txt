@@ -1,4 +1,6 @@
 # Claude Agent SDK dependencies
+# The image installs requirements.lock.txt (exact versions + sha256 hashes).
+# After editing this file, run: python scripts/lock_requirements.py
 claude-agent-sdk==0.2.139
 mcp==1.29.0
 bedrock-agentcore

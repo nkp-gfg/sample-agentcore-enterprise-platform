@@ -1,0 +1,5 @@
+# Build backend for the packages this image builds from source (halo: it
+# publishes no py3 wheel). Installed from build-requirements.lock.txt before
+# requirements.lock.txt, with --no-build-isolation, so pip never fetches an
+# unverified setuptools. After editing, run: python scripts/lock_requirements.py
+setuptools

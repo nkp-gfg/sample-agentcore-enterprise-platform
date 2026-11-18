@@ -71,9 +71,15 @@ check-docs:
 	python scripts/gen_platform_reference.py --check
 check-structure:
 	python scripts/check_repository_structure.py
+# Runtime images install only the hash-locked requirements.lock.txt next to each
+# requirements.txt. Regenerate after editing a requirements.txt (needs uv).
+lock-requirements:
+	python scripts/lock_requirements.py
+check-locks:
+	python scripts/lock_requirements.py --check
 check-shell:
 	shellcheck --severity=warning $$(git ls-files '*.sh')
 	$(BASH) scripts/check-deploy-config.sh
 	$(BASH) scripts/check-workshop-flow.sh
 
-.PHONY: all lint ruff-lint format lint-cicd deploy synth test-agent test-gateway test-memory validate-controls test-controls check-docs check-structure check-shell
+.PHONY: all lint ruff-lint format lint-cicd deploy synth test-agent test-gateway test-memory validate-controls test-controls check-docs check-structure lock-requirements check-locks check-shell

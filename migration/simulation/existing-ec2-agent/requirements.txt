@@ -1,1 +1,3 @@
+# The image installs requirements.lock.txt (exact versions + sha256 hashes).
+# After editing this file, run: python scripts/lock_requirements.py
 strands-agents>=1.0.0

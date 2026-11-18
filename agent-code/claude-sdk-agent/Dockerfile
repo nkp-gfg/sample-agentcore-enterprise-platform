@@ -24,9 +24,8 @@ RUN apt-get update && \
 RUN npm install -g @anthropic-ai/claude-code@2.1.73
 
 # Copy and install agent-specific requirements
-COPY claude-sdk-agent/requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir aws-opentelemetry-distro==0.16.0
+COPY claude-sdk-agent/requirements.lock.txt requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r requirements.txt
 
 # Create non-root user and ensure claude config dir is writable
 RUN useradd -m -u 1000 bedrock_agentcore && \

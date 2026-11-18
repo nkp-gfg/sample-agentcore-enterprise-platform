@@ -12,9 +12,8 @@ ENV DOCKER_CONTAINER=1 \
     PYTHONUNBUFFERED=1
 
 # Copy and install agent-specific requirements first
-COPY langgraph-agent/requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir aws-opentelemetry-distro==0.16.0 "requests>=2.31.0"
+COPY langgraph-agent/requirements.lock.txt requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r requirements.txt
 
 # Create non-root user
 RUN useradd -m -u 1000 bedrock_agentcore

@@ -1,9 +1,8 @@
 FROM public.ecr.aws/docker/library/python:3.13-slim
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
-COPY research-agent/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir aws-opentelemetry-distro==0.16.0
+COPY research-agent/requirements.lock.txt requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r requirements.txt
 COPY shared/ shared/
 RUN useradd -m -u 1000 bedrock_agentcore
 USER bedrock_agentcore
