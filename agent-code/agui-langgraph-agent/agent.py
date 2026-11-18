@@ -15,6 +15,7 @@ from langchain.agents import create_agent
 from langchain_aws import ChatBedrock
 from langgraph_checkpoint_aws import AgentCoreMemorySaver
 from shared.auth import extract_user_id_from_context
+from shared.errors import AGENT_RUN_FAILED, UNAUTHORIZED, client_safe_agui_event
 from tools.code_interpreter import LangGraphCodeInterpreterTools
 from tools.gateway import create_gateway_mcp_client
 
@@ -95,29 +96,37 @@ async def create_langgraph_agent():
 async def invocations(payload: dict, context: RequestContext):
     input_data = RunAgentInput.model_validate(payload)
 
-    user_id = extract_user_id_from_context(context)
-
-    # Build the graph before constructing the AG-UI wrapper: LangGraphAGUIAgent
-    # inspects graph.nodes in __init__, so it cannot be handed graph=None and
-    # filled in later. The entrypoint already runs per request, so the graph
-    # (and its gateway token) is still created fresh for every invocation.
-    agent = LangGraphAGUIAgent(
-        name="agui_langgraph_agent",
-        description="AG-UI LangGraph agent with Gateway MCP tools and Memory",
-        graph=await create_langgraph_agent(),
-        config={"configurable": {"actor_id": user_id}},
-    )
+    try:
+        user_id = extract_user_id_from_context(context)
+    except ValueError as exc:
+        logger.warning("Rejected unverified caller: %s", exc)
+        yield RunErrorEvent(message=UNAUTHORIZED).model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        return
 
     try:
+        # Build the graph before constructing the AG-UI wrapper: LangGraphAGUIAgent
+        # inspects graph.nodes in __init__, so it cannot be handed graph=None and
+        # filled in later. The entrypoint already runs per request, so the graph
+        # (and its gateway token) is still created fresh for every invocation.
+        agent = LangGraphAGUIAgent(
+            name="agui_langgraph_agent",
+            description="AG-UI LangGraph agent with Gateway MCP tools and Memory",
+            graph=await create_langgraph_agent(),
+            config={"configurable": {"actor_id": user_id}},
+        )
+
         async for event in agent.run(input_data):
             if event is not None:
-                yield event.model_dump(mode="json", by_alias=True, exclude_none=True)
-    except Exception as exc:
+                yield client_safe_agui_event(
+                    event.model_dump(mode="json", by_alias=True, exclude_none=True)
+                )
+    except Exception:
         logger.exception("Agent run failed")
-        yield RunErrorEvent(
-            message=str(exc) or type(exc).__name__,
-            code=type(exc).__name__,
-        ).model_dump(mode="json", by_alias=True, exclude_none=True)
+        yield RunErrorEvent(message=AGENT_RUN_FAILED).model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
 )
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from shared.auth import extract_user_id_from_context
+from shared.errors import AGENT_RUN_FAILED, UNAUTHORIZED, client_safe_agui_event
 from strands import Agent
 from strands.models import BedrockModel
 from tools.code_interpreter import StrandsCodeInterpreterTools
@@ -115,25 +116,34 @@ class ActorAwareStrandsAgent(StrandsAgent):
 @app.entrypoint
 async def invocations(payload: dict, context: RequestContext):
     input_data = RunAgentInput.model_validate(payload)
-    user_id = extract_user_id_from_context(context)
-
-    agent = ActorAwareStrandsAgent(
-        user_id=user_id,
-        session_id=input_data.thread_id,
-        name="agui_strands_agent",
-        description="AG-UI Strands agent with Gateway MCP tools and Code Interpreter",
-    )
 
     try:
+        user_id = extract_user_id_from_context(context)
+    except ValueError as exc:
+        logger.warning("Rejected unverified caller: %s", exc)
+        yield RunErrorEvent(message=UNAUTHORIZED).model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        return
+
+    try:
+        agent = ActorAwareStrandsAgent(
+            user_id=user_id,
+            session_id=input_data.thread_id,
+            name="agui_strands_agent",
+            description="AG-UI Strands agent with Gateway MCP tools and Code Interpreter",
+        )
+
         async for event in agent.run(input_data):
             if event is not None:
-                yield event.model_dump(mode="json", by_alias=True, exclude_none=True)
-    except Exception as exc:
+                yield client_safe_agui_event(
+                    event.model_dump(mode="json", by_alias=True, exclude_none=True)
+                )
+    except Exception:
         logger.exception("Agent run failed")
-        yield RunErrorEvent(
-            message=str(exc) or type(exc).__name__,
-            code=type(exc).__name__,
-        ).model_dump(mode="json", by_alias=True, exclude_none=True)
+        yield RunErrorEvent(message=AGENT_RUN_FAILED).model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
 
 
 if __name__ == "__main__":
