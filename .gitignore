@@ -30,6 +30,7 @@ crash.log
 *.tfvars
 !*.tfvars.example
 .terraform.lock.hcl
+!control-library/terraform/org-guardrails/.terraform.lock.hcl
 override.tf
 override.tf.json
 
