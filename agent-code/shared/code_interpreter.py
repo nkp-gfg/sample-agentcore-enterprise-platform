@@ -32,14 +32,19 @@ class CodeInterpreterTools:
 
     def cleanup(self):
         """
-        Clean up code interpreter session.
+        Stop the code interpreter session, if one was started.
 
-        Note: AgentCore automatically cleans up inactive sessions after timeout,
-        so manual cleanup is optional but recommended for immediate resource release.
+        Call this when the request that owns these tools ends. Otherwise the
+        session keeps counting against the account's concurrent session quota
+        until its timeout.
         """
-        if self._code_client:
-            self._code_client.stop()
-            self._code_client = None
+        client, self._code_client = self._code_client, None
+        if client is None:
+            return
+        try:
+            client.stop()
+        except Exception as e:  # noqa: BLE001 — the session still expires on its timeout
+            logger.error(f"Failed to stop code interpreter session: {e}")
 
     def execute_python_securely(self, code: str) -> str:
         """
@@ -68,6 +73,6 @@ class CodeInterpreterTools:
                 if results
                 else json.dumps({"error": "No results returned"}, indent=2)
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — report any failure to the model
             logger.error(f"Code execution failed: {e}")
-            return json.dumps({"error": f"Code execution failed: {str(e)}"}, indent=2)
+            return json.dumps({"error": f"Code execution failed: {e!s}"}, indent=2)

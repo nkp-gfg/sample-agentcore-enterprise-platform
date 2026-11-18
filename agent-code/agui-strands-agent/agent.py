@@ -66,7 +66,9 @@ def _create_session_manager(
     )
 
 
-def _create_agent(user_id: str, session_id: str) -> Agent:
+def _create_agent(
+    user_id: str, session_id: str, code_tools: StrandsCodeInterpreterTools
+) -> Agent:
     """Create a Strands Agent with Gateway MCP tools, Memory, and Code Interpreter."""
     tools = []
     try:
@@ -78,8 +80,6 @@ def _create_agent(user_id: str, session_id: str) -> Agent:
             "[AGENT] Gateway not available, continuing without gateway tools: %s", e
         )
 
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    code_tools = StrandsCodeInterpreterTools(region)
     tools.append(code_tools.execute_python_securely)
 
     return Agent(
@@ -105,11 +105,17 @@ class ActorAwareStrandsAgent(StrandsAgent):
 
     async def run(self, input_data: RunAgentInput):
         thread_id = input_data.thread_id or "default"
-        self._agents_by_thread[thread_id] = _create_agent(
-            self._user_id, self._session_id
+        code_tools = StrandsCodeInterpreterTools(
+            os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         )
-        async for event in super().run(input_data):
-            yield event
+        try:
+            self._agents_by_thread[thread_id] = _create_agent(
+                self._user_id, self._session_id, code_tools
+            )
+            async for event in super().run(input_data):
+                yield event
+        finally:
+            code_tools.cleanup()
 
 
 @app.entrypoint
