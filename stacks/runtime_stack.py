@@ -588,10 +588,17 @@ class RuntimeStack(cdk.Stack):
                 'print(json.load(sys.stdin)[0]["Config"].get("User") or "root")\')'
             ),
             'echo "Preserving source runtime user: $SOURCE_USER"',
+            # The adapter build changes WORKDIR to install its dependencies;
+            # restore the source image's so the child starts where it expects.
+            (
+                'SOURCE_WORKDIR=$(docker inspect "$SOURCE_IMAGE" | python3 -c \'import json,sys; '
+                'print(json.load(sys.stdin)[0]["Config"].get("WorkingDir") or "/")\')'
+            ),
             (
                 'docker build --platform linux/arm64 --build-arg SOURCE_IMAGE="$SOURCE_IMAGE" '
                 '--build-arg CHILD_CMD="$CHILD_CMD" '
                 '--build-arg CHILD_USER="$SOURCE_USER" '
+                '--build-arg CHILD_WORKDIR="$SOURCE_WORKDIR" '
                 "-f adapter/Dockerfile -t $REPO_URI:$IMAGE_TAG adapter/"
             ),
             "docker tag $REPO_URI:$IMAGE_TAG $REPO_URI:latest",
