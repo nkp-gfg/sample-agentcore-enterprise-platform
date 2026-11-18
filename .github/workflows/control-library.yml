@@ -7,6 +7,9 @@ on:
       - 'control-library/**'
       - 'infra_utils/policy_loader.py'
       - 'scripts/validate_control_library.py'
+      - 'scripts/ci/control-library.lock'
+      - 'scripts/pip-install-locked.sh'
+      - 'requirements.lock'
       - 'tests/**'
   pull_request:
     branches: [ main ]
@@ -14,6 +17,9 @@ on:
       - 'control-library/**'
       - 'infra_utils/policy_loader.py'
       - 'scripts/validate_control_library.py'
+      - 'scripts/ci/control-library.lock'
+      - 'scripts/pip-install-locked.sh'
+      - 'requirements.lock'
       - 'tests/**'
 
 permissions:
@@ -31,8 +37,16 @@ jobs:
         with:
           python-version: '3.13'
 
+      # checkov pins an older boto3 than requirements.txt allows, so it gets
+      # its own venv and only its entry point goes on PATH.
       - name: Install dependencies
-        run: pip install -r requirements.txt checkov
+        run: |
+          bash scripts/pip-install-locked.sh requirements.lock
+          python -m venv "$RUNNER_TEMP/checkov"
+          bash scripts/pip-install-locked.sh scripts/ci/control-library.lock "$RUNNER_TEMP/checkov/bin/python"
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -s "$RUNNER_TEMP/checkov/bin/checkov" "$RUNNER_TEMP/bin/checkov"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Validate control-library against catalog (+ checkov scan)
         run: python scripts/validate_control_library.py
