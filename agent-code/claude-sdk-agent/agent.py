@@ -201,7 +201,7 @@ Your response should:
                                 }
                             }
                         elif isinstance(block, TextBlock):
-                            logger.info("Agent response: %s", block.text)
+                            logger.info("Agent response: %d chars", len(block.text))
                             agent_responses.append(block.text)
                             yield {"data": block.text}
                 elif isinstance(msg, UserMessage):
