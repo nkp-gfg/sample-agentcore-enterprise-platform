@@ -8,7 +8,9 @@
 #   attach_to    Valid attach points (informational + used for validation).
 #   engine       IaC engines that consume this control today.
 #   default_mode enforce | log_only | audit  (safe default posture)
-#   params       name -> {required, default?, description}. Values inject over <<NAME>> tokens.
+#   params       name -> {required, default?, pattern?, example?, description}. Values inject
+#                over <<NAME>> tokens. pattern is a regex the whole (string) value must match;
+#                example is a valid value used by scripts/validate_control_library.py.
 #   validate     CI validators that must pass for this artifact.
 version: 1
 description: AgentCore security control definitions (SCP, RCP, resource, IAM, VPCE, Cedar, Guardrails).
@@ -217,9 +219,13 @@ controls:
     default_mode: enforce
     params:
       kms_key_arn_pattern:
-        required: false
-        default: "arn:aws:kms:*:*:key/*"
-        description: KMS key ARN pattern the Gateway must use. Narrow to restrict further.
+        required: true
+        pattern: '^arn:(aws|aws-cn|aws-us-gov):kms:[a-z0-9*?-]*:[0-9]{12}:key/[A-Za-z0-9*?-]+$'
+        example: "arn:aws:kms:*:111122223333:key/*"
+        description: >-
+          KMS key ARN pattern the Gateway must use. The account segment must be a literal
+          12-digit account ID the organization owns; a wildcard there would approve a key
+          held in any account. Region and key-id segments may use * or ?.
     validate: [checkov, access-analyzer]
 
   - id: scp.gateway.deny-no-auth
