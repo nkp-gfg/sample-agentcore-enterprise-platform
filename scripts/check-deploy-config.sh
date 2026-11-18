@@ -98,16 +98,22 @@ STUB_NPX
 printf '#!/usr/bin/env bash\necho "$*" >> "%s/npm.args"\n' "$TMP" > "$STUB/npm"
 chmod +x "$STUB/npx" "$STUB/npm"
 log_header() { :; }; log_warn() { :; }; log_error() { :; }
-eval "$(sed -n '/^check_prereqs()/,/^}/p' "$SCRIPT_DIR/deploy.sh")"
+eval "$(grep -E '^CDK_CLI_(VERSION|INTEGRITY)=' "$SCRIPT_DIR/deploy.sh")"
+for fn in without_aws_env install_cdk_cli ensure_cdk_cli; do
+    eval "$(sed -n "/^${fn}()/,/^}/p" "$SCRIPT_DIR/deploy.sh")"
+done
 
-PATH="$STUB:$PATH" check_prereqs >/dev/null 2>&1 & probe=$!
+PATH="$STUB:$PATH" ensure_cdk_cli >/dev/null 2>&1 & probe=$!
 ( sleep 15; kill -9 "$probe" 2>/dev/null ) & watchdog=$!
 wait "$probe" && probe_rc=0 || probe_rc=$?
 kill "$watchdog" 2>/dev/null || true
-[ "$probe_rc" -ne 137 ] || fail "check_prereqs hung on the npx install prompt"
-grep -q -- 'install -g aws-cdk' "$TMP/npm.args" \
+[ "$probe_rc" -ne 137 ] || fail "ensure_cdk_cli hung on the npx install prompt"
+grep -q -- "aws-cdk@$CDK_CLI_VERSION" "$TMP/npm.args" \
     || fail "probe failed but the install fallback never ran: $(cat "$TMP/npm.args" 2>/dev/null)"
-echo "PASS: CDK probe fails fast and falls back to installing, never prompts"
+[ "$probe_rc" -ne 0 ] || fail "a CDK CLI that was never fetched was reported installed"
+! grep -q -- 'install -g' "$TMP/npm.args" \
+    || fail "installed a CDK CLI without checking its pinned sha512: $(cat "$TMP/npm.args")"
+echo "PASS: CDK probe fails fast and falls back to the pinned, hash-checked install, never prompts"
 
 # (h) a targeted destroy is --exclusively (so CloudFormation refuses instead of
 # cascading into dependent stacks), --all still cascades, and a refused destroy

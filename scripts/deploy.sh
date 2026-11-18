@@ -399,30 +399,119 @@ check_prereqs() {
         log_info "○ docker: not installed (optional — image builds run in AWS CodeBuild)"
     fi
 
-    # Check CDK CLI. --no-install is what keeps this from hanging: a bare
-    # `npx cdk` prints "Need to install the following packages ... Ok to
-    # proceed?" when aws-cdk is not in the npx cache, and with the output
-    # suppressed and no TTY (CI, a background deploy, the guided wizard) that
-    # wait never ends — the probe never returns, so the install below never ran.
-    # --no-install fails fast instead. npx still prefers a cdk already on PATH.
+    if [ "$missing" -eq 1 ]; then
+        log_error "Install missing prerequisites and retry."
+        exit 1
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# Pinned Toolchain (CDK CLI + Python packages)
+# ═══════════════════════════════════════════════════════════════
+# Everything installed here later runs as the deploy identity, so each install
+# is bound to exact artifacts: the CDK CLI to one version and its tarball
+# sha512, the Python packages to the hashes in requirements.lock (wheels only,
+# so no build backend runs). Installs run before check_credentials, with every
+# AWS_* variable removed from their environment, and ignore install scripts.
+# Bump both pins deliberately: regenerate requirements.lock with the command in
+# its header, and take CDK_CLI_INTEGRITY from the registry's dist.integrity.
+CDK_CLI_VERSION="2.1148.1"
+CDK_CLI_INTEGRITY="sha512-K3d02L17IwmAuiBWNuX1DzYhKUs9GrKYI7bZnGJfJ1bKz9ymXFxfudBOL3rUb8JAusDNSULiQU2fsJH7kyY2XA=="
+
+without_aws_env() {
+    local -a drop=()
+    local name
+    while IFS= read -r name; do
+        case "$name" in AWS_*) drop+=(-u "$name") ;; esac
+    done < <(compgen -e)
+    env ${drop[@]+"${drop[@]}"} "$@"
+}
+
+install_cdk_cli() {
+    local workdir tarball actual
+    workdir=$(mktemp -d) || return 1
+    tarball="$workdir/aws-cdk-$CDK_CLI_VERSION.tgz"
+    if ! without_aws_env npm pack --ignore-scripts --loglevel=error --pack-destination "$workdir" \
+            "aws-cdk@$CDK_CLI_VERSION" >/dev/null || [ ! -f "$tarball" ]; then
+        log_error "✗ cdk: could not fetch aws-cdk@$CDK_CLI_VERSION"
+        rm -rf "$workdir"
+        return 1
+    fi
+    actual=$(node -e 'const c = require("crypto"), fs = require("fs");
+        process.stdout.write("sha512-" + c.createHash("sha512")
+            .update(fs.readFileSync(process.argv[1])).digest("base64"));' "$tarball")
+    if [ "$actual" != "$CDK_CLI_INTEGRITY" ]; then
+        log_error "✗ cdk: aws-cdk@$CDK_CLI_VERSION does not match the pinned sha512 — refusing to install it"
+        rm -rf "$workdir"
+        return 1
+    fi
+    if ! without_aws_env npm install -g --ignore-scripts --no-audit --no-fund "$tarball"; then
+        rm -rf "$workdir"
+        return 1
+    fi
+    rm -rf "$workdir"
+}
+
+ensure_cdk_cli() {
+    # --no-install is what keeps this from hanging: a bare `npx cdk` prints
+    # "Need to install the following packages ... Ok to proceed?" when aws-cdk
+    # is not in the npx cache, and with the output suppressed and no TTY (CI, a
+    # background deploy, the guided wizard) that wait never ends — the probe
+    # never returns, so the install below never ran. --no-install fails fast
+    # instead. npx still prefers a cdk already on PATH.
     #
     # The other `npx cdk` calls in this script stay safe because of this: past
     # here the CLI is resolvable, or we exited.
     local cdk_version
     if cdk_version=$(npx --no-install cdk --version 2>/dev/null); then
         log_info "✓ cdk: $cdk_version"
-    else
-        log_warn "CDK CLI not found, installing..."
-        if npm install -g aws-cdk; then
-            log_info "✓ cdk: installed"
-        else
-            log_error "✗ cdk: 'npm install -g aws-cdk' failed — install it manually and retry"
-            missing=1
-        fi
+        return 0
     fi
+    log_warn "CDK CLI not found, installing aws-cdk@$CDK_CLI_VERSION..."
+    if ! install_cdk_cli; then
+        log_error "✗ cdk: installing aws-cdk@$CDK_CLI_VERSION failed — install it manually and retry"
+        return 1
+    fi
+    log_info "✓ cdk: installed aws-cdk@$CDK_CLI_VERSION"
+}
 
-    if [ "$missing" -eq 1 ]; then
-        log_error "Install missing prerequisites and retry."
+# Prints one requirements.lock entry (requirement plus its hashes) per line.
+lock_entries() {
+    awk '/^[[:space:]]*(#|$)/ { next }
+         { if (sub(/\\[[:space:]]*$/, "")) { entry = entry $0; next }
+           print entry $0; entry = "" }' "$1"
+}
+
+pip_download_locked() {
+    local python="$1" requirements="$2" dest="$3"
+    without_aws_env "$python" -m pip download --quiet --disable-pip-version-check \
+        --no-deps --only-binary=:all: --require-hashes --dest "$dest" -r "$requirements"
+}
+
+fetch_locked_wheels() {
+    local python="$1" lock="$2" dest="$3" entry entry_file
+    local -a unverified=()
+    pip_download_locked "$python" "$lock" "$dest" && return 0
+    # pip stops at the first entry it cannot satisfy; try each one so the error
+    # names every package that is unavailable or does not match its hash.
+    entry_file="$dest/.lock-entry"
+    while IFS= read -r entry; do
+        printf '%s\n' "$entry" >"$entry_file"
+        pip_download_locked "$python" "$entry_file" "$dest" >/dev/null 2>&1 \
+            || unverified+=("${entry%% *}")
+    done < <(lock_entries "$lock")
+    rm -f "$entry_file"
+    log_error "✗ Python packages: no wheel matching requirements.lock for: ${unverified[*]:-see pip output above}"
+    return 1
+}
+
+install_toolchain() {
+    log_header "Pinned Toolchain"
+    local failed=0
+    ensure_cdk_cli || failed=1
+    setup_venv || failed=1
+    if [ "$failed" -eq 1 ]; then
+        log_error "Pinned toolchain install failed. Fix the errors above and retry."
         exit 1
     fi
 }
@@ -720,13 +809,29 @@ upsert_3lo_secrets() {
 # Python Virtual Environment
 # ═══════════════════════════════════════════════════════════════
 setup_venv() {
-    if [ ! -d "$PROJECT_DIR/.venv" ]; then
-        log_step "Creating Python virtual environment..."
-        python3.13 -m venv "$PROJECT_DIR/.venv"
+    local venv="$PROJECT_DIR/.venv" lock="$PROJECT_DIR/requirements.lock" wheelhouse
+    # The venv keeps a copy of the lock it was built from. Without one, or with
+    # an older one, it is rebuilt empty so nothing from an unpinned install
+    # survives, then filled only from wheels that matched the lock's hashes.
+    if [ -f "$venv/requirements.lock" ] && cmp -s "$lock" "$venv/requirements.lock"; then
+        log_info "✓ Python packages: .venv matches requirements.lock"
+    else
+        log_step "Building Python virtual environment from requirements.lock..."
+        python3.13 -m venv --clear "$venv" || return 1
+        wheelhouse=$(mktemp -d) || return 1
+        if ! fetch_locked_wheels "$venv/bin/python" "$lock" "$wheelhouse" \
+            || ! without_aws_env "$venv/bin/python" -m pip install --quiet \
+                --disable-pip-version-check --no-index --find-links "$wheelhouse" \
+                --only-binary=:all: --require-hashes -r "$lock"; then
+            rm -rf "$wheelhouse"
+            return 1
+        fi
+        rm -rf "$wheelhouse"
+        cp "$lock" "$venv/requirements.lock"
+        log_info "✓ Python packages: installed from requirements.lock"
     fi
     # shellcheck source=/dev/null  # generated by venv above; absent at lint time
-    source "$PROJECT_DIR/.venv/bin/activate"
-    pip install -q -r "$PROJECT_DIR/requirements.txt" 2>/dev/null
+    source "$venv/bin/activate"
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -2128,8 +2233,8 @@ if [ "$ACTION" = "workshop" ] && [ "$DRY_RUN" = "1" ]; then
     log_info "Dry run: skipping prerequisite and credential checks (no AWS calls)"
 else
     check_prereqs
+    install_toolchain
     check_credentials
-    setup_venv
 fi
 
 cd "$PROJECT_DIR"
