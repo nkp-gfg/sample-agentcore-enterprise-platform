@@ -20,7 +20,8 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
-from code_int_mcp.server import code_int_mcp_server
+from code_int_mcp.client import CodeInterpreterClient
+from code_int_mcp.server import create_code_int_mcp_server
 from shared.auth import extract_user_id_from_context, get_gateway_access_token
 from shared.ssm import get_ssm_parameter
 
@@ -122,8 +123,9 @@ async def main(payload, context: RequestContext):
     agent_responses = []
 
     # Build MCP servers config
+    code_int_client = CodeInterpreterClient()
     mcp_servers = {
-        "codeint": code_int_mcp_server,
+        "codeint": create_code_int_mcp_server(code_int_client),
     }
     allowed_tools = [
         "mcp__codeint__execute_code",
@@ -264,6 +266,8 @@ Your response should:
                 yield event
         else:
             raise
+    finally:
+        code_int_client.close()
 
 
 if __name__ == "__main__":
