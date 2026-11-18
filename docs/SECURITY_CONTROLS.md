@@ -105,8 +105,13 @@ accelerator never uses.
   Guardrails (`ApplyGuardrail`), config sourced from `control-library/guardrails/`. It performs
   **no authorization** — Cedar (item 3) is a separate control behind a separate flag, and
   `enable_egress_filter` alone gives you none of it.
-- **Masking, not blocking:** the handler raises only when an assessment comes back
-  `action == "BLOCKED"`; otherwise it substitutes anonymized text and the request proceeds.
+- **Masking, not blocking:** the handler blocks when any assessment comes back
+  `action == "BLOCKED"`, or when the guardrail intervenes without returning replacement text;
+  otherwise it substitutes anonymized text and the request proceeds.
+- **Tool results are scanned as guardrail INPUT:** they are untrusted content headed into the
+  agent's context, and the `PROMPT_ATTACK` filter only evaluates `INPUT`. A blocked request or
+  response is replaced by a complete `transformedGatewayResponse` (status and JSON-RPC body),
+  so the gateway never falls back to the original payload.
 - **Caveats:** the `gatewayRequest`/`gatewayResponse` shape is unvalidated, so the handler
   scans every string leaf generically and passes payload shapes it does not recognise through
   **unchanged**. There is no try/except around `ApplyGuardrail`, so a Bedrock throttle surfaces
