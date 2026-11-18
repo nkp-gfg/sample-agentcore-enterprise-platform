@@ -74,10 +74,14 @@ export ORG_ID=o-yourorgid
 # Or one control at a time:
 ENABLE_CEDAR=true ./scripts/deploy.sh deploy --module 5
 
-# Org guardrails (from the Organizations management account):
+# Org guardrails (from the Organizations management account). The KMS and IdP patterns are
+# required and must pin the org's key-owning account and IdP tenant / user pool:
 terraform -chdir=control-library/terraform/org-guardrails init
 terraform -chdir=control-library/terraform/org-guardrails apply \
-  -var 'target_ids=["ou-..."]'
+  -var 'target_ids=["ou-..."]' \
+  -var 'kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*' \
+  -var 'gateway_kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*' \
+  -var 'approved_discovery_url_pattern=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*'
 ```
 
 ### Org SCP compatibility preflight
@@ -154,7 +158,10 @@ or migration path, and prefer removing the need over widening the pattern:
 ```bash
 terraform -chdir=control-library/terraform/org-guardrails apply \
   -var 'target_ids=["ou-example-11111111"]' \
-  -var 'identity_approved_principal_arn_pattern=arn:aws:iam::111122223333:role/break-glass'
+  -var 'identity_approved_principal_arn_pattern=arn:aws:iam::111122223333:role/break-glass' \
+  -var 'kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*' \
+  -var 'gateway_kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*' \
+  -var 'approved_discovery_url_pattern=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*'
 ```
 
 If you need the userId path for a specific service and want something narrower than an ARN
@@ -196,10 +203,10 @@ They constrain what admins can create/update (control plane), enforced via
 
 | SCP | Condition key | Effect |
 |---|---|---|
-| `require-cmk` | `KmsKeyArn` | Gateway must use a (approved) CMK |
+| `require-cmk` | `KmsKeyArn` | Gateway must use a CMK in the pinned account (required pattern, no wildcard account) |
 | `deny-no-auth` | `GatewayAuthorizerType` | Block `NONE` (no unauthenticated gateways) |
 | `require-policy-engine` | `PolicyEngineArn` / `PolicyEngineMode` | Require a Cedar policy engine in `ENFORCE` |
-| `enforce-approved-idp` | `DiscoveryUrl` | JWT gateways must use an approved IdP |
+| `enforce-approved-idp` | `DiscoveryUrl` | JWT gateways must use the approved IdP tenant (required pattern: literal host and tenant/user-pool path) |
 | `restrict-protocol` | `ProtocolType` | Restrict explicitly-set protocols to `MCP` (an omitted protocol falls back to the service default, unconstrained) |
 | `targets-require-private-endpoint` | `PrivateEndpointType` | Targets must use a private endpoint (private egress) |
 | `targets-restrict-credential-provider` | `CredentialProviderType` | Deny `API_KEY` / `JWT_PASSTHROUGH` |

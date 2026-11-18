@@ -50,8 +50,10 @@ source .venv/bin/activate
 python - <<'PY'
 from infra_utils.policy_loader import load_control, load_catalog
 print("controls:", [c["id"] for c in load_catalog()["controls"]])
-# SCP renders with its default param
-print(load_control("scp.memory.enforce-cmk")["Statement"][0]["Condition"])
+# SCP renders once its required KMS pattern pins the key-owning account
+print(load_control("scp.memory.enforce-cmk", {
+    "kms_key_arn_pattern": "arn:aws:kms:*:111122223333:key/*",
+})["Statement"][0]["Condition"])
 # Resource policy renders with injected params
 print(load_control("resource-policy.memory.in-account-only", {
     "account_id": "111122223333",
@@ -89,13 +91,22 @@ terraform fmt -check -recursive .
 terraform init -backend=false
 terraform validate                    # → Success! The configuration is valid.
 
+# The KMS and IdP patterns are required and must pin the org's account and IdP tenant:
+printf 'local.cmk_scp_rendered\n' | terraform console        # → Error: Invalid value for variable
+
+VARS='-var target_ids=["ou-example-11111111"]
+  -var kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*
+  -var gateway_kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*
+  -var approved_discovery_url_pattern=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*'
+
 # Confirm the SCP renders from the shared control-library file (no leftover <<sentinel>>):
-printf 'local.cmk_scp_rendered\n' | terraform console
+printf 'local.cmk_scp_rendered\n' | terraform console $VARS
 cd ../../..
 ```
 
 Expect the printed policy to contain `"bedrock-agentcore:CreateMemory"` and the resolved
-`arn:aws:kms:*:*:key/*` pattern (or your override), and **no** `<<kms_key_arn_pattern>>`.
+`arn:aws:kms:*:111122223333:key/*` pattern, and **no** `<<kms_key_arn_pattern>>`. A wildcard
+account (`arn:aws:kms:*:*:key/*`) or a host-only discovery URL (`https://*`) fails validation.
 
 ### A4b. Gateway configuration SCPs render (control-plane, item "1b")
 
@@ -107,18 +118,19 @@ The 8 gateway controls are rendered individually from the control-library
 cd control-library/terraform/org-guardrails
 terraform init -backend=false
 terraform validate
+# $VARS as defined in A4 (the KMS and IdP patterns have no defaults)
 
 # All 8 gateway controls are rendered from the library:
-printf 'keys(local.gateway_scp_rendered)\n' | terraform console                                            # → the 8 control names
+printf 'keys(local.gateway_scp_rendered)\n' | terraform console $VARS                                          # → the 8 control names
 # Sentinels resolved in the per-control renders:
-printf 'local.gateway_scp_rendered["enforce-approved-idp"]\n' | terraform console | grep -c 'https://'     # → 1 (DiscoveryUrl pattern injected)
-printf 'local.gateway_scp_rendered["require-cmk"]\n' | terraform console | grep -c 'kms_key_arn_pattern'   # → 0 (sentinel resolved; note console wraps output in <<EOT)
+printf 'local.gateway_scp_rendered["enforce-approved-idp"]\n' | terraform console $VARS | grep -c 'https://'     # → 1 (DiscoveryUrl pattern injected)
+printf 'local.gateway_scp_rendered["require-cmk"]\n' | terraform console $VARS | grep -c 'kms_key_arn_pattern'   # → 0 (sentinel resolved; note console wraps output in <<EOT)
 
 # The consolidated document contains every control's statements, no unresolved sentinels,
 # and stays under the 5,120-character SCP quota:
-printf 'local.gateway_scp_statements[*].Sid\n' | terraform console                                         # → 10 unique Sids (require-cmk and require-policy-engine carry 2 each)
-printf 'local.gateway_scp_consolidated\n' | terraform console | grep -c '<<'                               # → 0 (no unresolved <<sentinel>> tokens)
-printf 'length(local.gateway_scp_consolidated)\n' | terraform console                                      # → < 5120
+printf 'local.gateway_scp_statements[*].Sid\n' | terraform console $VARS                                       # → 10 unique Sids (require-cmk and require-policy-engine carry 2 each)
+printf 'local.gateway_scp_consolidated\n' | terraform console $VARS | grep -c '<<'                               # → 0 (no unresolved <<sentinel>> tokens)
+printf 'length(local.gateway_scp_consolidated)\n' | terraform console $VARS                                    # → < 5120
 cd ../../..
 ```
 
@@ -136,7 +148,7 @@ cd control-library/terraform/org-guardrails
 terraform init -backend=false
 terraform validate
 
-VARS='-var target_ids=["ou-example-11111111"]'
+# $VARS as defined in A4 (the KMS and IdP patterns have no defaults)
 
 # Sentinel resolved, and the statement denies the right action:
 printf 'length(regexall("<<", local.identity_userid_scp_rendered))\n' | terraform console $VARS   # → 0
@@ -371,11 +383,15 @@ with `CEDAR_MODE=ENFORCE` to actively block.
 
 ```bash
 terraform -chdir=control-library/terraform/org-guardrails apply \
-  -var 'target_ids=["ou-abcd-1234wxyz"]'
+  -var 'target_ids=["ou-abcd-1234wxyz"]' \
+  -var 'kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*' \
+  -var 'gateway_kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*' \
+  -var 'approved_discovery_url_pattern=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*'
 ```
 
-Then, from a member account under that OU, attempt `CreateMemory` **without** a KMS key —
-expect an explicit `AccessDenied` from the SCP. Creating with a CMK should succeed.
+Then, from a member account under that OU, attempt `CreateMemory` **without** a KMS key, and
+again with a key from an account outside the pattern — expect an explicit `AccessDenied` from
+the SCP for both. Creating with a key in the pinned account should succeed.
 
 ### B4b. Verify the VPC endpoint policy + IAM (item 2)
 
@@ -404,7 +420,11 @@ aws events list-rules --name-prefix agentcore-workshop-dev-agentcore-sensitive
 
 ```bash
 ./scripts/deploy.sh destroy --profile security-focused
-terraform -chdir=control-library/terraform/org-guardrails destroy
+terraform -chdir=control-library/terraform/org-guardrails destroy \
+  -var 'target_ids=["ou-abcd-1234wxyz"]' \
+  -var 'kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*' \
+  -var 'gateway_kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*' \
+  -var 'approved_discovery_url_pattern=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*'
 ```
 
 ---

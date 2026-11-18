@@ -51,8 +51,11 @@ module "agentcore_org_guardrails" {
   name_prefix = "agentcore"
   target_ids  = ["ou-abcd-1234wxyz"] # OU(s) or account(s) to attach to
 
-  # Optional: narrow the required CMK pattern (default requires any CMK)
-  # kms_key_arn_pattern = "arn:aws:kms:*:111122223333:key/*"
+  # Required, no defaults. Pin the account that owns the organization's keys and the
+  # organization's IdP tenant/user pool.
+  kms_key_arn_pattern            = "arn:aws:kms:*:111122223333:key/*"
+  gateway_kms_key_arn_pattern    = "arn:aws:kms:*:111122223333:key/*"
+  approved_discovery_url_pattern = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*"
 }
 ```
 
@@ -75,6 +78,20 @@ account ID) so a typo fails fast instead of surfacing as an opaque Organizations
 The raw SCP in `control-library/scp/memory/enforce-cmk.json` uses the `<<kms_key_arn_pattern>>`
 sentinel. This module injects the value with Terraform's `replace()` (not `templatefile()`),
 so any IAM/SCP policy variables (`${aws:...}`) inside a policy body are left untouched.
+
+`kms_key_arn_pattern`, `gateway_kms_key_arn_pattern`, and `approved_discovery_url_pattern` have
+no usable default, even when the SCP that consumes them is disabled. A pattern that deploys
+anywhere also matches a key or an IdP the caller controls, so plan-time validation requires:
+
+| Variable | Must |
+|---|---|
+| `kms_key_arn_pattern`, `gateway_kms_key_arn_pattern` | Name a literal 12-digit account (`arn:aws:kms:*:111122223333:key/*` or one key ARN) |
+| `approved_discovery_url_pattern` | Be `https://` with a literal host and a literal first path segment, the tenant or user pool (`https://login.microsoftonline.com/<tenant-id>/*`) |
+
+Hosted IdPs such as Cognito, Entra ID, and Okta serve every customer from one host, so a
+host-only pattern like `https://cognito-idp.us-east-1.amazonaws.com/*` would still admit a user
+pool in any AWS account. The `Null` guards in the SCPs are unchanged: a gateway or memory with
+no KMS key is still denied, and an IAM-auth gateway with no discovery URL is still allowed.
 
 ## Supporting other customer deployment models
 
