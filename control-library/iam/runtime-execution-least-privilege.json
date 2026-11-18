@@ -17,14 +17,19 @@
       "Resource": "*"
     },
     {
-      "Sid": "RuntimeLogs",
+      "Sid": "RuntimeLogGroup",
+      "Effect": "Allow",
+      "Action": "logs:CreateLogGroup",
+      "Resource": "arn:aws:logs:<<region>>:<<account_id>>:log-group:/aws/bedrock-agentcore/runtimes/<<runtime_id>>-<<endpoint_name>>"
+    },
+    {
+      "Sid": "RuntimeLogStreams",
       "Effect": "Allow",
       "Action": [
-        "logs:CreateLogGroup",
         "logs:CreateLogStream",
         "logs:PutLogEvents"
       ],
-      "Resource": "arn:aws:logs:<<region>>:<<account_id>>:log-group:/aws/bedrock-agentcore/runtimes/*"
+      "Resource": "arn:aws:logs:<<region>>:<<account_id>>:log-group:/aws/bedrock-agentcore/runtimes/<<runtime_id>>-<<endpoint_name>>:log-stream:*"
     },
     {
       "Sid": "XRayTracing",

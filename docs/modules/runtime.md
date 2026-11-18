@@ -92,7 +92,7 @@ can be scoped is scoped (each wildcard in the code says why it exists):
 |---|---|
 | `ECRPull` | This component's own repository only (used to be `*`) |
 | `ECRAuth`, `XRayTracing` | `*` — these actions accept no resource ARN |
-| `CloudWatchLogs` (incl. `logs:PutResourcePolicy`) | `/aws/bedrock-agentcore/runtimes/*` — account-wide would let the agent open any log group to another account |
+| `RuntimeLogGroup`, `RuntimeLogStreams` (separate `RuntimeLogsPolicy`) | This runtime's own `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT` group in this account and region. A `runtimes/*` grant let every runtime role plant events in every other runtime's log group. No `logs:PutResourcePolicy`: it accepts only `*`, which would let the agent open any log group to another account |
 | `CloudWatchMetrics` | `*` with a `cloudwatch:namespace = bedrock-agentcore` condition |
 | `BedrockModels` | Wildcard foundation-model + inference-profile ARNs by default; scoped to `agents.allowed_models` when set. A geo-prefixed entry (`us.`…) emits **both** the profile ARN and the base foundation-model ARN — profile-only scoping breaks invokes |
 | `SSMAccess` | `parameter/{project}/*` only |
