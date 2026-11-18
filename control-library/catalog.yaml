@@ -8,7 +8,9 @@
 #   attach_to    Valid attach points (informational + used for validation).
 #   engine       IaC engines that consume this control today.
 #   default_mode enforce | log_only | audit  (safe default posture)
-#   params       name -> {required, default?, description}. Values inject over <<NAME>> tokens.
+#   params       name -> {required, default?, pattern?, example?, description}. Values inject
+#                over <<NAME>> tokens. A value must fully match `pattern` (regex) when one is
+#                declared; `example` is a value that does, used by the catalog validator.
 #   validate     CI validators that must pass for this artifact.
 version: 1
 description: AgentCore security control definitions (SCP, RCP, resource, IAM, VPCE, Cedar, Guardrails).
@@ -24,11 +26,14 @@ controls:
     default_mode: enforce
     params:
       kms_key_arn_pattern:
-        required: false
-        default: "arn:aws:kms:*:*:key/*"
+        required: true
+        pattern: '^arn:aws(-[a-z]+)*:kms:(\*|[a-z0-9-]+):[0-9]{12}:key/([A-Za-z0-9-]+|[A-Za-z0-9-]*\*)$'
+        example: "arn:aws:kms:*:111122223333:key/*"
         description: >-
-          KMS key ARN pattern that CreateMemory must reference. Default requires any CMK.
-          Narrow to a specific key/OU-owned key ARN pattern to restrict further.
+          KMS key ARN pattern that CreateMemory must reference. No default: the account field
+          must be the literal 12-digit ID of an organization-owned account, e.g.
+          arn:aws:kms:*:111122223333:key/*. An account wildcard matches keys in accounts
+          outside the organization and is rejected.
     validate: [checkov, access-analyzer]
 
   # ── Item 4: Resource-based policy — Memory in-account-only (workload scope, CDK) ──
@@ -217,9 +222,12 @@ controls:
     default_mode: enforce
     params:
       kms_key_arn_pattern:
-        required: false
-        default: "arn:aws:kms:*:*:key/*"
-        description: KMS key ARN pattern the Gateway must use. Narrow to restrict further.
+        required: true
+        pattern: '^arn:aws(-[a-z]+)*:kms:(\*|[a-z0-9-]+):[0-9]{12}:key/([A-Za-z0-9-]+|[A-Za-z0-9-]*\*)$'
+        example: "arn:aws:kms:*:111122223333:key/*"
+        description: >-
+          KMS key ARN pattern the Gateway must use. No default: the account field must be the
+          literal 12-digit ID of an organization-owned account. An account wildcard is rejected.
     validate: [checkov, access-analyzer]
 
   - id: scp.gateway.deny-no-auth

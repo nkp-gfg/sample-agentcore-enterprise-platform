@@ -80,6 +80,16 @@ def _resolve_params(entry: dict[str, Any], params: dict[str, Any]) -> dict[str, 
         raise ValueError(
             f"control '{entry['id']}' missing required params: {', '.join(sorted(missing))}"
         )
+    for name, spec in schema.items():
+        pattern = (spec or {}).get("pattern")
+        if pattern is None or name not in resolved:
+            continue
+        value = resolved[name]
+        if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
+            raise ValueError(
+                f"control '{entry['id']}' param '{name}' value {value!r} does not match "
+                f"the required pattern {pattern}"
+            )
     return resolved
 
 

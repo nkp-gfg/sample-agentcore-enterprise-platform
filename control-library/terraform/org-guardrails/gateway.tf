@@ -24,7 +24,7 @@ locals {
   # replace(), never templatefile()). Kept as a map so per-control provenance is inspectable
   # in `terraform console`.
   gateway_scp_rendered = {
-    "require-cmk" = replace(
+    "require-cmk" = var.gateway_kms_key_arn_pattern == null ? file("${local.gw_dir}/require-cmk.json") : replace(
       file("${local.gw_dir}/require-cmk.json"),
       "<<kms_key_arn_pattern>>", var.gateway_kms_key_arn_pattern
     )
@@ -66,6 +66,11 @@ resource "aws_organizations_policy" "gateway" {
   content     = local.gateway_scp_consolidated
 
   lifecycle {
+    precondition {
+      condition     = var.gateway_kms_key_arn_pattern != null
+      error_message = "enable_gateway_scps requires gateway_kms_key_arn_pattern naming an organization-owned key account, e.g. \"arn:aws:kms:*:111122223333:key/*\"."
+    }
+
     # SCP documents max out at 5,120 characters. Fail at plan time with the actual size so a
     # future control addition that pushes the merged document over the quota is caught before
     # any API call.

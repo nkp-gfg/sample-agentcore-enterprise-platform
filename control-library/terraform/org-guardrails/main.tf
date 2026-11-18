@@ -12,7 +12,9 @@
 locals {
   cmk_scp_source = file("${path.module}/${var.control_library_path}/scp/memory/enforce-cmk.json")
 
-  cmk_scp_rendered = replace(
+  # Left unrendered while no pattern is supplied; the precondition below refuses to create the
+  # policy in that state.
+  cmk_scp_rendered = var.kms_key_arn_pattern == null ? local.cmk_scp_source : replace(
     local.cmk_scp_source,
     "<<kms_key_arn_pattern>>",
     var.kms_key_arn_pattern
@@ -31,6 +33,15 @@ resource "aws_organizations_policy" "memory_enforce_cmk" {
   description = "Deny AgentCore CreateMemory unless a customer-managed KMS key is specified."
   type        = "SERVICE_CONTROL_POLICY"
   content     = local.cmk_scp_rendered
+
+  lifecycle {
+    # There is no safe default: any pattern that works without naming an account matches keys
+    # outside the organization. The variable's validation rejects account wildcards.
+    precondition {
+      condition     = var.kms_key_arn_pattern != null
+      error_message = "enable_scp_memory_enforce_cmk requires kms_key_arn_pattern naming an organization-owned key account, e.g. \"arn:aws:kms:*:111122223333:key/*\"."
+    }
+  }
 }
 
 resource "aws_organizations_policy_attachment" "memory_enforce_cmk" {
