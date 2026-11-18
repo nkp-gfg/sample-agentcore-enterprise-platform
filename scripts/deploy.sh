@@ -644,19 +644,24 @@ upsert_oauth_secret() {
     # that carry no context args (the bootstrap probe synthesizes the app too).
     printf -v "$name_var" '%s' "$secret_name"
     export "${name_var?}"
+    # The value goes to the CLI on stdin only: any local user can read a
+    # process's arguments, so it must never be an aws argument. printf is a
+    # builtin and starts no process of its own.
     if aws secretsmanager describe-secret --secret-id "$secret_name" \
-        --region "$AWS_REGION" &>/dev/null; then
+        --region "$AWS_REGION" &>/dev/null </dev/null; then
         # Secret already exists — update the value (client secrets rotate).
-        if ! aws secretsmanager put-secret-value --secret-id "$secret_name" \
-            --secret-string "$value" --region "$AWS_REGION" &>/dev/null; then
+        if ! printf '%s' "$value" | aws secretsmanager put-secret-value \
+            --secret-id "$secret_name" --secret-string file:///dev/stdin \
+            --region "$AWS_REGION" &>/dev/null; then
             log_error "Failed to update Secrets Manager secret '$secret_name'."
             log_error "Check IAM permissions for secretsmanager:PutSecretValue and retry."
             exit 1
         fi
         log_info "✓ $label secret: updated in Secrets Manager ($secret_name)"
     else
-        if ! aws secretsmanager create-secret --name "$secret_name" \
-            --secret-string "$value" --region "$AWS_REGION" &>/dev/null; then
+        if ! printf '%s' "$value" | aws secretsmanager create-secret \
+            --name "$secret_name" --secret-string file:///dev/stdin \
+            --region "$AWS_REGION" &>/dev/null; then
             log_error "Failed to create Secrets Manager secret '$secret_name'."
             log_error "Check IAM permissions for secretsmanager:CreateSecret and retry."
             exit 1

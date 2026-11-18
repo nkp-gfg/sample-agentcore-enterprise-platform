@@ -180,25 +180,40 @@ rm -f "$PLATFORM_CONFIG"
 eval "$(sed -n '/^upsert_oauth_secret()/,/^}/p; /^upsert_idp_secret()/,/^}/p; /^upsert_3lo_secrets()/,/^}/p' "$SCRIPT_DIR/deploy.sh")"
 # The function unsets the plaintext when it is done (deliberate hygiene), so
 # assert on what it PASSED to the CLI rather than on the variable afterwards.
+# The value must arrive on stdin (`file:///dev/stdin`), never as an argument:
+# the stub records argv lines and, for stdin uploads, a `stdin=<bytes>|` line.
 # SC2034/SC2329: PREFIX, AWS_REGION and IDP_CLIENT_SECRET are read by the
 # eval'd function, and the aws stub is invoked from inside it — both invisible
 # to shellcheck's static view.
 # shellcheck disable=SC2034,SC2329
-aws() { printf '%s\n' "$*" >> "$TMP/aws.args"; return 0; }
+aws() {
+    printf '%s\n' "$*" >> "$TMP/aws.args"
+    if [[ " $* " == *" --secret-string file:///dev/stdin "* ]]; then
+        { printf 'stdin='; cat; printf '|\n'; } >> "$TMP/aws.args"
+    fi
+    return 0
+}
+# Fails if VALUE shows up in any recorded aws argument list.
+assert_not_in_argv() {
+    ! grep -v '^stdin=' "$TMP/aws.args" | grep -q -- "$1" \
+        || fail "secret value passed as an aws argument: $(grep -v '^stdin=' "$TMP/aws.args")"
+}
 # shellcheck disable=SC2034
 PREFIX="check-prefix"; AWS_REGION="us-east-1"
 
 : > "$TMP/aws.args"
 IDP_CLIENT_SECRET=$'sekret-value\n'          # trailing newline, as pasted/piped
 upsert_idp_secret >/dev/null 2>&1 || true
-grep -q -- "--secret-string sekret-value " "$TMP/aws.args" \
+grep -qx -- "stdin=sekret-value|" "$TMP/aws.args" \
     || fail "newline not stripped before Secrets Manager: $(cat "$TMP/aws.args")"
+assert_not_in_argv sekret-value
 
 : > "$TMP/aws.args"
 IDP_CLIENT_SECRET="  padded  "
 upsert_idp_secret >/dev/null 2>&1 || true
-grep -q -- "--secret-string padded " "$TMP/aws.args" \
+grep -qx -- "stdin=padded|" "$TMP/aws.args" \
     || fail "surrounding spaces not stripped: $(cat "$TMP/aws.args")"
+assert_not_in_argv padded
 
 # All-whitespace must stop the run rather than store an empty secret.
 # shellcheck disable=SC2034
@@ -305,7 +320,13 @@ echo "PASS: a configured IdP secret name is reused, not duplicated"
 # prefixed name (or a configured one), plaintext unset afterwards. These used
 # to be rendered verbatim into the synthesized template via cdk context.
 # shellcheck disable=SC2329
-aws() { printf '%s\n' "$*" >> "$TMP/aws.args"; return 0; }
+aws() {
+    printf '%s\n' "$*" >> "$TMP/aws.args"
+    if [[ " $* " == *" --secret-string file:///dev/stdin "* ]]; then
+        { printf 'stdin='; cat; printf '|\n'; } >> "$TMP/aws.args"
+    fi
+    return 0
+}
 : > "$TMP/aws.args"
 # shellcheck disable=SC2034  # read via indirection in the eval'd functions
 GOOGLE_CLIENT_SECRET=$'g-sekret\n'
@@ -316,10 +337,13 @@ NOTION_CLIENT_SECRET_NAME="my-corp/notion"   # bring-your-own name
 # shellcheck disable=SC2034
 NOTION_CLIENT_SECRET="n-sekret"
 upsert_3lo_secrets >/dev/null 2>&1 || true
-grep -q -- "--secret-string g-sekret " "$TMP/aws.args" \
+grep -qx -- "stdin=g-sekret|" "$TMP/aws.args" \
     || fail "google secret newline not stripped: $(cat "$TMP/aws.args")"
-grep -q -- "--secret-string gh-sekret " "$TMP/aws.args" \
+grep -qx -- "stdin=gh-sekret|" "$TMP/aws.args" \
     || fail "github secret padding not stripped: $(cat "$TMP/aws.args")"
+grep -qx -- "stdin=n-sekret|" "$TMP/aws.args" \
+    || fail "notion secret not passed on stdin: $(cat "$TMP/aws.args")"
+for v in g-sekret gh-sekret n-sekret; do assert_not_in_argv "$v"; done
 grep -q -- "--secret-id my-corp/notion" "$TMP/aws.args" \
     || fail "notion bring-your-own name ignored: $(cat "$TMP/aws.args")"
 [ "$GOOGLE_CLIENT_SECRET_NAME" = "check-prefix-google-oauth-secret" ] \
