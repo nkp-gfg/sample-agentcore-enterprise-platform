@@ -40,6 +40,8 @@ from pydantic import (
     model_validator,
 )
 
+from infra_utils.build_context import relative_parts
+
 # Where the Web Search built-in gateway connector exists (launch regions).
 WEB_SEARCH_REGIONS = {"us-east-1", "eu-west-1", "ap-northeast-1"}
 
@@ -555,6 +557,10 @@ class MigrationBuild(BaseModel):
                 )
                 self.context = f"./migration/simulation{suffix}"
                 break
+        # RuntimeStack enforces containment (links included) when it packages
+        # the context; this rejects an escaping path when the manifest loads.
+        relative_parts(self.context, "migration.source.build.context")
+        relative_parts(self.dockerfile, "migration.source.build.dockerfile")
         return self
 
 

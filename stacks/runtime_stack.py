@@ -11,6 +11,7 @@ Source hash tracking ensures:
 
 import json
 import os
+import shutil
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -42,6 +43,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from infra_utils.build_context import snapshot_build_context
 from infra_utils.jwt_authorizer import custom_jwt_authorizer
 from infra_utils.platform_config import allowed_model_resources
 from infra_utils.policy_loader import load_control
@@ -118,9 +120,18 @@ class RuntimeStack(cdk.Stack):
             # — pin a digest (image@sha256:…) or bump the tag to force a
             # rebuild. Building from source hashes the context's contents.
             abs_adapter_dir = os.path.join(repo_root, adapter_dir)
-            abs_context_dir = (
-                os.path.join(repo_root, build_context) if build_context else ""
-            )
+            # The manifest supplies these paths, so the context is packaged from
+            # a confined snapshot, never from the path it names.
+            abs_context_dir = ""
+            if build_context:
+                abs_context_dir = os.path.join(
+                    cdk.Stage.of(self).outdir, f"migration-context.{self.node.addr}"
+                )
+                if os.path.lexists(abs_context_dir):
+                    shutil.rmtree(abs_context_dir)
+                snapshot_build_context(
+                    repo_root, build_context, build_dockerfile, abs_context_dir
+                )
             variant = (
                 f"{compute_source_hash(abs_context_dir)}:{build_dockerfile}"
                 if build_context
