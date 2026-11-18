@@ -1,6 +1,7 @@
 """Networking Stack — Optional VPC with private subnets and VPC endpoints."""
 
 import json
+import re
 
 import aws_cdk as cdk
 from aws_cdk import aws_ec2 as ec2
@@ -11,6 +12,8 @@ from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
 from infra_utils.policy_loader import load_control
+
+_ORG_ID_RE = re.compile(r"o-[a-z0-9]{10,32}")
 
 
 class NetworkingStack(cdk.Stack):
@@ -30,6 +33,16 @@ class NetworkingStack(cdk.Stack):
         retain_data: bool = False,
         **kwargs,
     ):
+        # Validated before anything is constructed: the id is rendered into the
+        # AgentCore endpoint policy, and context/env values bypass platform.yaml.
+        org_id = org_id or ""
+        if org_id and not _ORG_ID_RE.fullmatch(org_id):
+            raise ValueError(
+                f"NetworkingStack: not an AWS Organizations id: {org_id!r}. Find "
+                "yours with: aws organizations describe-organization "
+                "--query Organization.Id"
+            )
+
         super().__init__(scope, id, **kwargs)
 
         prefix = f"{project_name}-{environment}"
@@ -109,19 +122,29 @@ class NetworkingStack(cdk.Stack):
 
             # AgentCore Gateway interface endpoint with a fine-grained, org-scoped endpoint
             # policy (item 2). Only principals in the org can invoke AgentCore through it.
-            agentcore_endpoint = self.vpc.add_interface_endpoint(
-                "AgentCoreGatewayEndpoint",
-                service=ec2.InterfaceVpcEndpointService(
-                    f"com.amazonaws.{self.region}.bedrock-agentcore.gateway", 443
-                ),
-                private_dns_enabled=True,
-            )
+            # Without an org id there is no policy to attach, and an interface endpoint
+            # with no PolicyDocument gets the AWS default (any principal, any action),
+            # so the endpoint is not created and AgentCore traffic leaves via the NAT.
             if org_id:
                 endpoint_policy = load_control(
                     "vpce.agentcore-in-org", {"org_id": org_id}
                 )
+                agentcore_endpoint = self.vpc.add_interface_endpoint(
+                    "AgentCoreGatewayEndpoint",
+                    service=ec2.InterfaceVpcEndpointService(
+                        f"com.amazonaws.{self.region}.bedrock-agentcore.gateway", 443
+                    ),
+                    private_dns_enabled=True,
+                )
                 agentcore_endpoint.node.default_child.add_property_override(
                     "PolicyDocument", endpoint_policy
+                )
+            else:
+                cdk.Annotations.of(self).add_warning_v2(
+                    "agentcore:vpce-no-org-id",
+                    "AgentCore Gateway interface endpoint not created: set "
+                    "security.org_id (ORG_ID) to create it with the org-scoped "
+                    "endpoint policy.",
                 )
 
         # Private subnets are the only valid placement for AgentCore ENIs: a
