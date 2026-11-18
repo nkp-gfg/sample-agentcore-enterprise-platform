@@ -66,7 +66,7 @@ def _create_checkpointer() -> AgentCoreMemorySaver:
     )
 
 
-async def create_langgraph_agent():
+async def create_langgraph_agent(code_tools: LangGraphCodeInterpreterTools):
     """Create a LangGraph agent with Gateway tools, Memory, and Code Interpreter."""
     tools = []
     try:
@@ -78,8 +78,6 @@ async def create_langgraph_agent():
             "[AGENT] Gateway not available, continuing without gateway tools: %s", e
         )
 
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    code_tools = LangGraphCodeInterpreterTools(region)
     tools.append(code_tools.execute_python_securely)
 
     return create_agent(
@@ -101,23 +99,31 @@ async def invocations(payload: dict, context: RequestContext):
     # inspects graph.nodes in __init__, so it cannot be handed graph=None and
     # filled in later. The entrypoint already runs per request, so the graph
     # (and its gateway token) is still created fresh for every invocation.
-    agent = LangGraphAGUIAgent(
-        name="agui_langgraph_agent",
-        description="AG-UI LangGraph agent with Gateway MCP tools and Memory",
-        graph=await create_langgraph_agent(),
-        config={"configurable": {"actor_id": user_id}},
+    code_tools = LangGraphCodeInterpreterTools(
+        os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     )
-
     try:
-        async for event in agent.run(input_data):
-            if event is not None:
-                yield event.model_dump(mode="json", by_alias=True, exclude_none=True)
-    except Exception as exc:
-        logger.exception("Agent run failed")
-        yield RunErrorEvent(
-            message=str(exc) or type(exc).__name__,
-            code=type(exc).__name__,
-        ).model_dump(mode="json", by_alias=True, exclude_none=True)
+        agent = LangGraphAGUIAgent(
+            name="agui_langgraph_agent",
+            description="AG-UI LangGraph agent with Gateway MCP tools and Memory",
+            graph=await create_langgraph_agent(code_tools),
+            config={"configurable": {"actor_id": user_id}},
+        )
+
+        try:
+            async for event in agent.run(input_data):
+                if event is not None:
+                    yield event.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    )
+        except Exception as exc:
+            logger.exception("Agent run failed")
+            yield RunErrorEvent(
+                message=str(exc) or type(exc).__name__,
+                code=type(exc).__name__,
+            ).model_dump(mode="json", by_alias=True, exclude_none=True)
+    finally:
+        code_tools.cleanup()
 
 
 if __name__ == "__main__":

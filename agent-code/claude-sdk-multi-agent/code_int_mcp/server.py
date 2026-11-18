@@ -10,7 +10,9 @@ from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-from .client import CodeInterpreterClient
+from .client import CodeInterpreterClient, code_interpreter_turn
+
+__all__ = ["code_int_mcp_server", "code_interpreter_turn"]
 
 logger = logging.getLogger(__name__)
 
