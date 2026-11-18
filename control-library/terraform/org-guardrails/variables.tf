@@ -86,9 +86,22 @@ variable "enable_gateway_scps" {
 }
 
 variable "gateway_kms_key_arn_pattern" {
-  description = "KMS key ARN pattern a Gateway must use (bedrock-agentcore:KmsKeyArn)."
+  description = <<-EOT
+    KMS key ARN pattern a Gateway must use (bedrock-agentcore:KmsKeyArn). Required when
+    enable_gateway_scps is true. The account segment must be a literal 12-digit account ID
+    the organization owns, e.g. "arn:aws:kms:*:111122223333:key/*": a wildcard there would
+    approve a key held in any account. Region and key-id segments may use * or ?.
+  EOT
   type        = string
-  default     = "arn:aws:kms:*:*:key/*"
+  default     = null
+
+  validation {
+    condition = (
+      var.gateway_kms_key_arn_pattern == null ||
+      can(regex("^arn:(aws|aws-cn|aws-us-gov):kms:[a-z0-9*?-]*:[0-9]{12}:key/[A-Za-z0-9*?-]+$", var.gateway_kms_key_arn_pattern))
+    )
+    error_message = "gateway_kms_key_arn_pattern must look like arn:<partition>:kms:<region>:<12-digit account ID>:key/<key-id>, with a literal account ID the organization owns. Wildcards (* or ?) are only allowed in the region and key-id segments."
+  }
 }
 
 variable "approved_discovery_url_pattern" {

@@ -20,13 +20,17 @@
 locals {
   gw_dir = "${path.module}/${var.control_library_path}/scp/gateway"
 
+  # With no pattern set, render a value no key ARN can match so the CMK statement denies
+  # every key; the policy resource's precondition stops it from being applied that way.
+  gateway_kms_key_arn_pattern = coalesce(var.gateway_kms_key_arn_pattern, "__gateway_kms_key_arn_pattern_not_set__")
+
   # Each control rendered individually from its library file (sentinels injected with
   # replace(), never templatefile()). Kept as a map so per-control provenance is inspectable
   # in `terraform console`.
   gateway_scp_rendered = {
     "require-cmk" = replace(
       file("${local.gw_dir}/require-cmk.json"),
-      "<<kms_key_arn_pattern>>", var.gateway_kms_key_arn_pattern
+      "<<kms_key_arn_pattern>>", local.gateway_kms_key_arn_pattern
     )
     "deny-no-auth"          = file("${local.gw_dir}/deny-no-auth.json")
     "require-policy-engine" = file("${local.gw_dir}/require-policy-engine.json")
@@ -66,6 +70,11 @@ resource "aws_organizations_policy" "gateway" {
   content     = local.gateway_scp_consolidated
 
   lifecycle {
+    precondition {
+      condition     = var.gateway_kms_key_arn_pattern != null
+      error_message = "enable_gateway_scps requires gateway_kms_key_arn_pattern: a KMS key ARN pattern pinned to an organization-owned account, e.g. \"arn:aws:kms:*:111122223333:key/*\"."
+    }
+
     # SCP documents max out at 5,120 characters. Fail at plan time with the actual size so a
     # future control addition that pushes the merged document over the quota is caught before
     # any API call.

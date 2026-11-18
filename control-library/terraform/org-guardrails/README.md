@@ -53,6 +53,10 @@ module "agentcore_org_guardrails" {
 
   # Optional: narrow the required CMK pattern (default requires any CMK)
   # kms_key_arn_pattern = "arn:aws:kms:*:111122223333:key/*"
+
+  # Gateway SCPs: the CMK pattern is required and must pin an organization-owned account
+  # enable_gateway_scps         = true
+  # gateway_kms_key_arn_pattern = "arn:aws:kms:*:111122223333:key/*"
 }
 ```
 
