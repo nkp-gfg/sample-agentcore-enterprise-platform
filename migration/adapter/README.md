@@ -64,6 +64,12 @@ Behavioural notes:
   adapter back to the source image's configured user. The child inherits the
   adapter uid. Startup fails closed if a non-root `ADAPTER_CHILD_USER` was
   declared but the container is running as root.
+- **Pinned dependencies**: the root install uses `pip --require-hashes` with
+  `requirements.txt` (direct dependencies) and `requirements-lock.txt` (their
+  transitive closure). An artifact whose hash is not listed fails the build
+  before any of its code runs. The install step changes into a temporary
+  directory and back, so the source image's `WORKDIR` is preserved for the
+  child. Regenerate the lock with the command in its header when changing a pin.
 
 ## Parent build contract
 

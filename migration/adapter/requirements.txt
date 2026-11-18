@@ -1,0 +1,11 @@
+# Direct dependencies of adapter.py. Installed with `pip install
+# --require-hashes`: every artifact pip downloads, including the transitive
+# closure in requirements-lock.txt, must match a hash listed here or the
+# build fails before any package code runs.
+bedrock-agentcore==1.21.0 \
+    --hash=sha256:429174e42e2ebd2b82c691862caf0a6f2ad9c3182f1f6c48912570691491b7ce \
+    --hash=sha256:be1ce7440455b994e9c5bbbc6329cce8528512441590240aa1a6f25cadbe1dcf
+boto3==1.44.6 \
+    --hash=sha256:7d5f43c824bdfcf203fd7c115cfb7bd4283f63caac01c731d8a667f8da096d52 \
+    --hash=sha256:af75aa81455f1c4dbbdd9bbd14c6ee3e66fb827430d1615014d4c45878e79c49
+-r requirements-lock.txt
