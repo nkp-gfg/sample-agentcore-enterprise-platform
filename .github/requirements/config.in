@@ -1,0 +1,4 @@
+# What deploy.sh needs to import infra_utils.platform_config in the shell gate
+# (shell-checks.yml, .gitlab-ci.yml `shell`). Ranges match requirements.txt.
+pydantic>=2.13.4,<3
+pyyaml>=6.0.3

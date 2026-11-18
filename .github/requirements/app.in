@@ -1,0 +1,3 @@
+# The CDK app and its tests (contract-parity.yml, secret-boundary.yml,
+# .gitlab-ci.yml `cdk-synth`).
+-r ../../requirements.txt

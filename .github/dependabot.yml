@@ -12,6 +12,8 @@ updates:
     directories:
       - "/"
       - "/agent-code/*"
+      # Hash-pinned CI lockfiles (scripts/lock-ci-requirements.sh).
+      - "/.github/requirements"
     schedule:
       interval: "weekly"
     groups:
