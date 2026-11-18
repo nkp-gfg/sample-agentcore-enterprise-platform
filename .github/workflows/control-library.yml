@@ -7,6 +7,7 @@ on:
       - 'control-library/**'
       - 'infra_utils/policy_loader.py'
       - 'scripts/validate_control_library.py'
+      - 'requirements-control-library.txt'
       - 'tests/**'
   pull_request:
     branches: [ main ]
@@ -14,6 +15,7 @@ on:
       - 'control-library/**'
       - 'infra_utils/policy_loader.py'
       - 'scripts/validate_control_library.py'
+      - 'requirements-control-library.txt'
       - 'tests/**'
 
 permissions:
@@ -31,8 +33,10 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt checkov
+      # Every distribution, checkov included, is pinned by version and sha256
+      # in the lock; pip refuses anything else and never builds an sdist.
+      - name: Install dependencies (hash-locked)
+        run: pip install --require-hashes --only-binary=':all:' -r requirements-control-library.txt
 
       - name: Validate control-library against catalog (+ checkov scan)
         run: python scripts/validate_control_library.py

@@ -1,0 +1,5 @@
+# Source for requirements-control-library.txt (see its header to regenerate).
+# checkov 3.2.459 is the newest release compatible with requirements.txt:
+# later releases pin boto3==1.35.49, below the boto3>=1.43.72 floor.
+-r requirements.txt
+checkov==3.2.459

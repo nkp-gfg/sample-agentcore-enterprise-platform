@@ -81,7 +81,8 @@ control-library:
   stage: validate
   <<: *pip-cache
   before_script:
-    - pip install -q pyyaml checkov
+    # Hash-locked: every distribution, checkov included, is pinned by sha256.
+    - pip install -q --require-hashes --only-binary=':all:' -r requirements-control-library.txt
   script:
     - python scripts/validate_control_library.py
   rules:
@@ -90,6 +91,7 @@ control-library:
         - control-library/**/*
         - infra_utils/policy_loader.py
         - scripts/validate_control_library.py
+        - requirements-control-library.txt
         - tests/**/*
         - .gitlab-ci.yml
     - if: $CI_COMMIT_BRANCH == "main"
