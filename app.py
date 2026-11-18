@@ -682,6 +682,9 @@ if not is_fed_platform:
         allowed_audience=allowed_audience,
         require_guardrails=require_guardrails,
         retain_data=production_mode,
+        # Scopes the role's memory data-plane permissions to the memory behind
+        # MEMORY_ID. The A2A runtimes get no memory and no memory permissions.
+        memory_arn=memory_stack.memory_arn,
         extra_env_vars={
             "GATEWAY_URL": gateway_url_for_runtimes,
             "GATEWAY_CREDENTIAL_PROVIDER_NAME": identity_stack.gateway_credential_provider_name,

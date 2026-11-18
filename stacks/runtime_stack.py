@@ -80,6 +80,9 @@ class RuntimeStack(cdk.Stack):
         allowed_models: list[str] | None = None,
         require_guardrails: bool = False,
         retain_data: bool = False,
+        # ARN of the one AgentCore Memory this runtime uses (the memory behind
+        # its MEMORY_ID). Empty means no memory data-plane permissions at all.
+        memory_arn: str = "",
         # ── Migration (image-source) mode ──
         # Set source_image (registry ref) or build_context (local dir) and the
         # stack builds the migration adapter (migration/adapter/) ON TOP of the
@@ -375,6 +378,7 @@ class RuntimeStack(cdk.Stack):
             project_name=project_name,
             allowed_models=allowed_models,
             guardrail=guardrail,
+            memory_arn=memory_arn,
         )
         if migration_secret_names:
             # The adapter resolves each declared migration secret into the
@@ -625,6 +629,7 @@ class RuntimeStack(cdk.Stack):
         project_name: str,
         allowed_models: list[str] | None = None,
         guardrail: bedrock.CfnGuardrail | None = None,
+        memory_arn: str = "",
     ) -> None:
         """Attach the standard AgentCore Runtime permissions to a role.
 
@@ -716,12 +721,13 @@ class RuntimeStack(cdk.Stack):
                 actions=["ssm:GetParameter", "ssm:GetParameters"],
                 resources=[f"arn:aws:ssm:*:*:parameter/{project_name}/*"],
             ),
-            # AgentCore service access (Gateway, Memory, A2A, Registry, etc.).
-            # Still "*", and knowingly so: scoping these needs the gateway,
-            # memory and sibling-runtime ARNs, and the A2A targets do not exist
-            # yet when this role is built. Tracked as its own task rather than
-            # rushed here, because getting it wrong breaks every live-verified
-            # path (gateway tools, memory, A2A delegation).
+            # AgentCore service access (Gateway, A2A, Browser, Identity).
+            # Still "*", and knowingly so: scoping these needs the gateway and
+            # sibling-runtime ARNs, and the A2A targets do not exist yet when
+            # this role is built. Tracked as its own task rather than rushed
+            # here, because getting it wrong breaks every live-verified path
+            # (gateway tools, A2A delegation). The memory data plane is NOT
+            # here: it is the AgentCoreMemory statement below, on one ARN.
             iam.PolicyStatement(
                 sid="AgentCoreAccess",
                 actions=[
@@ -729,16 +735,6 @@ class RuntimeStack(cdk.Stack):
                     "bedrock-agentcore:InvokeGateway",
                     "bedrock-agentcore:GetGateway",
                     "bedrock-agentcore:ListGateways",
-                    # Memory data plane. ListEvents/ListSessions/DeleteEvent are
-                    # required by the framework memory integrations (e.g. LangGraph's
-                    # AgentCoreMemorySaver checkpointer lists events to rehydrate a
-                    # thread); without them memory-backed patterns fail at invoke.
-                    "bedrock-agentcore:CreateEvent",
-                    "bedrock-agentcore:GetEvent",
-                    "bedrock-agentcore:ListEvents",
-                    "bedrock-agentcore:DeleteEvent",
-                    "bedrock-agentcore:ListSessions",
-                    "bedrock-agentcore:RetrieveMemoryRecords",
                     "bedrock-agentcore:StartBrowserSession",
                     "bedrock-agentcore:StopBrowserSession",
                     "bedrock-agentcore:ConnectBrowserAutomationStream",
@@ -791,6 +787,32 @@ class RuntimeStack(cdk.Stack):
                 ],
             ),
         ]
+        if "*" in memory_arn or "?" in memory_arn:
+            raise ValueError(
+                f"memory_arn must name one memory, not a pattern: {memory_arn!r}"
+            )
+        if memory_arn:
+            # Memory data plane, on this runtime's own memory only. On "*" a
+            # compromised runtime could read and delete the conversation
+            # history of every memory in the account. ListEvents/ListSessions/
+            # DeleteEvent are required by the framework memory integrations
+            # (e.g. LangGraph's AgentCoreMemorySaver checkpointer lists events
+            # to rehydrate a thread); without them memory-backed patterns fail
+            # at invoke. A runtime without a memory gets none of these.
+            statements.append(
+                iam.PolicyStatement(
+                    sid="AgentCoreMemory",
+                    actions=[
+                        "bedrock-agentcore:CreateEvent",
+                        "bedrock-agentcore:GetEvent",
+                        "bedrock-agentcore:ListEvents",
+                        "bedrock-agentcore:DeleteEvent",
+                        "bedrock-agentcore:ListSessions",
+                        "bedrock-agentcore:RetrieveMemoryRecords",
+                    ],
+                    resources=[memory_arn],
+                )
+            )
         if guardrail is not None:
             statements += [
                 # Using a guardrail during inference requires ApplyGuardrail on
