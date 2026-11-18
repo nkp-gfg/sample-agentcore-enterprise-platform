@@ -1,0 +1,4 @@
+# CI installs shell-config.txt with --require-hashes. Regenerate from this
+# directory with Python 3.13 (see the header of shell-config.txt).
+pydantic>=2.13.4,<3
+pyyaml>=6.0.3
