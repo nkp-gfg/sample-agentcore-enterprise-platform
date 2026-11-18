@@ -8,7 +8,6 @@ import os
 import time
 
 import boto3
-from botocore.exceptions import ClientError
 
 from .models import CodeIntExecutionResult
 
@@ -26,16 +25,11 @@ class CodeInterpreterClient:
         self.ci_client = boto3.client("bedrock-agentcore", region_name=region)
 
     def _create_sessionid(self) -> str:
-        try:
-            session_response = self.ci_client.start_code_interpreter_session(
-                codeInterpreterIdentifier="aws.codeinterpreter.v1",
-                name="mcpInteractionSession",
-                sessionTimeoutSeconds=900,
-            )
-        except ClientError as e:
-            logging.error("***** Exception in create session %s", str(e))
-            raise Exception(f"Failed to create session: {str(e)}")
-
+        session_response = self.ci_client.start_code_interpreter_session(
+            codeInterpreterIdentifier="aws.codeinterpreter.v1",
+            name="mcpInteractionSession",
+            sessionTimeoutSeconds=900,
+        )
         code_int_session_id = session_response["sessionId"]
         return code_int_session_id
 
@@ -65,13 +59,15 @@ class CodeInterpreterClient:
                 execution_time=execution_time,
                 success=True,
             )
-        except ClientError as e:
-            logging.error("***** Exception in code interpreter invocation %s", str(e))
+        except Exception:
+            # The result goes to the model and on to the caller; AWS errors in
+            # it would name the account, role and denied resource.
+            logger.exception("Code Interpreter %s failed", operation)
             execution_time = time.time() - start_time
             return CodeIntExecutionResult(
                 output="",
                 code_int_session_id=code_int_session_id,
-                error=str(e),
+                error="Code Interpreter call failed",
                 execution_time=execution_time,
                 success=False,
             )

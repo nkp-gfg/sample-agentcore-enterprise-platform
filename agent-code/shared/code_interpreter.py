@@ -51,8 +51,8 @@ class CodeInterpreterTools:
         Returns:
             JSON string with execution result
         """
-        client = self._get_code_interpreter_client()
         try:
+            client = self._get_code_interpreter_client()
             response = client.invoke(
                 "executeCode",
                 {"code": code, "language": "python", "clearContext": False},
@@ -68,6 +68,8 @@ class CodeInterpreterTools:
                 if results
                 else json.dumps({"error": "No results returned"}, indent=2)
             )
-        except Exception as e:
-            logger.error(f"Code execution failed: {e}")
-            return json.dumps({"error": f"Code execution failed: {str(e)}"}, indent=2)
+        except Exception:
+            # The result goes to the model and on to the caller; AWS errors in
+            # it would name the account, role and denied resource.
+            logger.exception("Code execution failed")
+            return json.dumps({"error": "Code execution failed"}, indent=2)

@@ -1,10 +1,13 @@
 """Workshop orchestrator agent — deployed to AgentCore Runtime."""
 
+import logging
 import os
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import Agent
 from strands.models import BedrockModel
+
+logger = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
 
@@ -31,10 +34,17 @@ You help participants understand and use Amazon Bedrock AgentCore services."""
 @app.entrypoint
 async def invoke(payload=None):
     query = payload.get("prompt", "Hello!") if payload else "Hello!"
-    model = BedrockModel(model_id=MODEL_ID, **_GUARDRAIL_KWARGS)
-    agent = Agent(system_prompt=SYSTEM_PROMPT, model=model)
-    response = agent(query)
-    return {"status": "success", "response": response.message["content"][0]["text"]}
+    try:
+        model = BedrockModel(model_id=MODEL_ID, **_GUARDRAIL_KWARGS)
+        agent = Agent(system_prompt=SYSTEM_PROMPT, model=model)
+        response = agent(query)
+        text = response.message["content"][0]["text"]
+    except Exception:
+        # BedrockAgentCoreApp would return str(exception), and AWS errors name
+        # the account, role and denied resource. Keep the detail in the logs.
+        logger.exception("Agent run failed")
+        return {"status": "error", "error": "Agent run failed"}
+    return {"status": "success", "response": text}
 
 
 if __name__ == "__main__":

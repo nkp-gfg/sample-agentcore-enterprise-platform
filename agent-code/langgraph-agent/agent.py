@@ -9,6 +9,7 @@ from langchain.agents import create_agent
 from langchain_aws import ChatBedrock
 from langgraph_checkpoint_aws import AgentCoreMemorySaver
 from shared.auth import extract_user_id_from_context
+from shared.errors import AGENT_RUN_FAILED, UNAUTHORIZED, error_response
 from tools.code_interpreter import LangGraphCodeInterpreterTools
 from tools.gateway import create_gateway_mcp_client
 
@@ -99,7 +100,12 @@ async def invocations(payload, context: RequestContext):
 
     try:
         user_id = extract_user_id_from_context(context)
+    except ValueError as e:
+        logger.warning("Rejected unverified caller: %s", e)
+        yield error_response(UNAUTHORIZED)
+        return
 
+    try:
         graph = await create_langgraph_agent()
 
         config = {"configurable": {"thread_id": session_id, "actor_id": user_id}}
@@ -112,10 +118,9 @@ async def invocations(payload, context: RequestContext):
             message_chunk, _metadata = event
             yield message_chunk.model_dump()
 
-    except Exception as e:
-        error_msg = str(e) if str(e) else f"{type(e).__name__}: {e!r}"
+    except Exception:
         logger.exception("Agent run failed")
-        yield {"status": "error", "error": error_msg}
+        yield error_response(AGENT_RUN_FAILED)
 
 
 if __name__ == "__main__":

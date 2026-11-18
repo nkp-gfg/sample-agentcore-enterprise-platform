@@ -21,6 +21,7 @@ from claude_agent_sdk import (
 )
 from code_int_mcp.server import code_int_mcp_server
 from shared.auth import extract_user_id_from_context, get_gateway_access_token
+from shared.errors import AGENT_RUN_FAILED, UNAUTHORIZED, error_response
 from shared.ssm import get_ssm_parameter
 
 logging.basicConfig(level=logging.INFO)
@@ -97,7 +98,12 @@ async def main(payload, context: RequestContext):
     _code_int_session_id = payload.get("code_int_session_id", "")
     claude_session_id = _session_map.get(runtime_session_id)
 
-    user_id = extract_user_id_from_context(context)
+    try:
+        user_id = extract_user_id_from_context(context)
+    except ValueError as e:
+        logger.warning("Rejected unverified caller: %s", e)
+        yield error_response(UNAUTHORIZED)
+        return
     logger.info("[AGENT] User: %s, Session: %s", user_id, runtime_session_id)
 
     # Get Gateway URL and access token
@@ -230,18 +236,21 @@ Your response should:
                     yield {"claude_session_id": msg.session_id}
 
     try:
-        async for event in _process_messages(_build_options(claude_session_id)):
-            yield event
-    except ProcessError:
-        if claude_session_id:
+        try:
+            async for event in _process_messages(_build_options(claude_session_id)):
+                yield event
+        except ProcessError:
+            if not claude_session_id:
+                raise
             logger.warning(
                 "Resume failed for session %s, starting fresh session",
                 claude_session_id,
             )
             async for event in _process_messages(_build_options(None)):
                 yield event
-        else:
-            raise
+    except Exception:
+        logger.exception("Agent run failed")
+        yield error_response(AGENT_RUN_FAILED)
 
 
 if __name__ == "__main__":

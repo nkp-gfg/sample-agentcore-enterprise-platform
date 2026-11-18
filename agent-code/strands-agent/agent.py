@@ -6,6 +6,12 @@ import os
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from shared.auth import extract_user_id_from_context
+from shared.errors import (
+    AGENT_RUN_FAILED,
+    UNAUTHORIZED,
+    client_safe_strands_event,
+    error_response,
+)
 from strands import Agent
 from strands.models import BedrockModel
 from tools.code_interpreter import StrandsCodeInterpreterTools
@@ -110,21 +116,24 @@ async def invocations(payload, context: RequestContext):
         # the Memory actor_id below, so an unverified fallback would let every
         # caller share one actor's conversation history.
         user_id = extract_user_id_from_context(context)
-
-        agent = _create_agent(user_id, session_id)
-
-        async for event in agent.stream_async(user_query):
-            yield json.loads(json.dumps(dict(event), default=str))
-
     except ValueError as e:
         # Token missing, malformed, or failed verification. Log the reason,
         # return a generic rejection so the response leaks no auth detail.
         logger.warning("Rejected unverified caller: %s", e)
-        yield {"status": "error", "error": "Unauthorized"}
+        yield error_response(UNAUTHORIZED)
+        return
 
-    except Exception as e:
+    try:
+        agent = _create_agent(user_id, session_id)
+
+        async for event in agent.stream_async(user_query):
+            yield client_safe_strands_event(
+                json.loads(json.dumps(dict(event), default=str))
+            )
+
+    except Exception:
         logger.exception("Agent run failed")
-        yield {"status": "error", "error": str(e)}
+        yield error_response(AGENT_RUN_FAILED)
 
 
 if __name__ == "__main__":
