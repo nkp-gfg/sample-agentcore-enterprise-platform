@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import ReactMarkdown from "react-markdown";
-import { Ellipsis, History, LogOut, Plus, RefreshCw } from "lucide-react";
+import { Ellipsis, History, LayoutGrid, LogOut, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { A2uiSurface } from "@a2ui/react";
 import { BrandMark } from "@/components/BrandMark.tsx";
+import { CatalogPanel } from "@/components/CatalogPanel.tsx";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -138,6 +139,7 @@ export function WorkspaceScreen({
 }: {
   workspace: ReturnType<typeof useWorkspace>;
 }) {
+  const [view, setView] = useState<"chat" | "catalog">("chat");
   const [draft, setDraft] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState("");
@@ -223,6 +225,19 @@ export function WorkspaceScreen({
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant={view === "catalog" ? "default" : "outline"}
+                onClick={() => setView((current) => current === "catalog" ? "chat" : "catalog")}
+              >
+                <LayoutGrid />
+                Catalog
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Every A2UI component, drawn with no agent</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
               <Button type="button" variant="outline" onClick={() => void loadHistory(true)}>
                 <History />
                 History
@@ -257,6 +272,7 @@ export function WorkspaceScreen({
         </div>
       </header>
 
+      {view === "catalog" ? <CatalogPanel /> : (
       <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(16rem,38vh)] lg:grid-cols-[minmax(0,1.15fr)_minmax(20rem,0.85fr)] lg:grid-rows-1">
         <section className="flex min-h-0 flex-col" aria-label="Conversation">
           <ScrollArea className="min-h-0 flex-1">
@@ -376,6 +392,7 @@ export function WorkspaceScreen({
         </section>
         <SurfaceColumn surfaces={workspace.surfaces} />
       </div>
+      )}
 
       <Sheet open={historyOpen} onOpenChange={(open) => void loadHistory(open)}>
         <SheetContent className="w-full data-[side=right]:sm:max-w-md">
