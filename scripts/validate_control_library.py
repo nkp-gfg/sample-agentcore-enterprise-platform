@@ -5,8 +5,9 @@ Checks (no third-party deps required):
   1. Every catalog control references a file that exists and is valid JSON.
   2. Policy-type controls have a Version + non-empty Statement.
   3. Every ``<<sentinel>>`` in a file is declared as a catalog param (and vice-versa: warn).
-  4. Each control renders cleanly via policy_loader (defaults + placeholder required params),
-     leaving no unresolved tokens.
+  4. Each control renders cleanly via policy_loader (defaults + example or placeholder
+     required params), leaving no unresolved tokens. A param with a ``pattern`` must carry
+     an ``example`` that satisfies it.
   5. Every *.json under control-library/ is referenced by the catalog (orphan check; warns).
 
 Optional: if ``checkov`` is on PATH, run it over control-library/ as an extra gate.
@@ -97,12 +98,14 @@ def validate() -> None:
         for p in declared - sentinels:
             _warn(f"[{cid}] catalog param '{p}' declared but never used as a sentinel")
 
-        # Render check: defaults + placeholder for required params
+        # Render check: defaults + example or placeholder for required params
         params = {}
         for name, spec in (entry.get("params") or {}).items():
             spec = spec or {}
+            if "pattern" in spec and "example" not in spec:
+                _err(f"[{cid}] param '{name}' declares a pattern but no example")
             if "default" not in spec:
-                params[name] = f"VALIDATION_PLACEHOLDER_{name}"
+                params[name] = spec.get("example", f"VALIDATION_PLACEHOLDER_{name}")
         loader = load_control_text if is_cedar else load_control
         try:
             loader(cid, params, library_root=_LIBRARY_ROOT, catalog=catalog)

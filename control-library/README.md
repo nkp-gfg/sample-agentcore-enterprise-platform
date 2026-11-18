@@ -41,7 +41,9 @@ Per-customer values are marked with sentinel tokens of the form `<<PARAM_NAME>>`
 - **Terraform** injects via chained `replace()` (or `jsondecode(file(...))` for structured
   overrides).
 
-A control with no required params (e.g. `scp/memory/enforce-cmk.json`) is deployable as-is.
+A control with no required params (e.g. `scp/gateway/deny-no-auth.json`) is deployable as-is.
+A param may declare `pattern`, a regex its value must fully match; the KMS and IdP patterns
+use it so they cannot be widened to match a key or IdP outside the organization.
 
 ## Adding a control
 

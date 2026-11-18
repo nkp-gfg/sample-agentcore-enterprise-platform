@@ -44,12 +44,21 @@ variable "enable_scp_memory_enforce_cmk" {
 
 variable "kms_key_arn_pattern" {
   description = <<-EOT
-    KMS key ARN pattern that AgentCore CreateMemory must reference. Default requires any CMK.
-    Narrow to a specific key/OU-owned key ARN pattern to restrict further. Injected over the
+    Required. KMS key ARN pattern that AgentCore CreateMemory must reference. Must name the
+    organization's key-owning account literally (no wildcard in the account field), so a
+    key in an account outside the organization does not satisfy the SCP, e.g.
+    "arn:aws:kms:*:111122223333:key/*" or one specific key ARN. Injected over the
     <<kms_key_arn_pattern>> sentinel in control-library/scp/memory/enforce-cmk.json.
   EOT
   type        = string
-  default     = "arn:aws:kms:*:*:key/*"
+  # null rather than omitted so `terraform console` and every plan fail on the validation
+  # below instead of treating the pattern as unknown.
+  default = null
+
+  validation {
+    condition     = can(regex("^arn:aws(-[a-z]+)*:kms:(\\*|[a-z0-9-]+):[0-9]{12}:key/[^:]+$", var.kms_key_arn_pattern))
+    error_message = "kms_key_arn_pattern is required and must pin the 12-digit account that owns the organization's key, e.g. \"arn:aws:kms:*:111122223333:key/*\". A wildcard account would accept a key from any AWS account."
+  }
 }
 
 # ── Control: scp.identity.deny-workload-token-for-userid ──
@@ -86,19 +95,35 @@ variable "enable_gateway_scps" {
 }
 
 variable "gateway_kms_key_arn_pattern" {
-  description = "KMS key ARN pattern a Gateway must use (bedrock-agentcore:KmsKeyArn)."
+  description = <<-EOT
+    Required. KMS key ARN pattern a Gateway must use (bedrock-agentcore:KmsKeyArn). Must name
+    the organization's key-owning account literally, e.g. "arn:aws:kms:*:111122223333:key/*".
+  EOT
   type        = string
-  default     = "arn:aws:kms:*:*:key/*"
+  default     = null
+
+  validation {
+    condition     = can(regex("^arn:aws(-[a-z]+)*:kms:(\\*|[a-z0-9-]+):[0-9]{12}:key/[^:]+$", var.gateway_kms_key_arn_pattern))
+    error_message = "gateway_kms_key_arn_pattern is required and must pin the 12-digit account that owns the organization's key, e.g. \"arn:aws:kms:*:111122223333:key/*\". A wildcard account would accept a key from any AWS account."
+  }
 }
 
 variable "approved_discovery_url_pattern" {
   description = <<-EOT
-    Allowed OIDC discovery URL pattern for JWT gateways (bedrock-agentcore:DiscoveryUrl).
-    Default only requires HTTPS; narrow to your IdP, e.g.
-    "https://login.microsoftonline.com/<tenant>/*".
+    Required. Allowed OIDC discovery URL pattern for JWT gateways
+    (bedrock-agentcore:DiscoveryUrl). Must be HTTPS with a literal host and a literal first
+    path segment, because hosted IdPs serve every customer's tenant from one host and anyone
+    can create a tenant there. Pin the organization's tenant or user pool, e.g.
+    "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*" or
+    "https://login.microsoftonline.com/<tenant-id>/*".
   EOT
   type        = string
-  default     = "https://*"
+  default     = null
+
+  validation {
+    condition     = can(regex("^https://[A-Za-z0-9.-]+(:[0-9]+)?/[^/*?]+(/.*)?$", var.approved_discovery_url_pattern))
+    error_message = "approved_discovery_url_pattern is required and must pin the organization's IdP: https://, a literal host, and a literal first path segment (tenant or user pool), e.g. \"https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*\". A pattern such as \"https://*\" would accept an IdP anyone controls."
+  }
 }
 
 variable "allowed_gateway_protocol" {
