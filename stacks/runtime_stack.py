@@ -373,6 +373,10 @@ class RuntimeStack(cdk.Stack):
             runtime_role,
             repo.repository_arn,
             project_name=project_name,
+            runtime_name=rt_name,
+            credential_provider_name=(extra_env_vars or {}).get(
+                "GATEWAY_CREDENTIAL_PROVIDER_NAME", ""
+            ),
             allowed_models=allowed_models,
             guardrail=guardrail,
         )
@@ -623,6 +627,8 @@ class RuntimeStack(cdk.Stack):
         ecr_repo_arn: str,
         *,
         project_name: str,
+        runtime_name: str,
+        credential_provider_name: str = "",
         allowed_models: list[str] | None = None,
         guardrail: bedrock.CfnGuardrail | None = None,
     ) -> None:
@@ -632,6 +638,19 @@ class RuntimeStack(cdk.Stack):
         resource-level permissions; each one says so. Everything that can be
         scoped is scoped, because this role is what a compromised agent inherits.
         """
+        stack = cdk.Stack.of(role)
+        workload_directory_arn = stack.format_arn(
+            service="bedrock-agentcore",
+            resource="workload-identity-directory",
+            resource_name="default",
+            arn_format=cdk.ArnFormat.SLASH_RESOURCE_NAME,
+        )
+        # AgentCore creates this runtime's workload identity as
+        # "<runtime name>-<runtime id suffix>". Runtime names cannot contain
+        # "-", so the prefix cannot match another runtime's identity.
+        own_workload_identity_arn = (
+            f"{workload_directory_arn}/workload-identity/{runtime_name}-*"
+        )
         statements = [
             # ECR image pull, limited to this component's own repository. It used
             # to be resources=["*"], which let any runtime role pull every image
@@ -742,12 +761,31 @@ class RuntimeStack(cdk.Stack):
                     "bedrock-agentcore:StartBrowserSession",
                     "bedrock-agentcore:StopBrowserSession",
                     "bedrock-agentcore:ConnectBrowserAutomationStream",
-                    "bedrock-agentcore:GetResourceOauth2Token",
-                    "bedrock-agentcore:CreateWorkloadIdentity",
+                ],
+                resources=["*"],
+            ),
+            # AgentCore Identity does not bind a workload identity to the
+            # credential providers it may read; this role is the only fence
+            # (control-library/iam/identity-credential-provider-scoped.json).
+            # Tokens only for this runtime's own workload identity, and no
+            # CreateWorkloadIdentity, so the agent cannot mint a token for, or
+            # create, any other identity.
+            iam.PolicyStatement(
+                sid="AgentCoreOwnWorkloadIdentityTokens",
+                actions=[
                     "bedrock-agentcore:GetWorkloadAccessToken",
                     "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
-                    "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
                 ],
+                resources=[workload_directory_arn, own_workload_identity_arn],
+            ),
+            # The userId variant mints a token for an unverified user string.
+            # Denied here as well as by the org SCP
+            # (control-library/scp/identity/deny-workload-token-for-userid.json),
+            # so an account without that SCP is still covered.
+            iam.PolicyStatement(
+                sid="DenyWorkloadTokenForUserId",
+                effect=iam.Effect.DENY,
+                actions=["bedrock-agentcore:GetWorkloadAccessTokenForUserId"],
                 resources=["*"],
             ),
             # The built-in Code Interpreter is session based: the agent must
@@ -772,25 +810,59 @@ class RuntimeStack(cdk.Stack):
                     )
                 ],
             ),
-            # AgentCore Identity token vault. GetResourceOauth2Token reads the
-            # credential provider's client secret from a Secrets Manager secret
-            # that AgentCore Identity owns, using the CALLER's identity — so
-            # without this the gateway MCP token fetch fails with
-            # AccessDeniedException and Strands aborts loading gateway tools.
-            # Scoped to the vault's own secret path, not all secrets.
-            iam.PolicyStatement(
-                sid="AgentCoreIdentityTokenVaultSecrets",
-                actions=["secretsmanager:GetSecretValue"],
-                resources=[
-                    cdk.Stack.of(role).format_arn(
-                        service="secretsmanager",
-                        resource="secret",
-                        resource_name="bedrock-agentcore-identity!default/oauth2/*",
-                        arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
-                    ),
-                ],
-            ),
         ]
+        if credential_provider_name:
+            statements += [
+                # Only the one provider this agent is configured with
+                # (GATEWAY_CREDENTIAL_PROVIDER_NAME), only as its own workload
+                # identity. All four resource types are required by the action.
+                iam.PolicyStatement(
+                    sid="AgentCoreGatewayCredentialProvider",
+                    actions=["bedrock-agentcore:GetResourceOauth2Token"],
+                    resources=[
+                        workload_directory_arn,
+                        own_workload_identity_arn,
+                        stack.format_arn(
+                            service="bedrock-agentcore",
+                            resource="token-vault",
+                            resource_name="default",
+                            arn_format=cdk.ArnFormat.SLASH_RESOURCE_NAME,
+                        ),
+                        stack.format_arn(
+                            service="bedrock-agentcore",
+                            resource="token-vault",
+                            resource_name=(
+                                "default/oauth2credentialprovider/"
+                                f"{credential_provider_name}"
+                            ),
+                            arn_format=cdk.ArnFormat.SLASH_RESOURCE_NAME,
+                        ),
+                    ],
+                ),
+                # AgentCore Identity token vault. GetResourceOauth2Token reads the
+                # credential provider's client secret from a Secrets Manager secret
+                # that AgentCore Identity owns, using the CALLER's identity — so
+                # without this the gateway MCP token fetch fails with
+                # AccessDeniedException and Strands aborts loading gateway tools.
+                # Scoped to that one provider's secret; "??????" is the random
+                # suffix Secrets Manager appends, so no other provider's name
+                # can match.
+                iam.PolicyStatement(
+                    sid="AgentCoreIdentityTokenVaultSecrets",
+                    actions=["secretsmanager:GetSecretValue"],
+                    resources=[
+                        stack.format_arn(
+                            service="secretsmanager",
+                            resource="secret",
+                            resource_name=(
+                                "bedrock-agentcore-identity!default/oauth2/"
+                                f"{credential_provider_name}-??????"
+                            ),
+                            arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
+                        ),
+                    ],
+                ),
+            ]
         if guardrail is not None:
             statements += [
                 # Using a guardrail during inference requires ApplyGuardrail on
