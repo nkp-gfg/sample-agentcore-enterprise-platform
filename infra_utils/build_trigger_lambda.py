@@ -1,7 +1,9 @@
 """Build trigger Lambda handler — starts CodeBuild and waits for completion."""
+
 import json
 import time
 import urllib.request
+
 import boto3
 
 codebuild = boto3.client("codebuild")
@@ -33,7 +35,7 @@ def handler(event, context):
                 return _send(response_url, event, "FAILED", {}, f"Build {status}")
 
         return _send(response_url, event, "FAILED", {}, "Build timed out")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — CloudFormation must still receive a response
         return _send(response_url, event, "FAILED", {}, str(e))
 
 
@@ -76,16 +78,22 @@ def is_complete(event, context):
 
 
 def _send(url, event, status, data, reason=""):
-    body = json.dumps({
-        "Status": status,
-        "Reason": reason or "See CloudWatch",
-        "PhysicalResourceId": event.get("PhysicalResourceId", event["LogicalResourceId"]),
-        "StackId": event["StackId"],
-        "RequestId": event["RequestId"],
-        "LogicalResourceId": event["LogicalResourceId"],
-        "Data": data,
-    }).encode()
+    body = json.dumps(
+        {
+            "Status": status,
+            "Reason": reason or "See CloudWatch",
+            "PhysicalResourceId": event.get(
+                "PhysicalResourceId", event["LogicalResourceId"]
+            ),
+            "StackId": event["StackId"],
+            "RequestId": event["RequestId"],
+            "LogicalResourceId": event["LogicalResourceId"],
+            "Data": data,
+        }
+    ).encode()
     if not url.startswith("https://"):
         raise ValueError(f"Response URL must use HTTPS scheme, got: {url[:20]}")
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": ""}, method="PUT")
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": ""}, method="PUT"
+    )
     urllib.request.urlopen(req)  # nosec B310 — URL validated above, CloudFormation pre-signed S3 URL

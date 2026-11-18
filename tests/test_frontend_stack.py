@@ -243,7 +243,9 @@ def test_private_frontend_synthesizes_express_mode_waf_and_dynamodb() -> None:
     staged_names = _bff_source_asset_files(fe)
     assert "Dockerfile" in staged_names
     assert any(name.startswith("bff/") for name in staged_names)
-    assert not any(name == "tests" or name.startswith("tests/") for name in staged_names)
+    assert not any(
+        name == "tests" or name.startswith("tests/") for name in staged_names
+    )
     assert not any(
         part in {"node_modules", ".venv", ".git", "__pycache__"}
         for name in staged_names
