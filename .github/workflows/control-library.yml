@@ -24,10 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
 
@@ -44,10 +44,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v4
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+
+      # setup-terraform downloads the release zip without checking it. This is
+      # the sha256 of the terraform executable inside
+      # terraform_1.17.2_linux_amd64.zip, whose zip hash matches HashiCorp's
+      # signed SHA256SUMS. Update it together with terraform_version.
+      - name: Verify Terraform binary
+        env:
+          TERRAFORM_SHA256: dbfef0be43ba2117481be510d3b83a2d8cdfa6ae7ec69c5aeb04b3947956ff7e
+        run: |
+          tf_bin="$(command -v terraform)"
+          echo "${TERRAFORM_SHA256}  ${tf_bin}" | sha256sum --check --strict -
 
       - name: Terraform fmt check
         run: terraform fmt -check -recursive control-library/terraform/
