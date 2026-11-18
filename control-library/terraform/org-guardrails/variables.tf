@@ -44,12 +44,20 @@ variable "enable_scp_memory_enforce_cmk" {
 
 variable "kms_key_arn_pattern" {
   description = <<-EOT
-    KMS key ARN pattern that AgentCore CreateMemory must reference. Default requires any CMK.
-    Narrow to a specific key/OU-owned key ARN pattern to restrict further. Injected over the
+    KMS key ARN pattern that AgentCore CreateMemory must reference. Required when
+    enable_scp_memory_enforce_cmk is true. The account field must be the literal 12-digit ID
+    of an account your organization owns (for example a central key account), e.g.
+    "arn:aws:kms:*:111122223333:key/*". Wildcards in the account field are rejected: they
+    match keys in accounts outside the organization. Injected over the
     <<kms_key_arn_pattern>> sentinel in control-library/scp/memory/enforce-cmk.json.
   EOT
   type        = string
-  default     = "arn:aws:kms:*:*:key/*"
+  default     = null
+
+  validation {
+    condition     = var.kms_key_arn_pattern == null || can(regex("^arn:aws(-[a-z]+)*:kms:(\\*|[a-z0-9-]+):[0-9]{12}:key/([A-Za-z0-9-]+|[A-Za-z0-9-]*\\*)$", var.kms_key_arn_pattern))
+    error_message = "kms_key_arn_pattern must name one organization-owned account: arn:<partition>:kms:<region or *>:<12-digit account ID>:key/<key ID, key ID prefix followed by *, or *>. Wildcards or ? in the account field match keys in any account."
+  }
 }
 
 # ── Control: scp.identity.deny-workload-token-for-userid ──
@@ -86,9 +94,19 @@ variable "enable_gateway_scps" {
 }
 
 variable "gateway_kms_key_arn_pattern" {
-  description = "KMS key ARN pattern a Gateway must use (bedrock-agentcore:KmsKeyArn)."
+  description = <<-EOT
+    KMS key ARN pattern a Gateway must use (bedrock-agentcore:KmsKeyArn). Required when
+    enable_gateway_scps is true. Same shape as kms_key_arn_pattern: the account field must be
+    the literal 12-digit ID of an organization-owned account, e.g.
+    "arn:aws:kms:*:111122223333:key/*".
+  EOT
   type        = string
-  default     = "arn:aws:kms:*:*:key/*"
+  default     = null
+
+  validation {
+    condition     = var.gateway_kms_key_arn_pattern == null || can(regex("^arn:aws(-[a-z]+)*:kms:(\\*|[a-z0-9-]+):[0-9]{12}:key/([A-Za-z0-9-]+|[A-Za-z0-9-]*\\*)$", var.gateway_kms_key_arn_pattern))
+    error_message = "gateway_kms_key_arn_pattern must name one organization-owned account: arn:<partition>:kms:<region or *>:<12-digit account ID>:key/<key ID, key ID prefix followed by *, or *>. Wildcards or ? in the account field match keys in any account."
+  }
 }
 
 variable "approved_discovery_url_pattern" {

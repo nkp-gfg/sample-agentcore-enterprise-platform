@@ -102,7 +102,7 @@ def validate() -> None:
         for name, spec in (entry.get("params") or {}).items():
             spec = spec or {}
             if "default" not in spec:
-                params[name] = f"VALIDATION_PLACEHOLDER_{name}"
+                params[name] = spec.get("example", f"VALIDATION_PLACEHOLDER_{name}")
         loader = load_control_text if is_cedar else load_control
         try:
             loader(cid, params, library_root=_LIBRARY_ROOT, catalog=catalog)

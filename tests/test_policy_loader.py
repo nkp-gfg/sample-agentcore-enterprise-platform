@@ -21,12 +21,26 @@ def test_catalog_lists_seeded_controls():
     assert "resource-policy.memory.in-account-only" in ids
 
 
-def test_scp_uses_default_when_param_omitted():
-    doc = load_control("scp.memory.enforce-cmk")
-    pattern = doc["Statement"][0]["Condition"]["StringNotLike"][
-        "bedrock-agentcore:KmsKeyArn"
-    ]
-    assert pattern == "arn:aws:kms:*:*:key/*"
+def test_scp_requires_kms_key_arn_pattern():
+    # Any pattern that works without naming an account matches keys outside the org.
+    with pytest.raises(ValueError, match="missing required params: kms_key_arn_pattern"):
+        load_control("scp.memory.enforce-cmk")
+
+
+@pytest.mark.parametrize("control_id", ["scp.memory.enforce-cmk", "scp.gateway.require-cmk"])
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "arn:aws:kms:*:*:key/*",
+        "arn:aws:kms:*:111122223333*:key/*",
+        "arn:aws:kms:*:????????????:key/*",
+        "arn:aws:kms:*:key/*",
+        "arn:aws:kms:*:*:111122223333:key/*",
+    ],
+)
+def test_cmk_scp_rejects_account_wildcard(control_id, pattern):
+    with pytest.raises(ValueError, match="does not match the required pattern"):
+        load_control(control_id, {"kms_key_arn_pattern": pattern})
 
 
 def test_scp_override_default_param():
@@ -70,7 +84,10 @@ def test_unknown_control_id_raises():
 
 
 def test_load_control_json_is_compact_string():
-    s = load_control_json("scp.memory.enforce-cmk")
+    s = load_control_json(
+        "scp.memory.enforce-cmk",
+        {"kms_key_arn_pattern": "arn:aws:kms:*:111122223333:key/*"},
+    )
     assert isinstance(s, str)
     assert ", " not in s  # compact separators
     assert json.loads(s)["Version"] == "2012-10-17"
