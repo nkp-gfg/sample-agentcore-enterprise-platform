@@ -59,17 +59,27 @@ variable "enable_scp_identity_deny_token_for_userid" {
   default     = true
 }
 
-variable "identity_approved_principal_arn_pattern" {
+variable "identity_approved_principal_arn" {
   description = <<-EOT
-    Principal ARN pattern exempted from the GetWorkloadAccessTokenForUserId deny
-    (aws:PrincipalArn, ArnNotLike). The default names a role that does not exist, so the
-    control is a blanket deny until a real pattern is supplied. Narrow to a specific
-    break-glass role ARN only if a migration or batch job genuinely needs the userId path.
-    Injected over the <<approved_principal_arn_pattern>> sentinel in
-    control-library/scp/identity/deny-workload-token-for-userid.json.
+    Exact IAM role ARN exempted from the GetWorkloadAccessTokenForUserId deny. Empty (the
+    default) exempts nobody: the SCP is an unconditional deny. Set it only if a migration or
+    batch job genuinely needs the userId path, and only to one existing role in one specific
+    account whose administrators are already trusted with every user's vault credentials —
+    any administrator of that account can create or re-trust a role with this ARN. Matched
+    with StringNotEquals, so wildcards are not patterns. Injected over the
+    <<approved_principal_arn>> sentinel in
+    control-library/scp/identity/deny-workload-token-for-userid-except-principal.json.
   EOT
   type        = string
-  default     = "arn:aws:iam::*:role/__no_principal_may_mint_tokens_by_userid__"
+  default     = ""
+
+  validation {
+    condition = var.identity_approved_principal_arn == "" || (
+      can(regex("^arn:aws(-[a-z]+)*:iam::[0-9]{12}:role/([A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]{1,64}$", var.identity_approved_principal_arn))
+      && !strcontains(var.identity_approved_principal_arn, "__no_principal_may_mint_tokens_by_userid__")
+    )
+    error_message = "identity_approved_principal_arn must be empty or one exact IAM role ARN (arn:aws:iam::<12-digit account>:role/<name>) with no wildcards, naming a role you have created. A placeholder role name is not an exemption of nobody: any account administrator can create it."
+  }
 }
 
 # ── Controls: Gateway configuration SCPs (control plane) ──
