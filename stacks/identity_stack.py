@@ -15,6 +15,15 @@ from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
 
+def gateway_credential_provider_name(project_name: str, environment: str) -> str:
+    """Name of the gateway M2M credential provider in the default token vault.
+
+    Runtime roles derive their token-vault secret grant from this name, so it
+    must stay the single source of truth for both stacks.
+    """
+    return f"{project_name}-{environment}-gateway-m2m"
+
+
 class IdentityStack(cdk.Stack):
     def __init__(
         self,
@@ -80,7 +89,9 @@ class IdentityStack(cdk.Stack):
         # through platform.yaml. In both cases the provider template contains a
         # Secrets Manager dynamic reference, never the secret-bearing Cognito
         # Fn::GetAtt or a literal value.
-        self._gateway_provider_name = f"{prefix}-gateway-m2m"
+        self._gateway_provider_name = gateway_credential_provider_name(
+            project_name, environment
+        )
         m2m_provider = agentcore.CfnOAuth2CredentialProvider(
             self,
             "GatewayM2M",

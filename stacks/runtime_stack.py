@@ -48,6 +48,7 @@ from infra_utils.policy_loader import load_control
 from infra_utils.runtime_network import build_network_config
 from infra_utils.runtime_protocol import needs_jwt_authorizer, resolve_protocol
 from infra_utils.source_hash import component_image_tag, compute_source_hash
+from stacks.identity_stack import gateway_credential_provider_name
 
 
 class RuntimeStack(cdk.Stack):
@@ -373,6 +374,7 @@ class RuntimeStack(cdk.Stack):
             runtime_role,
             repo.repository_arn,
             project_name=project_name,
+            environment=environment,
             allowed_models=allowed_models,
             guardrail=guardrail,
         )
@@ -623,6 +625,7 @@ class RuntimeStack(cdk.Stack):
         ecr_repo_arn: str,
         *,
         project_name: str,
+        environment: str,
         allowed_models: list[str] | None = None,
         guardrail: bedrock.CfnGuardrail | None = None,
     ) -> None:
@@ -777,7 +780,11 @@ class RuntimeStack(cdk.Stack):
             # that AgentCore Identity owns, using the CALLER's identity — so
             # without this the gateway MCP token fetch fails with
             # AccessDeniedException and Strands aborts loading gateway tools.
-            # Scoped to the vault's own secret path, not all secrets.
+            # Scoped to the gateway provider's secret only: every provider in
+            # the account's default vault (Google, GitHub, Notion, other
+            # workloads) shares the oauth2/ path. "-??????" is the fixed
+            # Secrets Manager ARN suffix; "-*" would also match any provider
+            # whose name merely starts with the gateway provider's name.
             iam.PolicyStatement(
                 sid="AgentCoreIdentityTokenVaultSecrets",
                 actions=["secretsmanager:GetSecretValue"],
@@ -785,7 +792,11 @@ class RuntimeStack(cdk.Stack):
                     cdk.Stack.of(role).format_arn(
                         service="secretsmanager",
                         resource="secret",
-                        resource_name="bedrock-agentcore-identity!default/oauth2/*",
+                        resource_name=(
+                            "bedrock-agentcore-identity!default/oauth2/"
+                            f"{gateway_credential_provider_name(project_name, environment)}"
+                            "-??????"
+                        ),
                         arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
                     ),
                 ],
