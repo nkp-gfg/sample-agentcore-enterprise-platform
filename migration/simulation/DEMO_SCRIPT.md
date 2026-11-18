@@ -283,9 +283,10 @@ import boto3, requests, json, base64
 python scripts/test_agent.py --component orchestrator
 
 # Dashboard
-cd dashboard && python3 monitor.py &
-python3 -m http.server 8888 -d public
-# Open http://localhost:8888
+cd dashboard
+python3 monitor.py &
+python3 -m http.server 8888 --bind 127.0.0.1 -d public
+# Open http://127.0.0.1:8888
 ```
 
 ---
