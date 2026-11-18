@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -34,8 +36,8 @@ jobs:
 
       - name: Install CDK and app dependencies
         run: |
-          npm install -g aws-cdk
-          pip install -r requirements.txt
+          npm install -g aws-cdk@2.1135.1
+          pip install --require-hashes --only-binary=:all: -r requirements.txt -c .github/requirements/app.txt
 
       - name: Preset ↔ synth parity
         run: PY=python3 bash scripts/check-contract.sh

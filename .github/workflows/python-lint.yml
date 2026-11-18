@@ -32,7 +32,8 @@ jobs:
 
       - name: Install ruff
         if: steps.changed-files.outputs.any_changed == 'true'
-        run: pip install ruff
+        run: |
+          pip install --require-hashes --only-binary=:all: ruff -c .github/requirements/ruff.txt
 
       - name: Run ruff check on changed files
         if: steps.changed-files.outputs.any_changed == 'true'
