@@ -31,7 +31,7 @@ AgentCore CLI configuration, and local container composition respectively.
 
 | Change | Location | Contract |
 |---|---|---|
-| New runtime framework or agent pattern | `agent-code/<pattern>/` | `Dockerfile`, `requirements.txt`, and runtime entry point |
+| New runtime framework or agent pattern | `agent-code/<pattern>/` | `Dockerfile`, `requirements.txt` plus its hash-locked `requirements.lock.txt` (`make lock-requirements`), and runtime entry point |
 | Platform-wide AWS capability | `stacks/` plus focused helpers in `infra_utils/` | Declared deployment contract and synthesis tests |
 | Customer/product integration | `use-cases/<name>/` | `manifest.yaml`, `stack.py`, `verify.py`, and `walkthrough.md` |
 | Gateway target or interceptor | `tools/<name>/` | Tool specification and least-privilege stack integration |
