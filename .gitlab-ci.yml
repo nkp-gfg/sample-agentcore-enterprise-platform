@@ -173,7 +173,7 @@ terraform:
     entrypoint: [""]
   script:
     - terraform fmt -check -recursive control-library/terraform/
-    - terraform -chdir=control-library/terraform/org-guardrails init -backend=false -input=false
+    - terraform -chdir=control-library/terraform/org-guardrails init -backend=false -input=false -lockfile=readonly
     - terraform -chdir=control-library/terraform/org-guardrails validate
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"

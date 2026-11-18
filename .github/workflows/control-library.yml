@@ -55,5 +55,5 @@ jobs:
       - name: Terraform validate (org-guardrails)
         working-directory: control-library/terraform/org-guardrails
         run: |
-          terraform init -backend=false -input=false
+          terraform init -backend=false -input=false -lockfile=readonly
           terraform validate
