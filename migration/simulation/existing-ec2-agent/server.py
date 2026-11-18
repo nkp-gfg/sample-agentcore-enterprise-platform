@@ -13,8 +13,11 @@ which keeps the "legacy code untouched" story intact).
 """
 
 import json
+import logging
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+log = logging.getLogger("acme-agent-server")
 
 _agent = None
 
@@ -66,16 +69,21 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length) or b"{}")
             prompt = payload.get("prompt", "")
-            response = get_agent()(prompt)
-            self._send(200, {"answer": str(response)})
-        except Exception as exc:  # noqa: BLE001 — request handler boundary: surface the real cause to the caller
-            self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
+            answer = str(get_agent()(prompt))
+        except Exception:  # request handler boundary
+            # Exception text can carry AWS account, role, and model details;
+            # it goes to the server log only, never the response body.
+            log.exception("POST /run failed")
+            self._send(500, {"error": "internal error"})
+            return
+        self._send(200, {"answer": answer})
 
     def log_message(self, fmt, *args):
         print(f"[server] {fmt % args}")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="[server] %(levelname)s %(message)s")
     port = int(os.environ.get("PORT", "8000"))
     print(f"ACME Corp Agent serving HTTP on :{port} (POST /run, GET /healthz)")
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()  # nosec B104 — container service

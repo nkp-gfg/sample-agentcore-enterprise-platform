@@ -122,9 +122,9 @@ async def invocations(payload, context: RequestContext):
         logger.warning("Rejected unverified caller: %s", e)
         yield {"status": "error", "error": "Unauthorized"}
 
-    except Exception as e:
+    except Exception:
         logger.exception("Agent run failed")
-        yield {"status": "error", "error": str(e)}
+        yield {"status": "error", "error": "Agent run failed"}
 
 
 if __name__ == "__main__":

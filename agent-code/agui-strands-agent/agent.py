@@ -128,11 +128,11 @@ async def invocations(payload: dict, context: RequestContext):
         async for event in agent.run(input_data):
             if event is not None:
                 yield event.model_dump(mode="json", by_alias=True, exclude_none=True)
-    except Exception as exc:
+    except Exception:
         logger.exception("Agent run failed")
         yield RunErrorEvent(
-            message=str(exc) or type(exc).__name__,
-            code=type(exc).__name__,
+            message="Agent run failed",
+            code="AGENT_ERROR",
         ).model_dump(mode="json", by_alias=True, exclude_none=True)
 
 

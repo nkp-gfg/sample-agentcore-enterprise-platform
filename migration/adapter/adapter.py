@@ -40,6 +40,7 @@ thread restarts a dead child once; after a second death every invocation
 returns a structured error instead.
 """
 
+import http.client
 import json
 import logging
 import math
@@ -286,16 +287,19 @@ def check_child_health(
         if not require_2xx:
             return True, f"HTTP {exc.code}"
         return False, f"HTTP {exc.code}"
-    except (OSError, ValueError) as exc:
-        return False, f"{type(exc).__name__}: {exc}"
+    except (OSError, ValueError, http.client.HTTPException):
+        log.warning("child health probe to %s failed", url, exc_info=True)
+        return False, "unreachable"
 
 
 def forward(payload, url: str):
     """POST the invocation payload to the child and map its reply.
 
     JSON reply → returned as-is (parsed). Plain text → wrapped as a success.
-    Non-2xx → structured error. text/event-stream → a generator of the events'
-    data payloads; BedrockAgentCoreApp re-emits each yield as an SSE event.
+    Non-2xx → structured error with a fixed message; the child's error body is
+    logged, never returned, because it can carry exception text from the
+    customer's code. text/event-stream → a generator of the events' data
+    payloads; BedrockAgentCoreApp re-emits each yield as an SSE event.
     """
     req = urllib.request.Request(
         url,
@@ -305,16 +309,33 @@ def forward(payload, url: str):
     try:
         resp = urllib.request.urlopen(req)  # nosec B310 — localhost http
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace")
-        return {"status": "error", "code": exc.code, "error": body[:2000]}
-    except OSError as exc:
-        return {"status": "error", "code": 502, "error": f"child unreachable: {exc}"}
+        try:
+            body = exc.read().decode(errors="replace")
+        except Exception:  # noqa: BLE001 — the body is only diagnostic
+            body = "<unreadable>"
+        finally:
+            exc.close()
+        log.warning("child returned HTTP %s: %s", exc.code, body[:2000])
+        return {
+            "status": "error",
+            "code": exc.code,
+            "error": f"migrated agent returned HTTP {exc.code}; see the runtime logs",
+        }
+    except OSError:
+        log.warning("child unreachable at %s", url, exc_info=True)
+        return {
+            "status": "error",
+            "code": 502,
+            "error": "migrated agent is unreachable",
+        }
 
     content_type = resp.headers.get("Content-Type", "")
     if "text/event-stream" in content_type:
         return _stream_events(resp)
-    body = resp.read().decode(errors="replace")
-    resp.close()
+    try:
+        body = resp.read().decode(errors="replace")
+    finally:
+        resp.close()
     if "application/json" in content_type:
         try:
             return json.loads(body)
@@ -336,6 +357,9 @@ def _stream_events(resp):
                 yield json.loads(data)
             except json.JSONDecodeError:
                 yield data
+    except Exception:  # BedrockAgentCoreApp would emit str(exc)
+        log.exception("child event stream failed")
+        yield {"status": "error", "code": 502, "error": "migrated agent stream failed"}
     finally:
         resp.close()
 
@@ -380,7 +404,15 @@ def invoke(payload=None):
             "code": 503,
             "error": f"migrated agent health check failed ({detail})",
         }
-    return forward(payload, _invoke_url())
+    try:
+        return forward(payload, _invoke_url())
+    except Exception:  # BedrockAgentCoreApp would return str(exc)
+        log.exception("forwarding to the child failed")
+        return {
+            "status": "error",
+            "code": 502,
+            "error": "migrated agent request failed",
+        }
 
 
 def main():
