@@ -64,7 +64,7 @@ def _find_control(catalog: dict[str, Any], control_id: str) -> dict[str, Any]:
 
 
 def _resolve_params(entry: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
-    """Merge caller params with catalog defaults and validate required ones are present."""
+    """Merge caller params with catalog defaults; validate required and patterned ones."""
     resolved = dict(params)
     schema = entry.get("params") or {}
     missing = []
@@ -80,6 +80,15 @@ def _resolve_params(entry: dict[str, Any], params: dict[str, Any]) -> dict[str, 
         raise ValueError(
             f"control '{entry['id']}' missing required params: {', '.join(sorted(missing))}"
         )
+    for name, spec in schema.items():
+        pattern = (spec or {}).get("pattern")
+        if pattern is None or name not in resolved:
+            continue
+        value = resolved[name]
+        if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
+            raise ValueError(
+                f"control '{entry['id']}' param '{name}' must match {pattern!r}; got {value!r}"
+            )
     return resolved
 
 

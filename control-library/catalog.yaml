@@ -8,7 +8,9 @@
 #   attach_to    Valid attach points (informational + used for validation).
 #   engine       IaC engines that consume this control today.
 #   default_mode enforce | log_only | audit  (safe default posture)
-#   params       name -> {required, default?, description}. Values inject over <<NAME>> tokens.
+#   params       name -> {required, default?, pattern?, example?, description}. Values inject
+#                over <<NAME>> tokens. pattern is a regex the whole value must match; example
+#                is a conforming value the validator renders with.
 #   validate     CI validators that must pass for this artifact.
 version: 1
 description: AgentCore security control definitions (SCP, RCP, resource, IAM, VPCE, Cedar, Guardrails).
@@ -24,11 +26,13 @@ controls:
     default_mode: enforce
     params:
       kms_key_arn_pattern:
-        required: false
-        default: "arn:aws:kms:*:*:key/*"
+        required: true
+        pattern: '^arn:aws(-[a-z]+)*:kms:(\*|[a-z0-9-]+):[0-9]{12}:key/[^:]+$'
+        example: "arn:aws:kms:*:111122223333:key/*"
         description: >-
-          KMS key ARN pattern that CreateMemory must reference. Default requires any CMK.
-          Narrow to a specific key/OU-owned key ARN pattern to restrict further.
+          KMS key ARN pattern that CreateMemory must reference. Must pin the 12-digit account
+          that owns the organization's key (e.g. arn:aws:kms:*:111122223333:key/*); a
+          wildcard account would accept a key from any AWS account.
     validate: [checkov, access-analyzer]
 
   # ── Item 4: Resource-based policy — Memory in-account-only (workload scope, CDK) ──
@@ -217,9 +221,12 @@ controls:
     default_mode: enforce
     params:
       kms_key_arn_pattern:
-        required: false
-        default: "arn:aws:kms:*:*:key/*"
-        description: KMS key ARN pattern the Gateway must use. Narrow to restrict further.
+        required: true
+        pattern: '^arn:aws(-[a-z]+)*:kms:(\*|[a-z0-9-]+):[0-9]{12}:key/[^:]+$'
+        example: "arn:aws:kms:*:111122223333:key/*"
+        description: >-
+          KMS key ARN pattern the Gateway must use. Must pin the 12-digit account that owns
+          the organization's key (e.g. arn:aws:kms:*:111122223333:key/*).
     validate: [checkov, access-analyzer]
 
   - id: scp.gateway.deny-no-auth
@@ -259,11 +266,15 @@ controls:
     default_mode: enforce
     params:
       approved_discovery_url_pattern:
-        required: false
-        default: "https://*"
+        required: true
+        pattern: '^https://[A-Za-z0-9.-]+(:[0-9]+)?/[^/*?]+(/.*)?$'
+        example: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*"
         description: >-
-          Allowed OIDC discovery URL pattern (bedrock-agentcore:DiscoveryUrl). Default only
-          requires HTTPS; narrow to your IdP, e.g. https://login.microsoftonline.com/<tenant>/*.
+          Allowed OIDC discovery URL pattern (bedrock-agentcore:DiscoveryUrl). Must be HTTPS
+          with a literal host and a literal first path segment that pins the organization's
+          tenant or user pool, e.g. https://login.microsoftonline.com/<tenant-id>/* or
+          https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*. Hosted IdPs serve
+          every customer from one host, so a host-only pattern still admits an attacker's tenant.
           A Null guard scopes the deny to requests that include a DiscoveryUrl, so IAM-auth
           gateways (key absent) are unaffected. (Negated operators in a Deny match absent
           keys — even with IfExists — so the guard is required for this exemption.)

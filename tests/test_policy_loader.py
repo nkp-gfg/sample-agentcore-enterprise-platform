@@ -21,12 +21,78 @@ def test_catalog_lists_seeded_controls():
     assert "resource-policy.memory.in-account-only" in ids
 
 
-def test_scp_uses_default_when_param_omitted():
-    doc = load_control("scp.memory.enforce-cmk")
-    pattern = doc["Statement"][0]["Condition"]["StringNotLike"][
-        "bedrock-agentcore:KmsKeyArn"
-    ]
-    assert pattern == "arn:aws:kms:*:*:key/*"
+@pytest.mark.parametrize(
+    "control_id",
+    [
+        "scp.memory.enforce-cmk",
+        "scp.gateway.require-cmk",
+        "scp.gateway.enforce-approved-idp",
+    ],
+)
+def test_scp_trust_anchor_patterns_have_no_default(control_id):
+    # A default broad enough to deploy anywhere also matches an attacker's key or IdP.
+    with pytest.raises(ValueError, match="missing required params"):
+        load_control(control_id)
+
+
+@pytest.mark.parametrize(
+    ("control_id", "param", "value"),
+    [
+        ("scp.memory.enforce-cmk", "kms_key_arn_pattern", "arn:aws:kms:*:*:key/*"),
+        (
+            "scp.memory.enforce-cmk",
+            "kms_key_arn_pattern",
+            "arn:aws:kms:*:1111222233*:key/*",
+        ),
+        ("scp.gateway.require-cmk", "kms_key_arn_pattern", "arn:aws:kms:*:*:key/*"),
+        ("scp.gateway.require-cmk", "kms_key_arn_pattern", "*"),
+        (
+            "scp.gateway.enforce-approved-idp",
+            "approved_discovery_url_pattern",
+            "https://*",
+        ),
+        (
+            "scp.gateway.enforce-approved-idp",
+            "approved_discovery_url_pattern",
+            "https://*/*",
+        ),
+        (
+            "scp.gateway.enforce-approved-idp",
+            "approved_discovery_url_pattern",
+            "https://*.okta.com/*",
+        ),
+        (
+            "scp.gateway.enforce-approved-idp",
+            "approved_discovery_url_pattern",
+            "https://login.example.com*",
+        ),
+        (
+            "scp.gateway.enforce-approved-idp",
+            "approved_discovery_url_pattern",
+            "https://cognito-idp.us-east-1.amazonaws.com/*",
+        ),
+        (
+            "scp.gateway.enforce-approved-idp",
+            "approved_discovery_url_pattern",
+            "http://login.example.com/tenant/*",
+        ),
+    ],
+)
+def test_scp_trust_anchor_patterns_reject_unpinned_values(control_id, param, value):
+    with pytest.raises(ValueError, match="must match"):
+        load_control(control_id, {param: value})
+
+
+def test_idp_pattern_accepts_a_pinned_tenant():
+    doc = load_control(
+        "scp.gateway.enforce-approved-idp",
+        {
+            "approved_discovery_url_pattern": (
+                "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEfGhI/*"
+            )
+        },
+    )
+    assert "<<" not in json.dumps(doc)
 
 
 def test_scp_override_default_param():
@@ -70,7 +136,10 @@ def test_unknown_control_id_raises():
 
 
 def test_load_control_json_is_compact_string():
-    s = load_control_json("scp.memory.enforce-cmk")
+    s = load_control_json(
+        "scp.memory.enforce-cmk",
+        {"kms_key_arn_pattern": "arn:aws:kms:*:111122223333:key/*"},
+    )
     assert isinstance(s, str)
     assert ", " not in s  # compact separators
     assert json.loads(s)["Version"] == "2012-10-17"
