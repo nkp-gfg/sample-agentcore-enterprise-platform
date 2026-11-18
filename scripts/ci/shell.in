@@ -1,0 +1,4 @@
+# GitLab `shell` job: infra_utils.platform_config imports for the deploy.sh
+# self-checks. Edit, then `make lock`.
+pydantic>=2.13.4,<3
+pyyaml>=6.0.3

@@ -1,0 +1,4 @@
+# GitLab `control-library` job: policy_loader + the checkov scan in
+# scripts/validate_control_library.py. Edit, then `make lock`.
+pyyaml>=6.0.3
+checkov
