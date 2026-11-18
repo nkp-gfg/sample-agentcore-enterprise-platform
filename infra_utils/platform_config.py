@@ -1920,7 +1920,16 @@ def to_env(config: PlatformConfig) -> dict[str, str]:
                 "MIGRATION_CA_BUNDLE_SECRET_NAME": m.network.ca_bundle_secret_name,
             }
         )
-    return {k: v for k, v in pairs.items() if v != ""}
+    exported = {k: v for k, v in pairs.items() if v != ""}
+    # deploy.sh reads these back one KEY=value per line: a newline or other
+    # control character in a value would become a second shell assignment.
+    unsafe = sorted(k for k, v in exported.items() if not v.isprintable())
+    if unsafe:
+        raise ValueError(
+            "must be printable single-line values (no newline or control "
+            f"characters): {', '.join(unsafe)}"
+        )
+    return exported
 
 
 def migration_secret_name(config: PlatformConfig, env_name: str) -> str:
@@ -2874,12 +2883,17 @@ def _main() -> int:
         except (ValidationError, ValueError) as exc:
             print(f"INVALID effective environment\n{exc}", file=sys.stderr)
             return 1
+    try:
+        exported = to_env(config)
+    except ValueError as exc:
+        print(f"INVALID: {args[0]}\n  {exc}", file=sys.stderr)
+        return 1
     if "--export" not in flags:
         # --export is machine-read by deploy.sh with 2>&1; keep it key=value only.
         for warning in config.warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
     if "--export" in flags:
-        for key, value in to_env(config).items():
+        for key, value in exported.items():
             print(f"{key}={value}")
         return 0
     if "--stacks" in flags:

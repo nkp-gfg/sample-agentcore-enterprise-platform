@@ -209,15 +209,49 @@ apply_platform_config() {
         log_error "Fix the fields above, then run: $0 design"
         exit 1
     fi
+    # Only the names to_env() emits may be set from the manifest; anything else
+    # (NODE_OPTIONS, BASH_ENV, a repeated name) means a value spilled onto its
+    # own line. Validate every line before exporting any of them.
+    local -A allowed=() parsed=()
+    local name line
+    for name in PROJECT_NAME ENVIRONMENT AWS_REGION DEPLOYMENT_MODE \
+        DEPLOYMENT_STRATEGY PLATFORM_ACCOUNT IDP_TYPE IDP_MODE IDP_TENANT_ID \
+        IDP_CLIENT_ID IDP_ISSUER_URL IDP_CLIENT_SECRET_NAME AGENT_PATTERN \
+        ORCHESTRATOR_RUNTIME_GENERATION MODEL_ID ALLOWED_MODELS ENABLE_A2A \
+        USE_LONG_TERM_MEMORY MEMORY_EVENT_EXPIRY_DAYS LTM_TOP_K \
+        LTM_RELEVANCE_SCORE ENABLE_WEB_SEARCH ENABLE_NETWORKING ENABLE_SECURITY \
+        ENABLE_RESOURCE_POLICIES ENABLE_EGRESS_FILTER REQUIRE_GUARDRAILS \
+        ENABLE_CEDAR CEDAR_MODE ENABLE_TRACEABILITY ORG_ID \
+        ENABLE_TRANSACTION_SEARCH ENABLE_ALARMS ALARM_EMAIL LOG_RETENTION_DAYS \
+        MIGRATION_ENABLED MIGRATION_SOURCE_PLATFORM MIGRATION_SOURCE_IMAGE \
+        MIGRATION_BUILD_CONTEXT MIGRATION_BUILD_DOCKERFILE \
+        MIGRATION_REGISTRY_SECRET_NAME MIGRATION_PORT MIGRATION_INVOKE_PATH \
+        MIGRATION_HEALTH_PATH MIGRATION_TRIGGER MIGRATION_ENV_JSON MIGRATION_ENV \
+        MIGRATION_SECRETS MIGRATION_TARGET_RUNTIME MIGRATION_TARGET_MODE \
+        MIGRATION_PRIVATE_DEPENDENCIES MIGRATION_CONNECTIVITY \
+        MIGRATION_DNS_FORWARDERS MIGRATION_CA_BUNDLE_SECRET_NAME; do
+        allowed[$name]=1
+    done
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        if [ "$key" = "$line" ] || [ -z "$key" ] || [ -z "${allowed[$key]:-}" ] \
+            || [ -n "${parsed[$key]+set}" ] || [[ "$value" == *[[:cntrl:]]* ]]; then
+            log_error "$PLATFORM_CONFIG export produced an unexpected line; nothing was applied."
+            log_error "Validate it with: python -m infra_utils.platform_config $PLATFORM_CONFIG"
+            exit 1
+        fi
+        parsed[$key]="$value"
+    done <<< "$exports"
     local applied=0
-    while IFS='=' read -r key value; do
-        [ -z "$key" ] && continue
+    for key in "${!parsed[@]}"; do
         if [ -z "${!key:-}" ]; then
-            printf -v "$key" '%s' "$value"
+            printf -v "$key" '%s' "${parsed[$key]}"
             export "${key?}"
             applied=$((applied + 1))
         fi
-    done <<< "$exports"
+    done
     log_info "Applied $applied value(s) from $PLATFORM_CONFIG (env vars override)"
 }
 # ── 'usecase' action: scaffold / list use cases (scripts/usecase.py) ──
