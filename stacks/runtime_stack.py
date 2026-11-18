@@ -80,6 +80,9 @@ class RuntimeStack(cdk.Stack):
         allowed_models: list[str] | None = None,
         require_guardrails: bool = False,
         retain_data: bool = False,
+        # ARN of the one gateway this runtime calls. Empty means the role gets
+        # no gateway permissions at all (code-agent, federated workload).
+        gateway_arn: str = "",
         # ── Migration (image-source) mode ──
         # Set source_image (registry ref) or build_context (local dir) and the
         # stack builds the migration adapter (migration/adapter/) ON TOP of the
@@ -375,6 +378,7 @@ class RuntimeStack(cdk.Stack):
             project_name=project_name,
             allowed_models=allowed_models,
             guardrail=guardrail,
+            gateway_arn=gateway_arn,
         )
         if migration_secret_names:
             # The adapter resolves each declared migration secret into the
@@ -625,6 +629,7 @@ class RuntimeStack(cdk.Stack):
         project_name: str,
         allowed_models: list[str] | None = None,
         guardrail: bedrock.CfnGuardrail | None = None,
+        gateway_arn: str = "",
     ) -> None:
         """Attach the standard AgentCore Runtime permissions to a role.
 
@@ -716,19 +721,19 @@ class RuntimeStack(cdk.Stack):
                 actions=["ssm:GetParameter", "ssm:GetParameters"],
                 resources=[f"arn:aws:ssm:*:*:parameter/{project_name}/*"],
             ),
-            # AgentCore service access (Gateway, Memory, A2A, Registry, etc.).
-            # Still "*", and knowingly so: scoping these needs the gateway,
-            # memory and sibling-runtime ARNs, and the A2A targets do not exist
-            # yet when this role is built. Tracked as its own task rather than
-            # rushed here, because getting it wrong breaks every live-verified
-            # path (gateway tools, memory, A2A delegation).
+            # AgentCore service access (Memory, A2A, Browser, Identity).
+            # Still "*", and knowingly so: scoping these needs the memory and
+            # sibling-runtime ARNs, and the A2A targets do not exist yet when
+            # this role is built. Tracked as its own task rather than rushed
+            # here, because getting it wrong breaks every live-verified path
+            # (memory, A2A delegation). Gateway actions are NOT here: they are
+            # granted below on this deployment's own gateway ARN only, so one
+            # runtime cannot enumerate, read, or call other gateways in the
+            # account.
             iam.PolicyStatement(
                 sid="AgentCoreAccess",
                 actions=[
                     "bedrock-agentcore:InvokeAgentRuntime",
-                    "bedrock-agentcore:InvokeGateway",
-                    "bedrock-agentcore:GetGateway",
-                    "bedrock-agentcore:ListGateways",
                     # Memory data plane. ListEvents/ListSessions/DeleteEvent are
                     # required by the framework memory integrations (e.g. LangGraph's
                     # AgentCoreMemorySaver checkpointer lists events to rehydrate a
@@ -791,6 +796,24 @@ class RuntimeStack(cdk.Stack):
                 ],
             ),
         ]
+        if gateway_arn:
+            # ListGateways is deliberately never granted: it has no resource
+            # type, so it can only be allowed account-wide.
+            if "*" in gateway_arn or "?" in gateway_arn:
+                raise ValueError(
+                    "gateway_arn must name a single gateway, not a wildcard "
+                    f"pattern: {gateway_arn!r}"
+                )
+            statements.append(
+                iam.PolicyStatement(
+                    sid="AgentCoreGateway",
+                    actions=[
+                        "bedrock-agentcore:InvokeGateway",
+                        "bedrock-agentcore:GetGateway",
+                    ],
+                    resources=[gateway_arn],
+                )
+            )
         if guardrail is not None:
             statements += [
                 # Using a guardrail during inference requires ApplyGuardrail on

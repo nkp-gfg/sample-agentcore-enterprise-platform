@@ -640,6 +640,10 @@ gateway_url_for_runtimes = (
     if is_fed_workload
     else (gateway_stack.gateway_url if gateway_stack else "")
 )
+# The only gateway a runtime role may GetGateway/InvokeGateway on. Empty in a
+# federated workload account: the platform gateway is reached cross-account
+# with the JWT bearer token, which needs no IAM grant on this side.
+gateway_arn_for_runtimes = gateway_stack.gateway_arn if gateway_stack else ""
 
 # ═══════════════════════════════════════════════════════════════
 # RUNTIME LAYER
@@ -682,6 +686,7 @@ if not is_fed_platform:
         allowed_audience=allowed_audience,
         require_guardrails=require_guardrails,
         retain_data=production_mode,
+        gateway_arn=gateway_arn_for_runtimes,
         extra_env_vars={
             "GATEWAY_URL": gateway_url_for_runtimes,
             "GATEWAY_CREDENTIAL_PROVIDER_NAME": identity_stack.gateway_credential_provider_name,
@@ -763,6 +768,7 @@ if enable_a2a and not is_fed_platform:
         allowed_audience=allowed_audience,
         require_guardrails=require_guardrails,
         retain_data=production_mode,
+        gateway_arn=gateway_arn_for_runtimes,
         extra_env_vars={
             "GATEWAY_URL": gateway_url_for_runtimes,
             "GATEWAY_CREDENTIAL_PROVIDER_NAME": identity_stack.gateway_credential_provider_name,

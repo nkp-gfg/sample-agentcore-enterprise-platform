@@ -96,7 +96,8 @@ can be scoped is scoped (each wildcard in the code says why it exists):
 | `CloudWatchMetrics` | `*` with a `cloudwatch:namespace = bedrock-agentcore` condition |
 | `BedrockModels` | Wildcard foundation-model + inference-profile ARNs by default; scoped to `agents.allowed_models` when set. A geo-prefixed entry (`us.`…) emits **both** the profile ARN and the base foundation-model ARN — profile-only scoping breaks invokes |
 | `SSMAccess` | `parameter/{project}/*` only |
-| `AgentCoreAccess` | `*`, **knowingly**: scoping it needs the gateway, memory, and sibling-runtime ARNs, and the A2A targets do not exist yet when the role is built. Tracked as its own task — getting it wrong breaks every live-verified path |
+| `AgentCoreAccess` | `*`, **knowingly**: scoping it needs the memory and sibling-runtime ARNs, and the A2A targets do not exist yet when the role is built. Tracked as its own task — getting it wrong breaks every live-verified path. Carries no gateway actions |
+| `AgentCoreGateway` | `InvokeGateway` + `GetGateway` on this deployment's gateway ARN only, and only for runtimes given `gateway_arn` (orchestrator, research-agent). `ListGateways` is never granted: it accepts no resource ARN, so it could only be account-wide |
 | `AgentCoreIdentityTokenVaultSecrets` | `secretsmanager:GetSecretValue` on `bedrock-agentcore-identity!default/oauth2/*` only — without it the gateway MCP token fetch fails and Strands aborts loading tools |
 
 With `require_guardrails`: `ApplyBaselineGuardrail` allows
