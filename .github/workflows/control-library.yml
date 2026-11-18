@@ -8,6 +8,7 @@ on:
       - 'infra_utils/policy_loader.py'
       - 'scripts/validate_control_library.py'
       - 'tests/**'
+      - '.github/requirements/checkov.txt'
   pull_request:
     branches: [ main ]
     paths:
@@ -15,6 +16,7 @@ on:
       - 'infra_utils/policy_loader.py'
       - 'scripts/validate_control_library.py'
       - 'tests/**'
+      - '.github/requirements/checkov.txt'
 
 permissions:
   contents: read
@@ -25,6 +27,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -32,7 +36,8 @@ jobs:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt checkov
+        run: |
+          pip install --require-hashes --only-binary=:all: -r requirements.txt checkov -c .github/requirements/checkov.txt
 
       - name: Validate control-library against catalog (+ checkov scan)
         run: python scripts/validate_control_library.py

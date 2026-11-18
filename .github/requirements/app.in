@@ -1,0 +1,5 @@
+-r ../../requirements.txt
+
+# The CDK CLI the workflows pin (aws-cdk@2.1135.1) reads cloud assembly
+# schema 54.x; a newer aws-cdk-lib writes a manifest it refuses.
+aws-cdk-cloud-assembly-schema<55

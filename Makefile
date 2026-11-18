@@ -76,4 +76,8 @@ check-shell:
 	$(BASH) scripts/check-deploy-config.sh
 	$(BASH) scripts/check-workshop-flow.sh
 
-.PHONY: all lint ruff-lint format lint-cicd deploy synth test-agent test-gateway test-memory validate-controls test-controls check-docs check-structure check-shell
+# Regenerate the hashed Python locks CI installs from (.github/requirements/).
+lock-ci:
+	bash scripts/lock-ci-requirements.sh
+
+.PHONY: all lint ruff-lint format lint-cicd deploy synth test-agent test-gateway test-memory validate-controls test-controls check-docs check-structure check-shell lock-ci

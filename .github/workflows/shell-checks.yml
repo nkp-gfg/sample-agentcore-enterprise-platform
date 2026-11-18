@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # Repo-wide rather than changed-files-only: these scripts are the workshop's
       # front door, and a merge can break a file the PR never touched.
@@ -39,7 +41,8 @@ jobs:
           python-version: '3.13'
 
       - name: Install the config dependencies
-        run: pip install "pydantic>=2.13.4,<3" "pyyaml>=6.0.3"
+        run: |
+          pip install --require-hashes --only-binary=:all: "pydantic>=2.13.4,<3" "pyyaml>=6.0.3" -c .github/requirements/app.txt
 
       # No AWS, no network: both scripts stub the CLI and run deploy.sh's
       # functions in a sandbox.
