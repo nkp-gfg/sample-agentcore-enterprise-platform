@@ -10,24 +10,28 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   full-scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_findings: ${{ steps.scan-summary.outputs.has_findings }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.10'
 
       - name: Install ASH
-        run: pip install git+https://github.com/awslabs/automated-security-helper.git@v3.2.2
+        run: pip install git+https://github.com/awslabs/automated-security-helper.git@65ac41970da8207d4457aeada0ba27065aaf43a8 # v3.2.2
 
       - name: Run ASH full repository scan
         run: |
@@ -74,7 +78,7 @@ jobs:
 
       - name: Upload ASH results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ash-full-scan-${{ github.run_id }}
           path: |
@@ -83,15 +87,42 @@ jobs:
             ash-summary.md
           retention-days: 90
 
-      - name: Create issue for critical findings (monthly scan)
+      - name: Upload scan summary for the report job
         if: github.event_name == 'schedule' && steps.scan-summary.outputs.has_findings == 'true'
-        uses: actions/github-script@v9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ash-full-scan-summary-${{ github.run_id }}
+          path: ash-summary.md
+          retention-days: 1
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## ASH Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f "ash-summary.md" ]; then cat ash-summary.md >> $GITHUB_STEP_SUMMARY; fi
+
+  # Only this job may write issues; it runs no checkout, Python setup, or ASH code.
+  report:
+    needs: full-scan
+    if: github.event_name == 'schedule' && needs.full-scan.outputs.has_findings == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Download scan summary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ash-full-scan-summary-${{ github.run_id }}
+          path: ash-summary
+
+      - name: Create issue for critical findings (monthly scan)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            if (fs.existsSync('ash-summary.md')) {
-              const body = fs.readFileSync('ash-summary.md', 'utf8');
+            if (fs.existsSync('ash-summary/ash-summary.md')) {
+              const body = fs.readFileSync('ash-summary/ash-summary.md', 'utf8');
               await github.rest.issues.create({
                 owner: context.repo.owner, repo: context.repo.repo,
                 title: `🔒 ASH Monthly Security Report (${new Date().toISOString().split('T')[0]})`,
@@ -99,9 +130,3 @@ jobs:
                 labels: ['security', 'automated-scan']
               });
             }
-
-      - name: Job summary
-        if: always()
-        run: |
-          echo "## ASH Security Scan Results" >> $GITHUB_STEP_SUMMARY
-          if [ -f "ash-summary.md" ]; then cat ash-summary.md >> $GITHUB_STEP_SUMMARY; fi

@@ -14,7 +14,7 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -33,13 +33,13 @@ jobs:
 
       - name: Set up Python
         if: steps.changed-files.outputs.any_changed == 'true'
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.10'
 
       - name: Install ASH
         if: steps.changed-files.outputs.any_changed == 'true'
-        run: pip install git+https://github.com/awslabs/automated-security-helper.git@v3.2.2
+        run: pip install git+https://github.com/awslabs/automated-security-helper.git@65ac41970da8207d4457aeada0ba27065aaf43a8 # v3.2.2
 
       - name: Create temp directory for changed files
         if: steps.changed-files.outputs.any_changed == 'true'
@@ -114,7 +114,7 @@ jobs:
 
       - name: Upload ASH results
         if: steps.changed-files.outputs.any_changed == 'true' && always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ash-security-results
           path: /tmp/ash-artifacts/
