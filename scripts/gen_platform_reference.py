@@ -258,7 +258,7 @@ _FULL = {
     "migration": {
         "source": {
             "platform": "openshift",
-            "build": {"context": "."},
+            "build": {"context": "./app"},
             "registry_secret_name": "r",
             "port": 8000,
             "invoke_path": "/run",
