@@ -39,7 +39,8 @@ ruff:
   <<: *pip-cache
   before_script:
     - apt-get update -qq && apt-get install -y -qq git > /dev/null
-    - pip install -q ruff
+    # Exact versions and hashes; wheels only, so no build step runs index code.
+    - 'pip install -q --require-hashes --only-binary :all: -r .github/ci/ruff-requirements.txt'
   script:
     # Diff against the MR target branch (or previous commit on main)
     - |
@@ -81,7 +82,7 @@ control-library:
   stage: validate
   <<: *pip-cache
   before_script:
-    - pip install -q pyyaml checkov
+    - 'pip install -q --require-hashes --only-binary :all: -r .github/ci/control-library-requirements.txt'
   script:
     - python scripts/validate_control_library.py
   rules:
@@ -91,6 +92,7 @@ control-library:
         - infra_utils/policy_loader.py
         - scripts/validate_control_library.py
         - tests/**/*
+        - .github/ci/control-library-requirements.txt
         - .gitlab-ci.yml
     - if: $CI_COMMIT_BRANCH == "main"
 
