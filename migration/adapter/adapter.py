@@ -58,7 +58,7 @@ _LIB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib")
 if os.path.isdir(_LIB_DIR):
     sys.path.insert(0, _LIB_DIR)
 
-from bedrock_agentcore.runtime import BedrockAgentCoreApp  # noqa: E402
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 logging.basicConfig(level=logging.INFO, format="[adapter] %(levelname)s %(message)s")
 log = logging.getLogger("migration-adapter")
