@@ -780,6 +780,13 @@ if enable_a2a and not is_fed_platform:
     if networking_stack:
         runtime_research_agent.add_dependency(networking_stack)
 
+    # The A2A runtimes have no JWT authorizer, so IAM InvokeAgentRuntime is
+    # their only inbound gate: grant it to the orchestrator alone, on these two
+    # runtime ARNs. The sub-agent roles get no invoke permission at all.
+    runtime_orchestrator.grant_invoke_runtimes(
+        runtime_code_agent, runtime_research_agent
+    )
+
 # ═══════════════════════════════════════════════════════════════
 # OBSERVABILITY LAYER
 # ═══════════════════════════════════════════════════════════════

@@ -477,6 +477,8 @@ class RuntimeStack(cdk.Stack):
 
         self._runtime = agentcore.CfnRuntime(self, "Runtime", **runtime_props)
         self._runtime.node.add_dependency(build_trigger)
+        self._runtime_role = runtime_role
+        self._runtime_type = runtime_type
 
         # ── SSM Parameters ──
         ssm.StringParameter(
@@ -617,6 +619,37 @@ class RuntimeStack(cdk.Stack):
     def runtime_id(self) -> str:
         return self._runtime.attr_agent_runtime_id
 
+    def grant_invoke_runtimes(self, *targets: "RuntimeStack") -> None:
+        """Let this orchestrator invoke exactly the given sub-agent runtimes.
+
+        InvokeAgentRuntime authorizes both the runtime and the endpoint being
+        called (Service Authorization Reference: runtime* and
+        runtime-endpoint*), so each target contributes its runtime ARN and
+        that runtime's own endpoints — nothing broader.
+        """
+        if self._runtime_type != "orchestrator":
+            raise ValueError(
+                f"only the orchestrator may invoke other runtimes, not a "
+                f"{self._runtime_type!r} runtime"
+            )
+        resources: list[str] = []
+        for target in targets:
+            if target is self:
+                raise ValueError("a runtime must not be granted invoke on itself")
+            resources += [
+                target.runtime_arn,
+                f"{target.runtime_arn}/runtime-endpoint/*",
+            ]
+        if not resources:
+            return
+        self._runtime_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="InvokeSubAgentRuntimes",
+                actions=["bedrock-agentcore:InvokeAgentRuntime"],
+                resources=resources,
+            )
+        )
+
     @staticmethod
     def _attach_runtime_permissions(
         role: iam.Role,
@@ -716,16 +749,20 @@ class RuntimeStack(cdk.Stack):
                 actions=["ssm:GetParameter", "ssm:GetParameters"],
                 resources=[f"arn:aws:ssm:*:*:parameter/{project_name}/*"],
             ),
-            # AgentCore service access (Gateway, Memory, A2A, Registry, etc.).
-            # Still "*", and knowingly so: scoping these needs the gateway,
-            # memory and sibling-runtime ARNs, and the A2A targets do not exist
-            # yet when this role is built. Tracked as its own task rather than
-            # rushed here, because getting it wrong breaks every live-verified
-            # path (gateway tools, memory, A2A delegation).
+            # AgentCore service access (Gateway, Memory, Registry, etc.).
+            # Still "*", and knowingly so: scoping these needs the gateway and
+            # memory ARNs. Tracked as its own task rather than rushed here,
+            # because getting it wrong breaks every live-verified path
+            # (gateway tools, memory).
+            #
+            # InvokeAgentRuntime is deliberately NOT here. The A2A runtimes have
+            # no JWT authorizer, so this IAM action is their only inbound gate;
+            # on "*" any runtime role could drive any sibling agent and its
+            # gateway credential. It is granted per target ARN, to the
+            # orchestrator only, by grant_invoke_runtimes().
             iam.PolicyStatement(
                 sid="AgentCoreAccess",
                 actions=[
-                    "bedrock-agentcore:InvokeAgentRuntime",
                     "bedrock-agentcore:InvokeGateway",
                     "bedrock-agentcore:GetGateway",
                     "bedrock-agentcore:ListGateways",
