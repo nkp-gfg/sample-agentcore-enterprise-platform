@@ -22,15 +22,46 @@
     },
   ];
 
+  const TOKEN_HEADER = "X-EBA-CSRF";
+  const TOKEN_STORAGE_KEY = "ebaConsoleAccessToken";
+
+  // The server never returns its access token; the operator brings it in the
+  // URL fragment printed by dashboard/server.py.
+  function readAccessToken() {
+    const match = /^#token=([A-Za-z0-9_-]{32,128})$/.exec(window.location.hash);
+    if (match) {
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + window.location.search,
+      );
+      try {
+        window.sessionStorage.setItem(TOKEN_STORAGE_KEY, match[1]);
+      } catch {
+        // Storage can be disabled; the token still lives for this page.
+      }
+      return match[1];
+    }
+    try {
+      return window.sessionStorage.getItem(TOKEN_STORAGE_KEY) || "";
+    } catch {
+      return "";
+    }
+  }
+
   const state = {
     agents: [],
     interactive: false,
     healthChecked: false,
     busy: false,
     sessionId: "",
-    csrfToken: "",
+    accessToken: readAccessToken(),
     statusAvailable: false,
   };
+
+  function authHeaders() {
+    return state.accessToken ? { [TOKEN_HEADER]: state.accessToken } : {};
+  }
 
   const byId = (id) => document.getElementById(id);
   const el = (tag, className, text) => {
@@ -247,17 +278,19 @@
 
   async function checkHealth() {
     try {
-      const response = await fetch("/api/health", { cache: "no-store" });
+      const response = await fetch("/api/health", {
+        cache: "no-store",
+        headers: authHeaders(),
+      });
       const data = await response.json();
-      state.csrfToken = typeof data.csrfToken === "string" ? data.csrfToken : "";
       state.interactive =
         response.ok &&
         data.interactive === true &&
         data.localOnly === true &&
-        state.csrfToken.length >= 32;
+        data.authorized === true &&
+        state.accessToken.length >= 32;
     } catch {
       state.interactive = false;
-      state.csrfToken = "";
     }
     state.healthChecked = true;
     updateControls();
@@ -286,7 +319,7 @@
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-EBA-CSRF": state.csrfToken,
+          [TOKEN_HEADER]: state.accessToken,
         },
         body: JSON.stringify({
           component,
@@ -345,5 +378,5 @@
   resetTrace();
   checkHealth();
 
-  window.EbaConsole = { activate, update };
+  window.EbaConsole = { activate, authHeaders, update };
 })();

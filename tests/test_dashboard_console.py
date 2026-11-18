@@ -353,7 +353,9 @@ def test_health_endpoint_is_local_and_hardened(console_handler):
     assert health["interactive"] is True
     assert health["localOnly"] is True
     assert health["maxPromptChars"] == server.MAX_PROMPT_CHARS
-    assert health["csrfToken"] == server.CSRF_TOKEN
+    assert health["authorized"] is False
+    assert server.ACCESS_TOKEN not in body.decode()
+    assert server.ACCESS_TOKEN not in json.dumps(headers)
     assert headers["X-Frame-Options"] == "DENY"
     assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
     assert headers["Cache-Control"] == "no-store"
@@ -387,7 +389,7 @@ def test_post_requires_same_origin_json_and_never_returns_raw(console_handler):
         headers={
             "Content-Type": "application/json",
             "Origin": "https://attacker.example",
-            "X-EBA-CSRF": server.CSRF_TOKEN,
+            "X-EBA-CSRF": server.ACCESS_TOKEN,
         },
     )
     assert status == 403
@@ -399,7 +401,7 @@ def test_post_requires_same_origin_json_and_never_returns_raw(console_handler):
         headers={
             "Content-Type": "application/json",
             "Origin": "http://127.0.0.1:8888",
-            "X-EBA-CSRF": server.CSRF_TOKEN,
+            "X-EBA-CSRF": server.ACCESS_TOKEN,
         },
     )
     response = json.loads(body)
@@ -419,7 +421,7 @@ def test_no_cloud_mutation_endpoint_is_exposed(console_handler):
             headers={
                 "Content-Type": "application/json",
                 "Origin": "http://127.0.0.1:8888",
-                "X-EBA-CSRF": server.CSRF_TOKEN,
+                "X-EBA-CSRF": server.ACCESS_TOKEN,
             },
         )
         assert status == 404
@@ -469,7 +471,7 @@ def test_helper_system_exit_becomes_stable_browser_error(
         headers={
             "Content-Type": "application/json",
             "Origin": "http://127.0.0.1:8888",
-            "X-EBA-CSRF": server.CSRF_TOKEN,
+            "X-EBA-CSRF": server.ACCESS_TOKEN,
         },
     )
     assert status == 502

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Loopback-only server for the local EBA Console.
 
-The static dashboard remains usable with ``python -m http.server``. This
-server adds one deliberately narrow capability: an operator can invoke an
+This server adds one deliberately narrow capability: an operator can invoke an
 already-deployed runtime from the Playground. It cannot create, update, or
-delete AWS or Entra resources.
+delete AWS or Entra resources. ``--status-only`` disables the Playground.
+
+Loopback is not an identity: any local user or process can open the port and
+set Host and Origin. Deployment status and invocation therefore require a
+per-process access token that no HTTP response contains. The operator receives
+it only through the console link printed on this process's terminal.
 """
 
 from __future__ import annotations
@@ -59,7 +63,20 @@ COMPONENTS = {
 }
 INTERACTIVE_COMPONENT = "orchestrator"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-CSRF_TOKEN = secrets.token_urlsafe(32)
+# Never place this value in a response body or header.
+ACCESS_TOKEN = secrets.token_urlsafe(32)
+ACCESS_TOKEN_HEADER = "X-EBA-CSRF"
+STATIC_ASSETS = frozenset(
+    {
+        "index.html",
+        "app.css",
+        "console.css",
+        "console.js",
+        "favicon.svg",
+        "graph.css",
+        "graph.js",
+    }
+)
 
 
 class RequestRejected(ValueError):
@@ -490,6 +507,25 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
         ):
             raise RequestRejected(HTTPStatus.FORBIDDEN, "Loopback host required.")
 
+    def _has_access_token(self) -> bool:
+        supplied = self.headers.get(ACCESS_TOKEN_HEADER, "")
+        return hmac.compare_digest(
+            supplied.encode("utf-8", "surrogateescape"),
+            ACCESS_TOKEN.encode("ascii"),
+        )
+
+    def _require_access_token(self) -> None:
+        if not self._has_access_token():
+            raise RequestRejected(
+                HTTPStatus.FORBIDDEN,
+                "Invalid EBA Console access token. Open the console link "
+                "printed by dashboard/server.py.",
+            )
+
+    @property
+    def _status_only(self) -> bool:
+        return bool(getattr(self.server, "status_only", False))
+
     def _send_json(self, status: HTTPStatus, value: dict) -> None:
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -498,19 +534,82 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_error(self, code, message=None, explain=None) -> None:
+        try:
+            short, _ = self.responses[code]
+        except KeyError:
+            short = "Error"
+        self.log_error("code %d, message %s", code, message)
+        self.send_response(code, message)
+        self.send_header("Connection", "close")
+        body = b""
+        if code >= 200 and code not in (
+            HTTPStatus.NO_CONTENT,
+            HTTPStatus.RESET_CONTENT,
+            HTTPStatus.NOT_MODIFIED,
+        ):
+            body = json.dumps({"error": message or short}).encode("utf-8")
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD" and body:
+            self.wfile.write(body)
+
+    def _send_status_file(self) -> None:
+        try:
+            body = STATUS_FILE.read_bytes()
+        except OSError as exc:
+            raise RequestRejected(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Deployment status is unavailable. Start dashboard/monitor.py.",
+            ) from exc
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_head(self):
+        """Serve only the fixed public assets; never status.json or temp files."""
+        public = Path(self.directory)
+        target = Path(self.translate_path(self.path))
+        if target == public:
+            name = "index.html"
+        elif target.parent == public:
+            name = target.name
+        else:
+            name = ""
+        if name not in STATIC_ASSETS:
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return None
+        self.path = "/" + name
+        return super().send_head()
+
+    def do_HEAD(self) -> None:
+        try:
+            self._require_loopback_host()
+            super().do_HEAD()
+        except RequestRejected as exc:
+            self._send_json(exc.status, {"error": exc.message})
+
     def do_GET(self) -> None:
         try:
             self._require_loopback_host()
-            if self.path.split("?", 1)[0] == "/api/health":
+            route = urlsplit(self.path).path
+            if route == "/api/health":
                 self._send_json(
                     HTTPStatus.OK,
                     {
-                        "interactive": True,
+                        "interactive": not self._status_only,
                         "localOnly": True,
                         "maxPromptChars": MAX_PROMPT_CHARS,
-                        "csrfToken": CSRF_TOKEN,
+                        "authorized": self._has_access_token(),
                     },
                 )
+                return
+            if route == "/status.json":
+                self._require_access_token()
+                self._send_status_file()
                 return
             super().do_GET()
         except RequestRejected as exc:
@@ -520,7 +619,7 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
         acquired = False
         try:
             self._require_loopback_host()
-            if self.path != "/api/invoke":
+            if self.path != "/api/invoke" or self._status_only:
                 raise RequestRejected(HTTPStatus.NOT_FOUND, "Endpoint not found.")
             if not _is_same_origin(
                 self.headers.get("Origin", ""),
@@ -528,14 +627,7 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
                 self.server.server_port,
             ):
                 raise RequestRejected(HTTPStatus.FORBIDDEN, "Same origin required.")
-            if not hmac.compare_digest(
-                self.headers.get("X-EBA-CSRF", ""),
-                CSRF_TOKEN,
-            ):
-                raise RequestRejected(
-                    HTTPStatus.FORBIDDEN,
-                    "Invalid EBA Console request token.",
-                )
+            self._require_access_token()
             content_type = self.headers.get("Content-Type", "").split(";", 1)[0]
             if content_type.lower() != "application/json":
                 raise RequestRejected(
@@ -635,13 +727,25 @@ class EbaConsoleHandler(SimpleHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the local AgentCore EBA Console")
     parser.add_argument("--port", type=int, default=8888)
+    parser.add_argument(
+        "--status-only",
+        action="store_true",
+        help="serve deployment status only; the Playground cannot invoke agents",
+    )
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     server = ThreadingHTTPServer(("127.0.0.1", args.port), EbaConsoleHandler)
-    print(f"EBA Console: http://127.0.0.1:{args.port}")
-    print("Local operator access only. Press Ctrl+C to stop.")
+    server.status_only = args.status_only
+    # The fragment is never sent to the server or written to access logs.
+    print(f"EBA Console: http://127.0.0.1:{args.port}/#token={ACCESS_TOKEN}")
+    print(
+        "Open this exact link. It carries this process's access token; do not "
+        "share it. Press Ctrl+C to stop."
+    )
+    if args.status_only:
+        print("Status-only mode: the Playground cannot invoke agents.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
