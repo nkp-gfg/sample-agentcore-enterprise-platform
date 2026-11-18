@@ -12,9 +12,6 @@
       "Condition": {
         "StringNotEquals": {
           "bedrock-agentcore:ProtocolType": "<<allowed_protocol>>"
-        },
-        "Null": {
-          "bedrock-agentcore:ProtocolType": "false"
         }
       }
     }
