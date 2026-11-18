@@ -41,7 +41,10 @@ Per-customer values are marked with sentinel tokens of the form `<<PARAM_NAME>>`
 - **Terraform** injects via chained `replace()` (or `jsondecode(file(...))` for structured
   overrides).
 
-A control with no required params (e.g. `scp/memory/enforce-cmk.json`) is deployable as-is.
+A control with no required params (e.g. `guardrails/egress-default.json`) is deployable as-is.
+The CMK SCPs (`scp/memory/enforce-cmk.json`, `scp/gateway/require-cmk.json`) require a
+`kms_key_arn_pattern` naming an organization-owned key account; the catalog `pattern` rejects
+account wildcards.
 
 ## Adding a control
 

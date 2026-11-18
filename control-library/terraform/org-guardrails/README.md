@@ -51,8 +51,14 @@ module "agentcore_org_guardrails" {
   name_prefix = "agentcore"
   target_ids  = ["ou-abcd-1234wxyz"] # OU(s) or account(s) to attach to
 
-  # Optional: narrow the required CMK pattern (default requires any CMK)
-  # kms_key_arn_pattern = "arn:aws:kms:*:111122223333:key/*"
+  # Required when enabling the memory CMK SCP: the account field must be the literal ID of an
+  # organization-owned key account. Account wildcards are rejected at plan time.
+  # enable_scp_memory_enforce_cmk = true
+  # kms_key_arn_pattern           = "arn:aws:kms:*:111122223333:key/*"
+
+  # Likewise for the gateway SCPs:
+  # enable_gateway_scps         = true
+  # gateway_kms_key_arn_pattern = "arn:aws:kms:*:111122223333:key/*"
 }
 ```
 
@@ -75,6 +81,13 @@ account ID) so a typo fails fast instead of surfacing as an opaque Organizations
 The raw SCP in `control-library/scp/memory/enforce-cmk.json` uses the `<<kms_key_arn_pattern>>`
 sentinel. This module injects the value with Terraform's `replace()` (not `templatefile()`),
 so any IAM/SCP policy variables (`${aws:...}`) inside a policy body are left untouched.
+
+`kms_key_arn_pattern` and `gateway_kms_key_arn_pattern` have no default. A pattern such as
+`arn:aws:kms:*:*:key/*` matches a customer managed key in any AWS account, including one a
+member-account administrator controls outside the organization, so each pattern must name a
+literal 12-digit account ID (`arn:<partition>:kms:<region or *>:<account>:key/<id, prefix*, or *>`).
+The variables' validation rejects any other shape, and a precondition refuses to create the
+memory or gateway SCP while its pattern is unset.
 
 ## Supporting other customer deployment models
 

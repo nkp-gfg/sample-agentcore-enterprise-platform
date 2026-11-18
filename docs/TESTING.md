@@ -50,8 +50,10 @@ source .venv/bin/activate
 python - <<'PY'
 from infra_utils.policy_loader import load_control, load_catalog
 print("controls:", [c["id"] for c in load_catalog()["controls"]])
-# SCP renders with its default param
-print(load_control("scp.memory.enforce-cmk")["Statement"][0]["Condition"])
+# SCP renders with an org-owned key account (the param is required; account wildcards are rejected)
+print(load_control("scp.memory.enforce-cmk", {
+    "kms_key_arn_pattern": "arn:aws:kms:*:111122223333:key/*",
+})["Statement"][0]["Condition"])
 # Resource policy renders with injected params
 print(load_control("resource-policy.memory.in-account-only", {
     "account_id": "111122223333",
@@ -90,12 +92,13 @@ terraform init -backend=false
 terraform validate                    # → Success! The configuration is valid.
 
 # Confirm the SCP renders from the shared control-library file (no leftover <<sentinel>>):
-printf 'local.cmk_scp_rendered\n' | terraform console
+printf 'local.cmk_scp_rendered\n' | terraform console -var 'kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*'
 cd ../../..
 ```
 
-Expect the printed policy to contain `"bedrock-agentcore:CreateMemory"` and the resolved
-`arn:aws:kms:*:*:key/*` pattern (or your override), and **no** `<<kms_key_arn_pattern>>`.
+Expect the printed policy to contain `"bedrock-agentcore:CreateMemory"` and the
+`arn:aws:kms:*:111122223333:key/*` pattern, and **no** `<<kms_key_arn_pattern>>`. A pattern
+with a wildcard in the account field (e.g. `arn:aws:kms:*:*:key/*`) fails variable validation.
 
 ### A4b. Gateway configuration SCPs render (control-plane, item "1b")
 
@@ -112,7 +115,7 @@ terraform validate
 printf 'keys(local.gateway_scp_rendered)\n' | terraform console                                            # → the 8 control names
 # Sentinels resolved in the per-control renders:
 printf 'local.gateway_scp_rendered["enforce-approved-idp"]\n' | terraform console | grep -c 'https://'     # → 1 (DiscoveryUrl pattern injected)
-printf 'local.gateway_scp_rendered["require-cmk"]\n' | terraform console | grep -c 'kms_key_arn_pattern'   # → 0 (sentinel resolved; note console wraps output in <<EOT)
+printf 'local.gateway_scp_rendered["require-cmk"]\n' | terraform console -var 'gateway_kms_key_arn_pattern=arn:aws:kms:*:111122223333:key/*' | grep -c 'kms_key_arn_pattern'   # → 0 (sentinel resolved; note console wraps output in <<EOT)
 
 # The consolidated document contains every control's statements, no unresolved sentinels,
 # and stays under the 5,120-character SCP quota:

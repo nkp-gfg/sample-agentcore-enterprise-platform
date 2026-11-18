@@ -90,8 +90,8 @@ accounts must already run:
 
 | SCP | The accelerator must have enabled first |
 |---|---|
-| `enable_scp_memory_enforce_cmk` | `enable_security` (the KMS CMK stack) with the CMK on **every** covered account's memory — the default memory stack creates Memory with no CMK |
-| `enable_gateway_scps` | A gateway CMK plus Cedar in `ENFORCE` (`enable_cedar` + `cedar_mode=ENFORCE`) — the security-focused preset runs `LOG_ONLY`, which `require-policy-engine` denies |
+| `enable_scp_memory_enforce_cmk` | `enable_security` (the KMS CMK stack) with the CMK on **every** covered account's memory — the default memory stack creates Memory with no CMK. Also set `kms_key_arn_pattern` to an organization-owned key account (no account wildcards) |
+| `enable_gateway_scps` | A gateway CMK plus Cedar in `ENFORCE` (`enable_cedar` + `cedar_mode=ENFORCE`) — the security-focused preset runs `LOG_ONLY`, which `require-policy-engine` denies. Also set `gateway_kms_key_arn_pattern` to an organization-owned key account |
 
 `enable_scp_identity_deny_token_for_userid` stays on by default: it denies an API path the
 accelerator never uses.
