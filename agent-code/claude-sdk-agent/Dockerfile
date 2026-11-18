@@ -13,12 +13,26 @@ ENV DOCKER_CONTAINER=1 \
     PYTHONUNBUFFERED=1 \
     CLAUDE_CODE_USE_BEDROCK=1
 
-# Install Node.js for claude-code CLI
-RUN apt-get update && \
-    apt-get install -y curl && \
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && \
-    apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
+# Install Node.js for claude-code CLI from the official release tarball.
+# The SHA-256 values are from the signed SHASUMS256.txt for this release;
+# update them together with NODE_VERSION.
+ENV NODE_VERSION=26.13.1
+RUN set -eu && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl libatomic1 xz-utils && \
+    rm -rf /var/lib/apt/lists/* && \
+    case "$(dpkg --print-architecture)" in \
+      arm64) NODE_ARCH=arm64 NODE_SHA256=89e1853138db51e8b82d3e98ba9c0d3f2956a28e5e55ea1b7e12d25aae92d5dd ;; \
+      amd64) NODE_ARCH=x64 NODE_SHA256=5c063e46bab0fbc1c17cc445d7ff129cbdcd0471be6ed83b6ab864f8143bc864 ;; \
+      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac && \
+    NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" && \
+    curl -fsSL -o "/tmp/${NODE_TARBALL}" "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" && \
+    printf "%s  %s\n" "${NODE_SHA256}" "/tmp/${NODE_TARBALL}" > /tmp/node.sha256 && \
+    sha256sum -c /tmp/node.sha256 && \
+    tar -xJf "/tmp/${NODE_TARBALL}" -C /usr/local --strip-components=1 --no-same-owner && \
+    rm -f "/tmp/${NODE_TARBALL}" /tmp/node.sha256 && \
+    node --version && npm --version
 
 # Install claude-code globally
 RUN npm install -g @anthropic-ai/claude-code@2.1.73
