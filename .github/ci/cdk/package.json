@@ -1,0 +1,8 @@
+{
+  "name": "ci-cdk-cli",
+  "private": true,
+  "description": "CDK CLI for CI, installed from this lockfile by ../install-cdk-cli.sh.",
+  "dependencies": {
+    "aws-cdk": "2.1148.1"
+  }
+}

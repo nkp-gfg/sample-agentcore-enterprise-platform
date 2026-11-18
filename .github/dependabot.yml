@@ -12,6 +12,7 @@ updates:
     directories:
       - "/"
       - "/agent-code/*"
+      - "/.github/ci/requirements"
     schedule:
       interval: "weekly"
     groups:
@@ -28,6 +29,11 @@ updates:
       #   pip install --dry-run strands-agents mcp==2.0.0
       - dependency-name: "mcp"
         update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "npm"
+    directory: "/.github/ci/cdk"
+    schedule:
+      interval: "weekly"
 
   - package-ecosystem: "github-actions"
     directory: "/"

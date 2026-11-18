@@ -19,23 +19,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
           cache: pip
+          cache-dependency-path: .github/ci/requirements/app.txt
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '22'
 
+      # Both installs are locked: npm refuses a tarball whose integrity
+      # differs from .github/ci/cdk/package-lock.json, and pip refuses any
+      # distribution not listed by hash in the lock. Neither runs package
+      # build or install scripts.
       - name: Install CDK and app dependencies
         run: |
-          npm install -g aws-cdk
-          pip install -r requirements.txt
+          bash .github/ci/install-cdk-cli.sh
+          pip install --require-hashes --only-binary ':all:' -r .github/ci/requirements/app.txt
 
       - name: Preset ↔ synth parity
         run: PY=python3 bash scripts/check-contract.sh

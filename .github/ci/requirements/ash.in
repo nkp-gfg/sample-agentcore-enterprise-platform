@@ -1,0 +1,7 @@
+# ASH is not on PyPI, so it cannot be hash-checked by pip. CI installs ash.txt
+# (every ASH dependency plus its build backend) with --require-hashes, then ASH
+# itself from this commit with --no-deps --no-build-isolation. Keep the commit
+# here and in the ash-*.yml workflows in sync, and regenerate from this
+# directory with Python 3.10 (see the header of ash.txt).
+automated-security-helper @ git+https://github.com/awslabs/automated-security-helper.git@65ac41970da8207d4457aeada0ba27065aaf43a8  # v3.2.2
+hatchling

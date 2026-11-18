@@ -1,0 +1,4 @@
+# CI installs control-library.txt with --require-hashes. Regenerate from this
+# directory with Python 3.13 (see the header of control-library.txt).
+-r ../../../requirements.txt
+checkov
