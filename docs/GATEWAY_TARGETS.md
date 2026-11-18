@@ -102,6 +102,8 @@ def handler(event, context):
 
 Return shape: `{"content": [{"type": "text", "text": ...}]}` on success,
 `{"error": "..."}` on failure. Arguments arrive as top-level keys in `event`.
+Don't log `event` or return exception text: both carry the caller's arguments
+into CloudWatch or back to the caller. Log the tool name and request id instead.
 
 ### 2. The schema
 

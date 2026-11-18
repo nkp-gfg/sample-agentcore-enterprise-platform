@@ -2,7 +2,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import json
 import logging
 from collections import Counter
 
@@ -52,7 +51,10 @@ def handler(event, context):
     Returns:
         dict: Response object with 'content' array or 'error' string
     """
-    logger.info(f"Received event: {json.dumps(event)}")
+    # The event is the caller's tool arguments. Never log or echo it, or any
+    # exception text derived from it; log only the tool name and request id.
+    request_id = getattr(context, "aws_request_id", None)
+    tool_name = None
 
     try:
         delimiter = "___"
@@ -61,7 +63,7 @@ def handler(event, context):
             original_tool_name.index(delimiter) + len(delimiter) :
         ]
 
-        logger.info(f"Processing tool: {tool_name}")
+        logger.info("Processing tool %s (request %s)", tool_name, request_id)
 
         if tool_name == "text_analysis_tool":
             text = event.get("text", "")
@@ -69,11 +71,16 @@ def handler(event, context):
             result = analyze_text(text, N)
             return {"content": [{"type": "text", "text": result}]}
         else:
-            logger.error(f"Unexpected tool name: {tool_name}")
+            logger.error("Unexpected tool name %s (request %s)", tool_name, request_id)
             return {
                 "error": f"This Lambda only supports 'text_analysis_tool', received: {tool_name}"
             }
 
     except Exception as e:
-        logger.error(f"Error processing request: {str(e)}")
-        return {"error": f"Internal server error: {str(e)}"}
+        logger.error(
+            "Error processing tool %s (request %s): %s",
+            tool_name,
+            request_id,
+            type(e).__name__,
+        )
+        return {"error": "Internal server error"}
