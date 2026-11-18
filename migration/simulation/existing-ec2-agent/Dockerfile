@@ -3,8 +3,8 @@
 # FROM this image; nothing here knows about AgentCore.
 FROM public.ecr.aws/docker/library/python:3.12-slim
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.lock.txt requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r requirements.txt
 RUN groupadd --gid 10001 migrated-agent \
     && useradd --uid 10001 --gid 10001 --no-create-home migrated-agent
 COPY --chown=10001:10001 agent.py server.py ./

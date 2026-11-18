@@ -35,12 +35,16 @@ RUN if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/
         fi; \
     fi
 
-# Same floor the agent patterns pin (agent-code/strands-agent/requirements.txt).
+# The adapter's dependencies come only from requirements.lock.txt: exact
+# versions and sha256 hashes of the wheels, regenerated from requirements.txt by
+# scripts/lock_requirements.py. A release the lock does not name, or a file
+# whose hash differs, fails this build instead of running with the runtime role.
 # --break-system-packages: Debian/Ubuntu-based source images mark the system
 # python externally managed (PEP 668); pip<23 ignores the unknown flag path via
 # fallback, so try with it first and retry without.
-RUN python3 -m pip install --no-cache-dir --break-system-packages "bedrock-agentcore>=1.21.0" boto3 \
-    || python3 -m pip install --no-cache-dir "bedrock-agentcore>=1.21.0" boto3
+COPY requirements.lock.txt /opt/adapter/requirements.txt
+RUN python3 -m pip install --no-cache-dir --require-hashes --only-binary :all: --break-system-packages -r /opt/adapter/requirements.txt \
+    || python3 -m pip install --no-cache-dir --require-hashes --only-binary :all: -r /opt/adapter/requirements.txt
 
 COPY adapter.py /opt/adapter/adapter.py
 
