@@ -1564,6 +1564,137 @@ rebind_orchestrator_observability() {
     ORCHESTRATOR_OBSERVABILITY_HANDOFF=0
 }
 
+validate_frontend_retained_adoption() {
+    [ "${FRONTEND_ADOPT_RETAINED:-}" = "1" ] || return 0
+    local py="${PROJECT_DIR:-.}/.venv/bin/python"
+    [ -x "$py" ] || py="python3"
+    local bff_table="${PREFIX}-bff-sessions"
+    local chat_table="${PREFIX}-chat-sessions"
+    local ecr_repo="${PREFIX}-hr-web-bff"
+    local acct="${ACCOUNT_ID:-}"
+    [ -n "$acct" ] || acct=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+    if [ -z "$acct" ]; then
+        log_error "FRONTEND_ADOPT_RETAINED=1 requires active AWS account identity."
+        return 1
+    fi
+
+    local bff_json bff_ttl_json bff_arn bff_pol_json=""
+    local chat_json chat_arn chat_pol_json=""
+    local ecr_json ecr_pol_json=""
+    bff_json=$(aws dynamodb describe-table --table-name "$bff_table" --region "$AWS_REGION" --output json 2>/dev/null) || {
+        log_error "FRONTEND_ADOPT_RETAINED=1 failed: DynamoDB table '$bff_table' not found."
+        return 1
+    }
+    bff_ttl_json=$(aws dynamodb describe-time-to-live --table-name "$bff_table" --region "$AWS_REGION" --output json 2>/dev/null) || {
+        log_error "FRONTEND_ADOPT_RETAINED=1 failed: could not read TTL for '$bff_table'."
+        return 1
+    }
+    bff_arn=$("$py" -c 'import json,sys; print(json.load(sys.stdin)["Table"]["TableArn"])' <<<"$bff_json") || return 1
+    bff_pol_json=$(aws dynamodb get-resource-policy --resource-arn "$bff_arn" --region "$AWS_REGION" --output json 2>/dev/null || true)
+
+    chat_json=$(aws dynamodb describe-table --table-name "$chat_table" --region "$AWS_REGION" --output json 2>/dev/null) || {
+        log_error "FRONTEND_ADOPT_RETAINED=1 failed: DynamoDB table '$chat_table' not found."
+        return 1
+    }
+    chat_arn=$("$py" -c 'import json,sys; print(json.load(sys.stdin)["Table"]["TableArn"])' <<<"$chat_json") || return 1
+    chat_pol_json=$(aws dynamodb get-resource-policy --resource-arn "$chat_arn" --region "$AWS_REGION" --output json 2>/dev/null || true)
+
+    ecr_json=$(aws ecr describe-repositories --repository-names "$ecr_repo" --region "$AWS_REGION" --output json 2>/dev/null) || {
+        log_error "FRONTEND_ADOPT_RETAINED=1 failed: ECR repository '$ecr_repo' not found."
+        return 1
+    }
+    ecr_pol_json=$(aws ecr get-repository-policy --repository-name "$ecr_repo" --region "$AWS_REGION" --output json 2>/dev/null || true)
+
+    FRONTEND_ADOPT_ACCT="$acct" \
+    FRONTEND_ADOPT_CMK_REQUIRED="${ENABLE_SECURITY:-false}" \
+    FRONTEND_ADOPT_BFF_JSON="$bff_json" \
+    FRONTEND_ADOPT_BFF_TTL="$bff_ttl_json" \
+    FRONTEND_ADOPT_BFF_POL="$bff_pol_json" \
+    FRONTEND_ADOPT_CHAT_JSON="$chat_json" \
+    FRONTEND_ADOPT_CHAT_POL="$chat_pol_json" \
+    FRONTEND_ADOPT_ECR_JSON="$ecr_json" \
+    FRONTEND_ADOPT_ECR_POL="$ecr_pol_json" \
+    "$py" - <<'PY' || return 1
+import json
+import os
+import sys
+
+acct = os.environ["FRONTEND_ADOPT_ACCT"]
+cmk_required = os.environ.get("FRONTEND_ADOPT_CMK_REQUIRED", "false") == "true"
+
+def check_policy_safe(raw_wrapper: str, label: str, key: str) -> None:
+    if not raw_wrapper.strip():
+        return
+    wrapper = json.loads(raw_wrapper)
+    doc_raw = wrapper.get(key)
+    if not doc_raw:
+        return
+    doc = json.loads(doc_raw) if isinstance(doc_raw, str) else doc_raw
+    for stmt in doc.get("Statement", []):
+        if stmt.get("Effect") != "Allow":
+            continue
+        principal = stmt.get("Principal")
+        cond = json.dumps(stmt.get("Condition", {}))
+        if principal == "*":
+            if acct not in cond:
+                raise ValueError(f"{label}: wildcard Allow policy without account condition")
+        elif isinstance(principal, dict):
+            aws_p = principal.get("AWS")
+            items = aws_p if isinstance(aws_p, list) else ([aws_p] if aws_p else [])
+            for p in items:
+                if acct not in str(p):
+                    raise ValueError(f"{label}: cross-account AWS principal {p!r} in policy")
+            svc_p = principal.get("Service")
+            if svc_p and acct not in cond:
+                raise ValueError(f"{label}: service principal {svc_p!r} without account condition")
+
+def check_table(raw: str, name: str, expected_keys: list[tuple[str, str]], required_gsi: str = "") -> None:
+    tbl = json.loads(raw)["Table"]
+    keys = [(k["AttributeName"], k["KeyType"]) for k in tbl.get("KeySchema", [])]
+    if keys != expected_keys:
+        raise ValueError(f"{name}: key schema mismatch {keys!r} != {expected_keys!r}")
+    sse = tbl.get("SSEDescription") or {}
+    if sse.get("Status") != "ENABLED" or sse.get("SSEType") != "KMS":
+        raise ValueError(f"{name}: expected SSE Status=ENABLED and SSEType=KMS, got {sse!r}")
+    if cmk_required:
+        kms_arn = sse.get("KMSMasterKeyArn", "")
+        if not kms_arn or f":{acct}:key/" not in kms_arn:
+            raise ValueError(f"{name}: expected account CMK encryption, got {kms_arn!r}")
+    if required_gsi:
+        gsis = {g.get("IndexName") for g in tbl.get("GlobalSecondaryIndexes", [])}
+        if required_gsi not in gsis:
+            raise ValueError(f"{name}: missing required GSI {required_gsi!r}")
+
+try:
+    check_table(os.environ["FRONTEND_ADOPT_BFF_JSON"], "bff-sessions", [("pk", "HASH")])
+    ttl = json.loads(os.environ["FRONTEND_ADOPT_BFF_TTL"]).get("TimeToLiveDescription") or {}
+    if ttl.get("AttributeName") != "ttl" or ttl.get("TimeToLiveStatus") not in {"ENABLED", "ENABLING"}:
+        raise ValueError(f"bff-sessions: TTL not enabled on 'ttl' ({ttl!r})")
+    check_policy_safe(os.environ.get("FRONTEND_ADOPT_BFF_POL", ""), "bff-sessions", "Policy")
+
+    check_table(
+        os.environ["FRONTEND_ADOPT_CHAT_JSON"],
+        "chat-sessions",
+        [("owner_sub", "HASH"), ("thread_id", "RANGE")],
+        required_gsi="owner_sub-updated_at-index",
+    )
+    check_policy_safe(os.environ.get("FRONTEND_ADOPT_CHAT_POL", ""), "chat-sessions", "Policy")
+
+    repos = json.loads(os.environ["FRONTEND_ADOPT_ECR_JSON"]).get("repositories", [])
+    if len(repos) != 1:
+        raise ValueError("ECR repository metadata missing")
+    repo = repos[0]
+    if repo.get("imageTagMutability") != "IMMUTABLE":
+        raise ValueError(f"ECR repository must have IMMUTABLE image tags, got {repo.get('imageTagMutability')!r}")
+    if not (repo.get("imageScanningConfiguration") or {}).get("scanOnPush"):
+        raise ValueError("ECR repository must have scanOnPush enabled")
+    check_policy_safe(os.environ.get("FRONTEND_ADOPT_ECR_POL", ""), "hr-web-bff ECR", "policyText")
+except ValueError as exc:
+    print(f"FRONTEND_ADOPT_RETAINED=1 provenance check failed: {exc}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 recover_failed_first_create_stack() {
     # When a brand-new stack fails its FIRST create, CloudFormation rolls back
     # to ROLLBACK_COMPLETE — an empty shell that CloudFormation refuses to
@@ -2213,15 +2344,7 @@ else
     check_prereqs
     check_credentials
     setup_venv
-    # A rolled-back frontend create retains the DynamoDB tables and ECR
-    # repository. Creating those names again fails, so reference them.
-    if [ "${FRONTEND_ADOPT_RETAINED:-}" != "1" ] \
-        && [ -n "${PREFIX:-}" ] \
-        && aws dynamodb describe-table --table-name "${PREFIX}-bff-sessions" \
-            --region "${AWS_REGION}" >/dev/null 2>&1; then
-        export FRONTEND_ADOPT_RETAINED=1
-        log_info "Adopting retained frontend tables and ECR repository"
-    fi
+    validate_frontend_retained_adoption || exit 1
 fi
 
 cd "$PROJECT_DIR"

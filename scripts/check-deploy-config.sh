@@ -983,4 +983,81 @@ fi
 unset -f aws
 echo "PASS: ROLLBACK_COMPLETE auto-recovery cleans retryable stacks and protects auth/security"
 
+# (ac) FRONTEND_ADOPT_RETAINED never auto-enables on DescribeTable and fails
+# closed on missing/tampered provenance when explicitly enabled.
+! grep -q "export FRONTEND_ADOPT_RETAINED=1" "$SCRIPT_DIR/deploy.sh" \
+    || fail "deploy.sh must not auto-set FRONTEND_ADOPT_RETAINED=1"
+eval "$(sed -n '/^validate_frontend_retained_adoption()/,/^}/p' "$SCRIPT_DIR/deploy.sh")"
+PREFIX="adopt-check"
+AWS_REGION="us-east-1"
+ACCOUNT_ID="111111111111"
+ENABLE_SECURITY="true"
+# shellcheck disable=SC2034  # read by validate_frontend_retained_adoption()
+PROJECT_DIR="$SCRIPT_DIR/.."
+
+FRONTEND_ADOPT_RETAINED="" validate_frontend_retained_adoption \
+    || fail "validate_frontend_retained_adoption should no-op when unset"
+
+# Seed a tampered table policy (external account Allow) and mutable ECR repo.
+# shellcheck disable=SC2329
+aws() {
+    case "$1 $2" in
+        "dynamodb describe-table")
+            if [[ "$*" == *"adopt-check-bff-sessions"* ]]; then
+                printf '{"Table":{"TableArn":"arn:aws:dynamodb:us-east-1:111111111111:table/adopt-check-bff-sessions","KeySchema":[{"AttributeName":"pk","KeyType":"HASH"}],"SSEDescription":{"Status":"ENABLED","SSEType":"KMS","KMSMasterKeyArn":"arn:aws:kms:us-east-1:111111111111:key/k1"}}}'
+            else
+                printf '{"Table":{"TableArn":"arn:aws:dynamodb:us-east-1:111111111111:table/adopt-check-chat-sessions","KeySchema":[{"AttributeName":"owner_sub","KeyType":"HASH"},{"AttributeName":"thread_id","KeyType":"RANGE"}],"SSEDescription":{"Status":"ENABLED","SSEType":"KMS","KMSMasterKeyArn":"arn:aws:kms:us-east-1:111111111111:key/k1"},"GlobalSecondaryIndexes":[{"IndexName":"owner_sub-updated_at-index"}]}}'
+            fi
+            ;;
+        "dynamodb describe-time-to-live")
+            printf '{"TimeToLiveDescription":{"AttributeName":"ttl","TimeToLiveStatus":"ENABLED"}}'
+            ;;
+        "dynamodb get-resource-policy")
+            if [[ "$*" == *"adopt-check-bff-sessions"* ]]; then
+                printf '{"Policy":"{\\"Version\\":\\"2012-10-17\\",\\"Statement\\":[{\\"Effect\\":\\"Allow\\",\\"Principal\\":{\\"AWS\\":\\"arn:aws:iam::999988887777:root\\"},\\"Action\\":\\"dynamodb:Scan\\",\\"Resource\\":\\"*\\"}]}"}'
+            else
+                return 255
+            fi
+            ;;
+        "ecr describe-repositories")
+            printf '{"repositories":[{"imageTagMutability":"IMMUTABLE","imageScanningConfiguration":{"scanOnPush":true}}]}'
+            ;;
+        "ecr get-repository-policy")
+            return 255
+            ;;
+        *) return 1 ;;
+    esac
+}
+if FRONTEND_ADOPT_RETAINED=1 validate_frontend_retained_adoption 2>/dev/null; then
+    fail "validate_frontend_retained_adoption accepted a cross-account DynamoDB resource policy"
+fi
+
+# Clean policies and valid resources must succeed.
+# shellcheck disable=SC2329
+aws() {
+    case "$1 $2" in
+        "dynamodb describe-table")
+            if [[ "$*" == *"adopt-check-bff-sessions"* ]]; then
+                printf '{"Table":{"TableArn":"arn:aws:dynamodb:us-east-1:111111111111:table/adopt-check-bff-sessions","KeySchema":[{"AttributeName":"pk","KeyType":"HASH"}],"SSEDescription":{"Status":"ENABLED","SSEType":"KMS","KMSMasterKeyArn":"arn:aws:kms:us-east-1:111111111111:key/k1"}}}'
+            else
+                printf '{"Table":{"TableArn":"arn:aws:dynamodb:us-east-1:111111111111:table/adopt-check-chat-sessions","KeySchema":[{"AttributeName":"owner_sub","KeyType":"HASH"},{"AttributeName":"thread_id","KeyType":"RANGE"}],"SSEDescription":{"Status":"ENABLED","SSEType":"KMS","KMSMasterKeyArn":"arn:aws:kms:us-east-1:111111111111:key/k1"},"GlobalSecondaryIndexes":[{"IndexName":"owner_sub-updated_at-index"}]}}'
+            fi
+            ;;
+        "dynamodb describe-time-to-live")
+            printf '{"TimeToLiveDescription":{"AttributeName":"ttl","TimeToLiveStatus":"ENABLED"}}'
+            ;;
+        "dynamodb get-resource-policy"|"ecr get-repository-policy")
+            return 255
+            ;;
+        "ecr describe-repositories")
+            printf '{"repositories":[{"imageTagMutability":"IMMUTABLE","imageScanningConfiguration":{"scanOnPush":true}}]}'
+            ;;
+        *) return 1 ;;
+    esac
+}
+FRONTEND_ADOPT_RETAINED=1 validate_frontend_retained_adoption \
+    || fail "validate_frontend_retained_adoption rejected valid retained resources"
+unset -f aws
+echo "PASS: FRONTEND_ADOPT_RETAINED is explicit opt-in and validates table/ECR provenance"
+
 echo "OK: all deploy-config checks passed"

@@ -262,16 +262,20 @@ def test_private_frontend_synthesizes_express_mode_waf_and_dynamodb() -> None:
     assert "BlockOutsideAllowedCidrs" in rule_names
     assert len(_resources(fe_tpl, "AWS::WAFv2::WebACLAssociation")) == 1
 
-    # 4. DynamoDB BffSessions + ChatSessions tables retained & CMK-encrypted.
+    # 4. DynamoDB BffSessions + ChatSessions tables retained (RetainExceptOnCreate) & CMK-encrypted.
     tables = _resources(fe_tpl, "AWS::DynamoDB::Table")
     assert len(tables) == 2
     for tbl in tables:
-        assert tbl["DeletionPolicy"] == "Retain"
+        assert tbl["DeletionPolicy"] == "RetainExceptOnCreate"
         assert tbl["Properties"]["BillingMode"] == "PAY_PER_REQUEST"
         assert tbl["Properties"]["SSESpecification"]["SSEEnabled"] is True
         assert tbl["Properties"]["PointInTimeRecoverySpecification"][
             "PointInTimeRecoveryEnabled"
         ]
+    repos = _resources(fe_tpl, "AWS::ECR::Repository")
+    assert len(repos) == 1
+    assert repos[0]["DeletionPolicy"] == "RetainExceptOnCreate"
+    assert repos[0]["Properties"]["ImageTagMutability"] == "IMMUTABLE"
     assert not _resources(fe_tpl, "Custom::ECRAutoDeleteImages")
     assert not _resources(fe_tpl, "Custom::S3AutoDeleteObjects")
 

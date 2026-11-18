@@ -112,7 +112,9 @@ class FrontendStack(cdk.Stack):
             else None
         )
         lifecycle_policy = (
-            cdk.RemovalPolicy.RETAIN if retain_data else cdk.RemovalPolicy.DESTROY
+            cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE
+            if retain_data
+            else cdk.RemovalPolicy.DESTROY
         )
 
         # Express Mode creates the service log group. log_retention_days is
@@ -281,12 +283,14 @@ class FrontendStack(cdk.Stack):
                 self,
                 "BffSessionsTable",
                 table_name=f"{prefix}-bff-sessions",
+                encryption_key=kms_key,
                 grant_index_permissions=True,
             )
             chat_sessions_table = dynamodb.Table.from_table_attributes(
                 self,
                 "ChatSessionsTable",
                 table_name=f"{prefix}-chat-sessions",
+                encryption_key=kms_key,
                 grant_index_permissions=True,
             )
         else:
@@ -409,6 +413,7 @@ class FrontendStack(cdk.Stack):
                 removal_policy=lifecycle_policy,
                 empty_on_delete=not retain_data,
                 image_scan_on_push=True,
+                image_tag_mutability=ecr.TagMutability.IMMUTABLE,
                 lifecycle_rules=[
                     ecr.LifecycleRule(
                         max_image_count=10, description="Keep last 10 images"
@@ -459,13 +464,12 @@ class FrontendStack(cdk.Stack):
                             "commands": [
                                 "cd source/",
                                 "docker build --platform linux/amd64 -t $REPO_URI:$IMAGE_TAG .",
-                                "docker tag $REPO_URI:$IMAGE_TAG $REPO_URI:latest",
                             ]
                         },
                         "post_build": {
                             "commands": [
-                                "docker push $REPO_URI:$IMAGE_TAG",
-                                "docker push $REPO_URI:latest",
+                                'REPO_NAME="${REPO_URI##*/}"',
+                                'aws ecr describe-images --repository-name "$REPO_NAME" --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1 || docker push $REPO_URI:$IMAGE_TAG',
                             ]
                         },
                     },
@@ -473,6 +477,13 @@ class FrontendStack(cdk.Stack):
             ),
         )
         ecr_repo.grant_push(build_project)
+        build_project.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="DescribeImmutableTag",
+                actions=["ecr:DescribeImages"],
+                resources=[ecr_repo.repository_arn],
+            )
+        )
         source_asset.grant_read(build_project)
 
         # The waiter Lambda cannot run for the 30 minute CodeBuild timeout.
