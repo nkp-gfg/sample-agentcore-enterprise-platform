@@ -32,6 +32,8 @@ Set on the runtime by `stacks/runtime_stack.py` (values come from
 | `MIGRATION_SECRET_ARNS` | Optional per-name secret-id override, `NAME=arn,NAME2=arn2` | empty |
 | `MIGRATION_STARTUP_TIMEOUT` | Seconds to wait for child health before exiting non-zero | `60` |
 | `MIGRATION_LIVE_HEALTH_TIMEOUT` | Maximum duration of each pre-invocation child health probe; values are capped at 5 seconds | `2` |
+| `MIGRATION_INVOKE_TIMEOUT` | Total seconds one forwarded invocation may hold the child connection, from the POST to the last streamed byte; values are capped at 900 seconds | `5` |
+| `MIGRATION_MAX_RESPONSE_BYTES` | Bytes read from the child per invocation (2xx body, non-2xx body, or the whole event stream); values are capped at 16 MiB | `262144` |
 | `ADAPTER_CHILD_CMD` | JSON array — the source image's Entrypoint+Cmd. **Baked at image build**, not set at deploy time | — |
 | `ADAPTER_CHILD_USER` | Source image's `Config.User`, copied from the `CHILD_USER` build argument. **Baked at image build**, not set at deploy time | `root` |
 | `PROJECT_NAME` / `ENVIRONMENT` | Used for the default secret naming | — |
@@ -50,6 +52,14 @@ Behavioural notes:
   `{"status":"success","response": <text>}`; non-2xx →
   `{"status":"error","code":…,"error":…}`; `text/event-stream` → re-streamed
   as SSE events.
+- **Forward limits**: a child that runs past `MIGRATION_INVOKE_TIMEOUT` or
+  sends more than `MIGRATION_MAX_RESPONSE_BYTES` gets its connection closed,
+  and the caller receives `{"status":"error","code":504,"error":…}` (as the
+  last event of a stream). Agents whose model calls or streams are
+  legitimately longer need both raised on the runtime: they are not part of
+  the `platform.yaml` `migration:` block, so set them next to the other
+  `MIGRATION_*` variables in `stacks/runtime_stack.py` or with `ENV` in this
+  directory's Dockerfile. Redirects from the child are not followed.
 - **Supervision**: a dead child is restarted once; after a second death every
   invocation returns a structured 503-style error.
 - **Live health**: every invocation first confirms that the child process is

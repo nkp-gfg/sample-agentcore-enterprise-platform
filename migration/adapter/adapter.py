@@ -31,6 +31,12 @@ names emitted by the platform.yaml `migration:` block — see README.md):
     MIGRATION_STARTUP_TIMEOUT  seconds to wait for child health (default 60)
     MIGRATION_LIVE_HEALTH_TIMEOUT  per-invocation child health check timeout
                                   (default 2s, capped at 5s)
+    MIGRATION_INVOKE_TIMEOUT   total seconds one forwarded invocation may hold
+                               the child connection, streaming included
+                               (default 5s, capped at 900s)
+    MIGRATION_MAX_RESPONSE_BYTES  bytes read from the child per invocation,
+                                  event streams included (default 256 KiB,
+                                  capped at 16 MiB)
     PROJECT_NAME / ENVIRONMENT  used for the default secret naming above
 
 GET /ping is BedrockAgentCoreApp's default handler: it reflects ADAPTER
@@ -40,10 +46,13 @@ thread restarts a dead child once; after a second death every invocation
 returns a structured error instead.
 """
 
+import functools
+import http.client
 import json
 import logging
 import math
 import os
+import socket
 import subprocess  # nosec B404 — supervising the customer's own command is the point
 import sys
 import threading
@@ -62,6 +71,10 @@ app = BedrockAgentCoreApp()
 STDERR_TAIL_LINES = 50
 LIVE_HEALTH_TIMEOUT_DEFAULT = 2.0
 LIVE_HEALTH_TIMEOUT_MAX = 5.0
+FORWARD_TIMEOUT_DEFAULT = 5.0
+FORWARD_TIMEOUT_MAX = 900.0
+MAX_RESPONSE_BYTES_DEFAULT = 256 * 1024
+MAX_RESPONSE_BYTES_MAX = 16 * 1024 * 1024
 
 
 def parse_pairs(raw: str) -> dict[str, str]:
@@ -171,16 +184,51 @@ def validate_runtime_user(environ: dict, effective_uid: int | None = None) -> No
         )
 
 
+def _capped_setting(environ: dict, name: str, default: float, maximum: float) -> float:
+    """Read a positive number from env; invalid values fall back to default."""
+    raw = environ.get(name, str(default))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = default
+    if not math.isfinite(value) or value <= 0:
+        value = default
+    return min(value, maximum)
+
+
 def live_health_timeout(environ: dict) -> float:
     """Return a positive per-invocation timeout capped at five seconds."""
-    raw = environ.get("MIGRATION_LIVE_HEALTH_TIMEOUT", str(LIVE_HEALTH_TIMEOUT_DEFAULT))
-    try:
-        timeout = float(raw)
-    except (TypeError, ValueError):
-        timeout = LIVE_HEALTH_TIMEOUT_DEFAULT
-    if not math.isfinite(timeout) or timeout <= 0:
-        timeout = LIVE_HEALTH_TIMEOUT_DEFAULT
-    return min(timeout, LIVE_HEALTH_TIMEOUT_MAX)
+    return _capped_setting(
+        environ,
+        "MIGRATION_LIVE_HEALTH_TIMEOUT",
+        LIVE_HEALTH_TIMEOUT_DEFAULT,
+        LIVE_HEALTH_TIMEOUT_MAX,
+    )
+
+
+def forward_timeout(environ: dict) -> float:
+    """Total seconds one forwarded invocation may hold the child connection."""
+    return _capped_setting(
+        environ,
+        "MIGRATION_INVOKE_TIMEOUT",
+        FORWARD_TIMEOUT_DEFAULT,
+        FORWARD_TIMEOUT_MAX,
+    )
+
+
+def max_response_bytes(environ: dict) -> int:
+    """Bytes the adapter will read from the child for one invocation."""
+    return max(
+        1,
+        int(
+            _capped_setting(
+                environ,
+                "MIGRATION_MAX_RESPONSE_BYTES",
+                MAX_RESPONSE_BYTES_DEFAULT,
+                MAX_RESPONSE_BYTES_MAX,
+            )
+        ),
+    )
 
 
 class Child:
@@ -290,44 +338,225 @@ def check_child_health(
         return False, f"{type(exc).__name__}: {exc}"
 
 
-def forward(payload, url: str):
+class _Deadline:
+    """Wall-clock budget for one forward, from the POST to the last byte.
+
+    A per-read socket timeout never fires against a child that sends one byte
+    at a time, so a timer shuts the child socket down when the budget runs
+    out. Blocked reads then return, and callers check ``expired``.
+    """
+
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        self.expires_at = time.monotonic() + seconds
+        self.expired = False
+        self._sock: socket.socket | None = None
+        self._lock = threading.Lock()
+        self._timer = threading.Timer(seconds, self._expire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def remaining(self) -> float:
+        return max(self.expires_at - time.monotonic(), 0.05)
+
+    def attach(self, sock: socket.socket) -> None:
+        with self._lock:
+            self._sock = sock
+            expired = self.expired
+        if expired:
+            _shutdown(sock)
+
+    def cancel(self) -> None:
+        self._timer.cancel()
+        with self._lock:
+            self._sock = None
+
+    def _expire(self) -> None:
+        with self._lock:
+            self.expired = True
+            sock = self._sock
+        if sock is not None:
+            _shutdown(sock)
+
+
+def _shutdown(sock: socket.socket) -> None:
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass  # already closed
+
+
+class _DeadlineHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, deadline: _Deadline, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._deadline = deadline
+
+    def connect(self):
+        super().connect()
+        self._deadline.attach(self.sock)
+
+
+class _DeadlineHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, deadline: _Deadline):
+        super().__init__()
+        self._deadline = deadline
+
+    def http_open(self, req):
+        return self.do_open(
+            functools.partial(_DeadlineHTTPConnection, deadline=self._deadline), req
+        )
+
+
+def _child_opener(deadline: _Deadline) -> urllib.request.OpenerDirector:
+    """Plain-http opener for the localhost child.
+
+    No redirect handler (it reads a 3xx body with no cap and could leave the
+    deadline-bound connection), no https handler, no proxy handler.
+    """
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        _DeadlineHTTPHandler(deadline),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
+def _timeout_error(deadline: _Deadline) -> dict:
+    return {
+        "status": "error",
+        "code": 504,
+        "error": f"migrated agent did not finish within {deadline.seconds:g}s",
+    }
+
+
+def _size_error(max_bytes: int) -> dict:
+    return {
+        "status": "error",
+        "code": 504,
+        "error": f"migrated agent response exceeded {max_bytes} bytes",
+    }
+
+
+def _timed_out(exc: BaseException, deadline: _Deadline) -> bool:
+    return (
+        deadline.expired
+        or isinstance(exc, TimeoutError)
+        or isinstance(getattr(exc, "reason", None), TimeoutError)
+    )
+
+
+def _read_capped(resp, deadline: _Deadline, max_bytes: int) -> bytes | dict:
+    """Read at most max_bytes of body; return a 504 dict past either limit."""
+    try:
+        body = resp.read(max_bytes + 1)
+    except (OSError, http.client.HTTPException) as exc:
+        if _timed_out(exc, deadline):
+            return _timeout_error(deadline)
+        return {"status": "error", "code": 502, "error": f"child read failed: {exc}"}
+    if deadline.expired:
+        return _timeout_error(deadline)
+    if len(body) > max_bytes:
+        return _size_error(max_bytes)
+    return body
+
+
+def forward(
+    payload, url: str, timeout: float | None = None, max_bytes: int | None = None
+):
     """POST the invocation payload to the child and map its reply.
 
     JSON reply → returned as-is (parsed). Plain text → wrapped as a success.
     Non-2xx → structured error. text/event-stream → a generator of the events'
     data payloads; BedrockAgentCoreApp re-emits each yield as an SSE event.
+
+    The whole exchange, streaming included, is bounded by ``timeout`` seconds
+    and ``max_bytes`` of response body. Crossing either returns (or, for a
+    stream, yields) a structured 504 error and closes the child connection.
     """
+    if timeout is None:
+        timeout = forward_timeout(dict(os.environ))
+    if max_bytes is None:
+        max_bytes = max_response_bytes(dict(os.environ))
+    deadline = _Deadline(timeout)
     req = urllib.request.Request(
         url,
         data=json.dumps(payload if payload is not None else {}).encode(),
         headers={"Content-Type": "application/json"},
     )
+    streaming = False
+    resp = None
     try:
-        resp = urllib.request.urlopen(req)  # nosec B310 — localhost http
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace")
-        return {"status": "error", "code": exc.code, "error": body[:2000]}
-    except OSError as exc:
-        return {"status": "error", "code": 502, "error": f"child unreachable: {exc}"}
-
-    content_type = resp.headers.get("Content-Type", "")
-    if "text/event-stream" in content_type:
-        return _stream_events(resp)
-    body = resp.read().decode(errors="replace")
-    resp.close()
-    if "application/json" in content_type:
         try:
-            return json.loads(body)
-        except json.JSONDecodeError:
-            pass  # advertised JSON but wasn't; fall through to the text wrap
-    return {"status": "success", "response": body}
+            resp = _child_opener(deadline).open(req, timeout=deadline.remaining())
+        except urllib.error.HTTPError as exc:
+            try:
+                body = _read_capped(exc, deadline, max_bytes)
+            finally:
+                exc.close()
+            if isinstance(body, dict):
+                return body
+            return {
+                "status": "error",
+                "code": exc.code,
+                "error": body.decode(errors="replace")[:2000],
+            }
+        except (OSError, http.client.HTTPException) as exc:
+            if _timed_out(exc, deadline):
+                return _timeout_error(deadline)
+            return {
+                "status": "error",
+                "code": 502,
+                "error": f"child unreachable: {exc}",
+            }
+
+        content_type = resp.headers.get("Content-Type", "")
+        if "text/event-stream" in content_type:
+            streaming = True
+            return _stream_events(resp, deadline, max_bytes)
+        body = _read_capped(resp, deadline, max_bytes)
+        if isinstance(body, dict):
+            return body
+        body = body.decode(errors="replace")
+        if "application/json" in content_type:
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError:
+                pass  # advertised JSON but wasn't; fall through to the text wrap
+        return {"status": "success", "response": body}
+    finally:
+        if not streaming:
+            if resp is not None:
+                resp.close()
+            deadline.cancel()
 
 
-def _stream_events(resp):
+def _stream_events(resp, deadline: _Deadline, max_bytes: int):
     """Yield each SSE event's data payload (parsed when JSON) from the child.
-    Sync generator: BedrockAgentCoreApp streams it back out as SSE."""
+    Sync generator: BedrockAgentCoreApp streams it back out as SSE.
+
+    The forward's deadline keeps running while the stream is open; past it, or
+    past max_bytes, the last yield is a structured 504 error."""
+    received = 0
     try:
-        for raw in resp:
+        while True:
+            try:
+                raw = resp.readline(max_bytes - received + 1)
+            except (OSError, http.client.HTTPException) as exc:
+                if _timed_out(exc, deadline):
+                    yield _timeout_error(deadline)
+                    return
+                raise
+            if deadline.expired:
+                yield _timeout_error(deadline)
+                return
+            if not raw:
+                return
+            received += len(raw)
+            if received > max_bytes:
+                yield _size_error(max_bytes)
+                return
             line = raw.decode(errors="replace").strip()
             if not line.startswith("data:"):
                 continue
@@ -338,6 +567,7 @@ def _stream_events(resp):
                 yield data
     finally:
         resp.close()
+        deadline.cancel()
 
 
 # Module state wired by main(); the entrypoint reads env per-call so tests can
