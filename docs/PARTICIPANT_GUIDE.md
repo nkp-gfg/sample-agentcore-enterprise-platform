@@ -200,10 +200,10 @@ In a second terminal:
 
 ```bash
 AWS_PROFILE=<your-profile> python dashboard/server.py
-# Open http://127.0.0.1:8888.
+# Open the exact http://127.0.0.1:8888/#token=... link it prints.
 
 # Status-only fallback; Playground is disabled:
-python3 -m http.server 8888 --bind 127.0.0.1 -d dashboard/public
+python3 dashboard/server.py --status-only
 ```
 
 ---

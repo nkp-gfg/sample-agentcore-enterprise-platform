@@ -609,11 +609,8 @@ def test_documented_dashboard_servers_are_loopback_only():
         "docs/PARTICIPANT_GUIDE.md",
     ):
         text = (REPO / relative).read_text()
-        commands = [
-            line for line in text.splitlines() if "python3 -m http.server" in line
-        ]
-        assert commands, f"{relative} has no dashboard server command"
-        assert all("--bind 127.0.0.1" in line for line in commands), relative
+        assert "python3 -m http.server" not in text, relative
+        assert "dashboard/server.py --status-only" in text, relative
 
 
 def test_browser_allowlist_covers_backend_reviewed_outputs():

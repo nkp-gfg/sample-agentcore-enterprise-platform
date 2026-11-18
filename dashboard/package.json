@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "python3 server.py",
-    "start:status": "python3 -m http.server 8888 --bind 127.0.0.1 -d public",
+    "start:status": "python3 server.py --status-only",
     "monitor": "python3 monitor.py"
   }
 }

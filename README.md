@@ -220,10 +220,12 @@ AWS_PROFILE=<your-profile> .venv/bin/python dashboard/monitor.py
 
 # Terminal 2: loopback-only interactive EBA Console.
 AWS_PROFILE=<your-profile> .venv/bin/python dashboard/server.py
-# Open http://127.0.0.1:8888.
+# Open the exact http://127.0.0.1:8888/#token=... link it prints. Status and
+# Playground calls require that per-process token; other local users cannot
+# obtain it from the port.
 
-# Status-only fallback (Playground is disabled):
-python3 -m http.server 8888 --bind 127.0.0.1 -d dashboard/public
+# Status-only fallback (Playground is disabled, same token-gated status):
+python3 dashboard/server.py --status-only
 ```
 
 ![AgentCore EBA Console X-Ray service map](docs/dashboard-monitor.png)
