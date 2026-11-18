@@ -1,0 +1,8 @@
+{
+  "name": "agentcore-enterprise-platform",
+  "private": true,
+  "description": "Pins the AWS CDK CLI that scripts/deploy.sh, scripts/check-contract.sh and the GitLab cdk-synth job run. Install with npm ci so the package-lock.json integrity is enforced; bump with scripts/ci/lock.sh.",
+  "devDependencies": {
+    "aws-cdk": "2.1148.1"
+  }
+}
