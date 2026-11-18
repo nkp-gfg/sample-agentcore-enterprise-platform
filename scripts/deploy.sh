@@ -408,15 +408,20 @@ check_prereqs() {
     #
     # The other `npx cdk` calls in this script stay safe because of this: past
     # here the CLI is resolvable, or we exited.
+    #
+    # The fallback installs the CLI pinned in package-lock.json into the
+    # project's node_modules, where every later `npx cdk` (run from
+    # $PROJECT_DIR) resolves it. npm ci checks its sha512 integrity, so a
+    # registry release that is not the locked one never runs here.
     local cdk_version
-    if cdk_version=$(npx --no-install cdk --version 2>/dev/null); then
+    if cdk_version=$(cd "$PROJECT_DIR" && npx --no-install cdk --version 2>/dev/null); then
         log_info "✓ cdk: $cdk_version"
     else
-        log_warn "CDK CLI not found, installing..."
-        if npm install -g aws-cdk; then
+        log_warn "CDK CLI not found, installing the version pinned in package-lock.json..."
+        if npm ci --prefix "$PROJECT_DIR" --ignore-scripts --no-audit --no-fund; then
             log_info "✓ cdk: installed"
         else
-            log_error "✗ cdk: 'npm install -g aws-cdk' failed — install it manually and retry"
+            log_error "✗ cdk: 'npm ci' (package-lock.json) failed — install it manually and retry"
             missing=1
         fi
     fi

@@ -105,7 +105,7 @@ PATH="$STUB:$PATH" check_prereqs >/dev/null 2>&1 & probe=$!
 wait "$probe" && probe_rc=0 || probe_rc=$?
 kill "$watchdog" 2>/dev/null || true
 [ "$probe_rc" -ne 137 ] || fail "check_prereqs hung on the npx install prompt"
-grep -q -- 'install -g aws-cdk' "$TMP/npm.args" \
+grep -q -- '^ci --prefix ' "$TMP/npm.args" \
     || fail "probe failed but the install fallback never ran: $(cat "$TMP/npm.args" 2>/dev/null)"
 echo "PASS: CDK probe fails fast and falls back to installing, never prompts"
 
