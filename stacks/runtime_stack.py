@@ -739,9 +739,11 @@ class RuntimeStack(cdk.Stack):
                     "bedrock-agentcore:DeleteEvent",
                     "bedrock-agentcore:ListSessions",
                     "bedrock-agentcore:RetrieveMemoryRecords",
-                    "bedrock-agentcore:StartBrowserSession",
-                    "bedrock-agentcore:StopBrowserSession",
-                    "bedrock-agentcore:ConnectBrowserAutomationStream",
+                    # No browser session actions: no shipped pattern uses the
+                    # AgentCore Browser, and on "*" they would let any runtime
+                    # start, stop, or attach to every browser session in the
+                    # account. A pattern that needs one should get its own
+                    # statement scoped to the browser it uses.
                     "bedrock-agentcore:GetResourceOauth2Token",
                     "bedrock-agentcore:CreateWorkloadIdentity",
                     "bedrock-agentcore:GetWorkloadAccessToken",
