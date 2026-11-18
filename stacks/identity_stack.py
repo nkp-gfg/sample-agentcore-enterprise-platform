@@ -53,9 +53,9 @@ class IdentityStack(cdk.Stack):
                 raise ValueError(
                     f"{vendor}_client_id is set but '{vendor}_client_secret_name' is missing "
                     "(the name of a Secrets Manager secret holding the OAuth client secret). "
-                    "Store the secret first, e.g.:\n"
+                    "Store the secret first, on stdin (never as an argument), e.g.:\n"
                     f"  aws secretsmanager create-secret --name {prefix}-{vendor}-oauth-secret "
-                    "--secret-string '<client-secret>'\n"
+                    "--secret-string file:///dev/stdin\n"
                     f"then pass: -c {vendor}_client_secret_name={prefix}-{vendor}-oauth-secret\n"
                     "(scripts/deploy.sh does both automatically when the secret is in the "
                     f"environment). The plaintext '{vendor}_client_secret' key is no longer "

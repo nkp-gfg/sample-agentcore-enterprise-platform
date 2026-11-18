@@ -67,9 +67,9 @@ class AuthStack(cdk.Stack):
             raise ValueError(
                 f"idp_type='{idp_type}' requires the context key 'idp_client_secret_name' "
                 "(the name of a Secrets Manager secret containing the IdP client secret). "
-                "Store the secret first, e.g.:\n"
+                "Store the secret first, on stdin (never as an argument), e.g.:\n"
                 f"  aws secretsmanager create-secret --name {prefix}-idp-client-secret "
-                "--secret-string '<client-secret>'\n"
+                "--secret-string file:///dev/stdin\n"
                 f"then pass: -c idp_client_secret_name={prefix}-idp-client-secret\n"
                 "(scripts/deploy.sh does both automatically when prompted for the IdP secret). "
                 "The plaintext 'idp_client_secret' context key is no longer supported."
