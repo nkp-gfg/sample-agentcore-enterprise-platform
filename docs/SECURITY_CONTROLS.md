@@ -107,9 +107,13 @@ accelerator never uses.
   `enable_egress_filter` alone gives you none of it.
 - **Masking, not blocking:** the handler raises only when an assessment comes back
   `action == "BLOCKED"`; otherwise it substitutes anonymized text and the request proceeds.
+- **One scan per direction:** the handler serializes the whole `gatewayRequest` or
+  `gatewayResponse` (object keys, strings and non-string scalars) to one JSON text and sends it
+  to `ApplyGuardrail` once, so a value split across fields or carried in a number or key is
+  evaluated as a whole. Payloads over `MAX_SCAN_CHARS` are blocked unscanned; anonymized output
+  that no longer parses to the same structure is blocked rather than forwarded.
 - **Caveats:** the `gatewayRequest`/`gatewayResponse` shape is unvalidated, so the handler
-  scans every string leaf generically and passes payload shapes it does not recognise through
-  **unchanged**. There is no try/except around `ApplyGuardrail`, so a Bedrock throttle surfaces
+  scans the payload generically and passes events with neither key through **unchanged**. There is no try/except around `ApplyGuardrail`, so a Bedrock throttle surfaces
   as a Lambda failure rather than a defined fail-open/fail-closed decision. Validate against
   live Gateway traces before relying on it in production.
 - **Toggle:** `enable_egress_filter`, deployed by `gateway_stack.py` like every other flag.
