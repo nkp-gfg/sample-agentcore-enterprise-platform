@@ -2,6 +2,8 @@
 from aws_cdk import aws_iam as iam
 from constructs import Construct
 
+from infra_utils.runtime_logs import DEFAULT_ENDPOINT_NAME, attach_runtime_log_policy
+
 
 class AgentCoreRole(iam.Role):
     """IAM Role for AgentCore Runtime with standard permissions."""
@@ -20,12 +22,8 @@ class AgentCoreRole(iam.Role):
             ],
             resources=["*"],
         ))
-        self.add_to_policy(iam.PolicyStatement(
-            actions=[
-                "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents",
-            ],
-            resources=["arn:aws:logs:*:*:log-group:/aws/bedrock-agentcore/runtimes/*"],
-        ))
+        # No CloudWatch Logs grant here: it must name the one runtime that uses
+        # this role, which does not exist yet. Call grant_runtime_logs() once it does.
         self.add_to_policy(iam.PolicyStatement(
             actions=["xray:PutTraceSegments", "xray:PutTelemetryRecords"],
             resources=["*"],
@@ -53,3 +51,10 @@ class AgentCoreRole(iam.Role):
 
         for stmt in (extra_policy_statements or []):
             self.add_to_policy(stmt)
+
+    def grant_runtime_logs(self, runtime_id: str,
+                           endpoint_name: str = DEFAULT_ENDPOINT_NAME) -> iam.Policy:
+        """Allow writing only ``runtime_id``'s own application log group."""
+        return attach_runtime_log_policy(
+            self, "RuntimeLogsPolicy", self, runtime_id, endpoint_name,
+        )

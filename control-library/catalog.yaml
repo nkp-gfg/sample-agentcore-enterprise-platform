@@ -113,7 +113,8 @@ controls:
 
   # ── Item 2: least-privilege AgentCore Runtime execution role policy (account scope, CDK) ──
   # Reference least-privilege policy for a Runtime execution role. Consumed as a template;
-  # scope the ECR repo prefix / SSM path to your project.
+  # scope the ECR repo prefix / SSM path to your project, and the log grant to the one
+  # runtime that assumes the role.
   - id: iam.runtime-execution-least-privilege
     file: iam/runtime-execution-least-privilege.json
     type: IAM
@@ -131,6 +132,15 @@ controls:
       project:
         required: true
         description: Project name; scopes the SSM parameter path (/project/*).
+      runtime_id:
+        required: true
+        description: >-
+          AgentRuntimeId of the runtime that assumes this role. Log writes are limited
+          to its own group, /aws/bedrock-agentcore/runtimes/<runtime_id>-<endpoint_name>.
+      endpoint_name:
+        required: false
+        default: "DEFAULT"
+        description: Runtime endpoint whose log group the role may write.
       ecr_repo_prefix:
         required: false
         default: "bedrock-agentcore-"

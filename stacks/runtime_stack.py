@@ -45,6 +45,7 @@ from constructs import Construct
 from infra_utils.jwt_authorizer import custom_jwt_authorizer
 from infra_utils.platform_config import allowed_model_resources
 from infra_utils.policy_loader import load_control
+from infra_utils.runtime_logs import attach_runtime_log_policy
 from infra_utils.runtime_network import build_network_config
 from infra_utils.runtime_protocol import needs_jwt_authorizer, resolve_protocol
 from infra_utils.source_hash import component_image_tag, compute_source_hash
@@ -478,6 +479,13 @@ class RuntimeStack(cdk.Stack):
         self._runtime = agentcore.CfnRuntime(self, "Runtime", **runtime_props)
         self._runtime.node.add_dependency(build_trigger)
 
+        attach_runtime_log_policy(
+            self,
+            "RuntimeLogsPolicy",
+            runtime_role,
+            self._runtime.attr_agent_runtime_id,
+        )
+
         # ── SSM Parameters ──
         ssm.StringParameter(
             self,
@@ -649,23 +657,12 @@ class RuntimeStack(cdk.Stack):
                 actions=["ecr:GetAuthorizationToken"],
                 resources=["*"],
             ),
-            # CloudWatch Logs. PutResourcePolicy is what lets AgentCore allow
-            # X-Ray to deliver this agent's spans into the agent's own log group
-            # (the unified span destination) instead of the shared aws/spans
-            # group. Kept scoped to the runtime log groups: account-wide it would
-            # let the agent open any log group to another account.
-            iam.PolicyStatement(
-                sid="CloudWatchLogs",
-                actions=[
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents",
-                    "logs:PutResourcePolicy",
-                ],
-                resources=[
-                    "arn:aws:logs:*:*:log-group:/aws/bedrock-agentcore/runtimes/*"
-                ],
-            ),
+            # CloudWatch Logs is not granted here: it is scoped to this runtime's
+            # own log group, whose name needs the runtime id, so it is attached
+            # after the runtime exists (infra_utils/runtime_logs.py). No
+            # logs:PutResourcePolicy: it has no resource-level permissions, so
+            # it could only be granted on "*", which would let the agent open
+            # any log group in the account to another principal.
             # X-Ray tracing. These two actions accept no resource ARN, so "*" is
             # the only valid value — not a missed scoping opportunity.
             iam.PolicyStatement(
