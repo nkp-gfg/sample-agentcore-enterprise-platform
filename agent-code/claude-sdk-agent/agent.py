@@ -35,8 +35,20 @@ app = BedrockAgentCoreApp()
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
 MODEL_ID = os.environ.get("MODEL_ID", DEFAULT_MODEL_ID)
 
-# Maps runtimeSessionId -> claude_session_id for conversation resumption.
-_session_map: dict[str, str] = {}
+# Maps runtimeSessionId -> (verified subject, claude_session_id) for conversation
+# resumption. AgentCore routes every caller that presents a session id to the
+# same microVM, so a conversation resumes only for the subject that started it.
+_session_map: dict[str, tuple[str, str]] = {}
+
+
+def _bind_claude_session(
+    runtime_session_id: str, user_id: str, claude_session_id: str
+) -> None:
+    """Record the Claude session for this subject; never take over another's."""
+    bound = _session_map.get(runtime_session_id)
+    if bound is not None and bound[0] != user_id:
+        return
+    _session_map[runtime_session_id] = (user_id, claude_session_id)
 
 
 def _gateway_url_ssm_path() -> str | None:
@@ -95,10 +107,23 @@ async def main(payload, context: RequestContext):
         return
 
     _code_int_session_id = payload.get("code_int_session_id", "")
-    claude_session_id = _session_map.get(runtime_session_id)
 
     user_id = extract_user_id_from_context(context)
-    logger.info("[AGENT] User: %s, Session: %s", user_id, runtime_session_id)
+    logger.info("[AGENT] User: %s", user_id)
+
+    # Read the binding once: the subject check and the resume id must come from
+    # the same entry.
+    binding = _session_map.get(runtime_session_id)
+    claude_session_id = None
+    if binding is not None:
+        bound_user_id, claude_session_id = binding
+        if bound_user_id != user_id:
+            logger.warning("[AGENT] Refused session bound to a different user")
+            yield {
+                "status": "error",
+                "error": "Session is bound to a different user",
+            }
+            return
 
     # Get Gateway URL and access token
     gateway_url = None
@@ -184,9 +209,7 @@ Your response should:
             async for msg in client.receive_response():
                 if isinstance(msg, SystemMessage):
                     if msg.subtype == "init":
-                        logger.info(
-                            "Claude session init: %s", msg.data.get("session_id")
-                        )
+                        logger.info("Claude session init")
                 elif isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, ToolUseBlock):
@@ -224,9 +247,11 @@ Your response should:
                             except json.JSONDecodeError:
                                 pass
                 elif isinstance(msg, ResultMessage):
-                    logger.info("ResultMessage received, session_id=%s", msg.session_id)
+                    logger.info("ResultMessage received")
                     if msg.session_id:
-                        _session_map[runtime_session_id] = msg.session_id
+                        _bind_claude_session(
+                            runtime_session_id, user_id, msg.session_id
+                        )
                     yield {"claude_session_id": msg.session_id}
 
     try:
@@ -234,10 +259,7 @@ Your response should:
             yield event
     except ProcessError:
         if claude_session_id:
-            logger.warning(
-                "Resume failed for session %s, starting fresh session",
-                claude_session_id,
-            )
+            logger.warning("Resume failed, starting fresh session")
             async for event in _process_messages(_build_options(None)):
                 yield event
         else:
