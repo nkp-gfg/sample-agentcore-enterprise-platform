@@ -10,6 +10,7 @@ Uses /{project}/{env}/ SSM parameter path convention.
 import base64
 import json
 import os
+import re
 import sys
 import urllib.parse
 import urllib.request
@@ -175,10 +176,10 @@ def _get_direct_m2m_token(project: str, env: str, region: str) -> str:
     client_id = get_ssm_param("auth/m2m-client-id", project, env)
     scope = get_ssm_param("auth/m2m-scope", project, env)
     secret_name = get_ssm_param("auth/m2m-client-secret-name", project, env)
+    token_url = _direct_token_endpoint(issuer)
     client_secret = boto3.client("secretsmanager", region_name=region).get_secret_value(
         SecretId=secret_name
     )["SecretString"]
-    token_url = oidc_discovery(issuer)["token_endpoint"]
     data = urllib.parse.urlencode(
         {
             "grant_type": "client_credentials",
@@ -192,16 +193,79 @@ def _get_direct_m2m_token(project: str, env: str, region: str) -> str:
         data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
-    resp = urllib.request.urlopen(req).read()  # nosec B310 — https URL from OIDC discovery
+    # urllib never resends a POST body on a redirect, so the secret only
+    # reaches token_url, which _direct_token_endpoint pinned to the issuer host.
+    resp = urllib.request.urlopen(req).read()  # nosec B310 — https URL pinned to the issuer host
     return json.loads(resp)["access_token"]
 
 
+# Direct mode is Entra-only (IdentityConfig, AuthStack._build_direct), and the
+# auth stack publishes exactly this issuer. SSM auth/* parameters are plain
+# strings, so the issuer read back from them is checked against that shape
+# before anything is sent to it.
+ENTRA_ISSUER_HOST = "login.microsoftonline.com"
+_ENTRA_ISSUER_PATH_RE = re.compile(
+    r"/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}/v2\.0", re.IGNORECASE
+)
+
+
+def _require_direct_issuer(issuer: str) -> urllib.parse.SplitResult:
+    parts = urllib.parse.urlsplit(issuer)
+    if (
+        issuer != urllib.parse.urlunsplit(parts)
+        or parts.scheme != "https"
+        or parts.hostname != ENTRA_ISSUER_HOST
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+        or not _ENTRA_ISSUER_PATH_RE.fullmatch(parts.path)
+    ):
+        raise ValueError(
+            f"direct-mode issuer must be https://{ENTRA_ISSUER_HOST}/<tenant-id>/v2.0, "
+            f"got {issuer!r}"
+        )
+    return parts
+
+
+def _direct_token_endpoint(issuer: str) -> str:
+    """The token endpoint the client secret may be posted to: https, on the
+    issuer's own host and port, named by a discovery document whose issuer
+    claim is the configured issuer. The returned URL is rebuilt on the
+    validated issuer netloc, so nothing but the path comes from discovery."""
+    issuer_parts = _require_direct_issuer(issuer)
+    token_url = oidc_discovery(issuer).get("token_endpoint")
+    if not isinstance(token_url, str):
+        raise TypeError("discovery document has no token_endpoint string")
+    token_parts = urllib.parse.urlsplit(token_url)
+    if (
+        token_parts.scheme != "https"
+        or token_parts.username is not None
+        or token_parts.password is not None
+        or token_parts.hostname != issuer_parts.hostname
+        or token_parts.port != issuer_parts.port
+        or token_parts.fragment
+    ):
+        raise ValueError(
+            f"token_endpoint {token_url!r} is not https on the issuer host "
+            f"{issuer_parts.netloc!r}"
+        )
+    return urllib.parse.urlunsplit(
+        ("https", issuer_parts.netloc, token_parts.path, token_parts.query, "")
+    )
+
+
 def oidc_discovery(issuer: str) -> dict:
-    """The issuer's OpenID configuration document."""
-    url = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
-    if not url.startswith("https://"):
-        raise ValueError(f"issuer must be https: {issuer!r}")
-    return json.loads(urllib.request.urlopen(url).read())  # nosec B310 — https checked above
+    """The direct-mode issuer's OpenID configuration document, refused unless
+    its issuer claim is the configured issuer."""
+    _require_direct_issuer(issuer)
+    url = f"{issuer}/.well-known/openid-configuration"
+    document = json.loads(urllib.request.urlopen(url).read())  # nosec B310 — issuer pinned above
+    if not isinstance(document, dict) or document.get("issuer") != issuer:
+        raise ValueError(
+            f"discovery document issuer does not match the configured issuer {issuer!r}"
+        )
+    return document
 
 
 def _compute_secret_hash(username: str, client_id: str, client_secret: str) -> str:

@@ -218,7 +218,8 @@ def test_direct_token_uses_discovered_endpoint_and_app_default_scope(monkeypatch
         url = req if isinstance(req, str) else req.full_url
         if url.endswith("/.well-known/openid-configuration"):
             body = {
-                "token_endpoint": f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token"
+                "issuer": f"https://login.microsoftonline.com/{TENANT}/v2.0",
+                "token_endpoint": f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token",
             }
         else:
             seen["url"] = url
