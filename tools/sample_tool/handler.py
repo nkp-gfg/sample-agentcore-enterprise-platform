@@ -2,7 +2,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import json
 import logging
 from collections import Counter
 
@@ -52,8 +51,6 @@ def handler(event, context):
     Returns:
         dict: Response object with 'content' array or 'error' string
     """
-    logger.info(f"Received event: {json.dumps(event)}")
-
     try:
         delimiter = "___"
         original_tool_name = context.client_context.custom["bedrockAgentCoreToolName"]
