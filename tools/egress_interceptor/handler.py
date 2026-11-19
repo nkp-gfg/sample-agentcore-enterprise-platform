@@ -21,7 +21,6 @@ is treated generically here (all string leaves are scanned). Validate against li
 traces before relying on it in production; the guardrail logic itself is target-agnostic.
 """
 
-import json
 import logging
 import os
 
@@ -89,9 +88,15 @@ def _mask_tree(node, source: str):
     return node
 
 
-def _blocked_response(point: str, reason: str):
+def _blocked_response(point: str, reason: str, request_id: str):
     """Return a safe, guardrail-blocked payload instead of the real request/response."""
-    logger.warning("egress guardrail blocked (%s): %s", point, reason)
+    # reason is built only from guardrail policy type names, never from payload text.
+    logger.warning(
+        "egress guardrail point=%s action=BLOCKED reason=%s request_id=%s",
+        point,
+        reason,
+        request_id,
+    )
     key = (
         "transformedGatewayRequest"
         if point == "REQUEST"
@@ -101,30 +106,36 @@ def _blocked_response(point: str, reason: str):
     return {"interceptorOutputVersion": _OUTPUT_VERSION, "mcp": {key: blocked}}
 
 
+def _intercept(point: str, payload, source: str, request_id: str):
+    try:
+        transformed = _mask_tree(payload, source)
+    except GuardrailBlocked as exc:
+        return _blocked_response(point, str(exc), request_id)
+    action = "ANONYMIZED" if transformed != payload else "NONE"
+    logger.info(
+        "egress guardrail point=%s action=%s request_id=%s", point, action, request_id
+    )
+    key = (
+        "transformedGatewayRequest"
+        if point == "REQUEST"
+        else "transformedGatewayResponse"
+    )
+    return {"interceptorOutputVersion": _OUTPUT_VERSION, "mcp": {key: transformed}}
+
+
 def handler(event, context):
-    logger.info("interceptor event: %s", json.dumps(event)[:2000])
+    # Gateway payloads carry caller tool arguments and target replies; never log them.
+    request_id = getattr(context, "aws_request_id", "") or ""
     mcp = event.get("mcp", {}) or {}
 
     if "gatewayRequest" in mcp:
-        try:
-            transformed = _mask_tree(mcp["gatewayRequest"], "INPUT")
-        except GuardrailBlocked as exc:
-            return _blocked_response("REQUEST", str(exc))
-        return {
-            "interceptorOutputVersion": _OUTPUT_VERSION,
-            "mcp": {"transformedGatewayRequest": transformed},
-        }
+        return _intercept("REQUEST", mcp["gatewayRequest"], "INPUT", request_id)
 
     if "gatewayResponse" in mcp:
-        try:
-            transformed = _mask_tree(mcp["gatewayResponse"], "OUTPUT")
-        except GuardrailBlocked as exc:
-            return _blocked_response("RESPONSE", str(exc))
-        return {
-            "interceptorOutputVersion": _OUTPUT_VERSION,
-            "mcp": {"transformedGatewayResponse": transformed},
-        }
+        return _intercept("RESPONSE", mcp["gatewayResponse"], "OUTPUT", request_id)
 
     # Unknown interception payload — pass through unchanged.
-    logger.info("no gatewayRequest/gatewayResponse in event; passing through")
+    logger.info(
+        "egress guardrail point=UNKNOWN action=PASSTHROUGH request_id=%s", request_id
+    )
     return {"interceptorOutputVersion": _OUTPUT_VERSION, "mcp": mcp}
