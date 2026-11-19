@@ -1,22 +1,33 @@
 # Adapted from fullstack-solution-template-for-agentcore
+#
+# Local orchestrator for the workshop. Run from this directory:
+#
+#   export ORCHESTRATOR_LOCAL_SECRET="$(openssl rand -hex 32)"
+#   AWS_PROFILE=<your-profile> docker compose up --build
+#
+# Every POST /invocations must carry the header
+# X-Orchestrator-Local-Secret: $ORCHESTRATOR_LOCAL_SECRET, and the port is
+# published on 127.0.0.1 only. AWS credentials come from your ~/.aws profile,
+# mounted read-only; access keys are never passed in through the environment.
 services:
   orchestrator:
     build:
-      context: ..
-      dockerfile: agent-code/orchestrator/Dockerfile
+      context: ../agent-code
+      dockerfile: orchestrator/Dockerfile
       platforms:
         - linux/arm64
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - MEMORY_ID=${MEMORY_ID}
       - PROJECT_NAME=${PROJECT_NAME:-agentcore-workshop}
       - ENVIRONMENT=${ENVIRONMENT:-dev}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
       - AWS_REGION=${AWS_DEFAULT_REGION}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      - AWS_PROFILE=${AWS_PROFILE:-default}
+      - ORCHESTRATOR_LOCAL_SECRET=${ORCHESTRATOR_LOCAL_SECRET:?set ORCHESTRATOR_LOCAL_SECRET to a random value}
+    volumes:
+      - ${HOME}/.aws:/home/bedrock_agentcore/.aws:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ping', timeout=2)"]
       interval: 30s
