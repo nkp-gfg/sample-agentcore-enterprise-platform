@@ -28,8 +28,8 @@ the condition.
 | Resource | Name pattern | Purpose |
 |---|---|---|
 | `AWS::BedrockAgentCore::Memory` | `{project}_{environment}_memory` (hyphens become underscores) | The memory store; events expire after 30 days |
-| Memory strategy: `user_preference` | `{name}_user_pref`, namespace `USER_ID` | Always — user preference tracking |
-| Memory strategy: `semantic` (optional) | `{name}_semantic`, namespace `AGENT_ID` | Only with `use_long_term_memory=true` — semantic fact extraction |
+| Memory strategy: `user_preference` | `{name}_user_pref`, namespace `/preferences/{actorId}/` | Always — user preference tracking |
+| Memory strategy: `semantic` (optional) | `{name}_semantic`, namespace `/facts/{actorId}/` | Only with `use_long_term_memory=true` — semantic fact extraction |
 | `AWS::BedrockAgentCore::ResourcePolicy` (optional) | attached to the memory ARN | Only with `enable_resource_policies=true` — in-account-only access (see Security notes) |
 | 2 × `AWS::SSM::Parameter` | `/{project}/{environment}/memory/*` | `memory-id`, `memory-arn` |
 
@@ -89,9 +89,19 @@ into the orchestrator runtime's environment.
   `DeleteEvent`, `ListSessions`, `RetrieveMemoryRecords` and more — currently
   on `Resource: "*"`, knowingly, because scoping needs ARNs that do not exist
   when the role is built; tracked as its own task (see the code comment).
+  `RetrieveMemoryRecords` carries a `bedrock-agentcore:namespace` condition:
+  only a single actor's `/preferences/<actor>/` or `/facts/<actor>/` namespace
+  is allowed, and shorter prefixes or `namespacePath` reads are denied.
 - Tenant isolation inside one memory is `actor_id` — application-level, backed
   by the JWT verification in `agent-code/shared/auth.py`. Account isolation in
   a federation is the harder boundary.
+- Long-term strategy namespaces must contain `{actorId}`: AgentCore separates
+  extracted records only by namespace, so a static namespace pools every
+  caller's preferences and facts. `actor_scoped()` in the stack rejects a
+  template without it. Records extracted by an earlier deployment under the
+  old static `USER_ID` / `AGENT_ID` namespaces are not moved; the runtime role
+  can no longer read them, and they can be deleted with the deployer's
+  credentials.
 
 ## Verification
 
