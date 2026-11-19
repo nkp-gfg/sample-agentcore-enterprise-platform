@@ -1,2 +1,3 @@
 strands-agents
 bedrock-agentcore
+PyJWT[crypto]>=2.13.0
