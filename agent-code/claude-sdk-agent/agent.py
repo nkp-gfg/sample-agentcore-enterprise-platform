@@ -2,7 +2,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import json
 import logging
 import os
 
@@ -15,10 +14,9 @@ from claude_agent_sdk import (
     ResultMessage,
     SystemMessage,
     TextBlock,
-    ToolResultBlock,
     ToolUseBlock,
-    UserMessage,
 )
+from code_int_mcp.server import client as code_int_client
 from code_int_mcp.server import code_int_mcp_server
 from shared.auth import extract_user_id_from_context, get_gateway_access_token
 from shared.ssm import get_ssm_parameter
@@ -94,11 +92,11 @@ async def main(payload, context: RequestContext):
         }
         return
 
-    _code_int_session_id = payload.get("code_int_session_id", "")
     claude_session_id = _session_map.get(runtime_session_id)
 
     user_id = extract_user_id_from_context(context)
     logger.info("[AGENT] User: %s, Session: %s", user_id, runtime_session_id)
+    code_int_client.bind_caller(user_id, runtime_session_id)
 
     # Get Gateway URL and access token
     gateway_url = None
@@ -166,7 +164,7 @@ CRITICAL RULES:
 2. You can use mcp__codeint__execute_command to execute bash commands.
 3. Use gateway tools (mcp__gateway__*) for accessing tools provided via the Gateway.
 4. Use the tools without asking for permission.
-5. CODE INTERPRETER SESSION: For the first Code Interpreter call, pass an empty string "" for code_int_session_id. The tool will return a valid session ID in its response. Use that EXACT returned session ID for all subsequent Code Interpreter calls in this conversation. NEVER make up or generate your own session IDs.
+5. CODE INTERPRETER SESSION: The Code Interpreter sandbox for this conversation is managed automatically. Do not pass a session ID to Code Interpreter tools.
 
 Available tool categories:
 - Code Interpreter: execute_code, execute_command, write_files, read_files
@@ -204,25 +202,6 @@ Your response should:
                             logger.info("Agent response: %s", block.text)
                             agent_responses.append(block.text)
                             yield {"data": block.text}
-                elif isinstance(msg, UserMessage):
-                    for block in msg.content:
-                        if (
-                            isinstance(block, ToolResultBlock)
-                            and block.content
-                            and len(block.content) > 0
-                            and isinstance(block.content[0], dict)
-                        ):
-                            text_content = block.content[0].get("text", "")
-                            try:
-                                result_data = json.loads(text_content)
-                                if isinstance(result_data, dict):
-                                    extracted = result_data.get(
-                                        "code_int_session_id", ""
-                                    )
-                                    if extracted:
-                                        _code_int_session_id = extracted
-                            except json.JSONDecodeError:
-                                pass
                 elif isinstance(msg, ResultMessage):
                     logger.info("ResultMessage received, session_id=%s", msg.session_id)
                     if msg.session_id:

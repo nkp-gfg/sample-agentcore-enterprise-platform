@@ -34,12 +34,8 @@ When analyzing:
 - Use mcp__codeint__execute_code to test fixes if needed
 - Summarize findings concisely
 
-CRITICAL SESSION MANAGEMENT:
-1. For the FIRST Code Interpreter call, pass an empty string "" for code_int_session_id
-2. The tool will return a session ID in its response
-3. Use that EXACT returned session ID for ALL subsequent Code Interpreter calls
-4. NEVER make up or generate your own session IDs
-5. Only use "" (first call) or the exact session ID returned by Code Interpreter""",
+SESSION MANAGEMENT:
+The Code Interpreter sandbox for this conversation is managed automatically. Do not pass a session ID to Code Interpreter tools.""",
             tools=[
                 "mcp__codeint__execute_code",
                 "mcp__codeint__execute_command",
