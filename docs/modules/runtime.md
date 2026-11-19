@@ -97,6 +97,7 @@ can be scoped is scoped (each wildcard in the code says why it exists):
 | `BedrockModels` | Wildcard foundation-model + inference-profile ARNs by default; scoped to `agents.allowed_models` when set. A geo-prefixed entry (`us.`…) emits **both** the profile ARN and the base foundation-model ARN — profile-only scoping breaks invokes |
 | `SSMAccess` | `parameter/{project}/*` only |
 | `AgentCoreAccess` | `*`, **knowingly**: scoping it needs the gateway, memory, and sibling-runtime ARNs, and the A2A targets do not exist yet when the role is built. Tracked as its own task — getting it wrong breaks every live-verified path |
+| `AgentCoreMemoryRecordsRead` + `DenyCrossActorMemoryRecordsRead` + `DenyMemoryRecordsNamespacePathRead` | `RetrieveMemoryRecords` only on one actor's long-term namespace (`/preferences/<actor>/`, `/facts/<actor>/`, from `stacks/memory_stack.py`); a shorter prefix, any other namespace, or a `namespacePath` read is denied |
 | `AgentCoreIdentityTokenVaultSecrets` | `secretsmanager:GetSecretValue` on `bedrock-agentcore-identity!default/oauth2/*` only — without it the gateway MCP token fetch fails and Strands aborts loading tools |
 
 With `require_guardrails`: `ApplyBaselineGuardrail` allows

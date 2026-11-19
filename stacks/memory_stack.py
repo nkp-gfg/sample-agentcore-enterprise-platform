@@ -13,6 +13,43 @@ from constructs import Construct
 
 from infra_utils.policy_loader import load_control_json
 
+# AgentCore partitions long-term records only by namespace, and the only per-caller
+# value it substitutes is {actorId} (the verified JWT sub the agents send). A
+# template without it pools every caller's extracted records into one namespace.
+ACTOR_PLACEHOLDER = "{actorId}"
+USER_PREFERENCE_NAMESPACE = "/preferences/{actorId}/"
+SEMANTIC_NAMESPACE = "/facts/{actorId}/"
+LONG_TERM_NAMESPACES = (USER_PREFERENCE_NAMESPACE, SEMANTIC_NAMESPACE)
+
+
+def actor_scoped(template: str) -> str:
+    if template.count(ACTOR_PLACEHOLDER) != 1 or not template.endswith(
+        ACTOR_PLACEHOLDER + "/"
+    ):
+        raise ValueError(
+            f"memory namespace {template!r} must end with '{ACTOR_PLACEHOLDER}/' "
+            "so each caller's long-term records stay in their own namespace"
+        )
+    return template
+
+
+def retrieve_namespace_patterns(
+    templates: tuple[str, ...] = LONG_TERM_NAMESPACES,
+) -> tuple[list[str], list[str]]:
+    """IAM StringLike patterns for RetrieveMemoryRecords on these templates.
+
+    Returns (prefixes, exact): ``prefixes`` is each template's fixed prefix plus
+    ``*``; ``exact`` requires a non-empty actor segment and the closing ``/``,
+    so a bare prefix such as ``/preferences/`` (which a prefix-matching
+    retrieve would expand to every actor) does not match.
+    """
+    prefixes, exact = [], []
+    for template in templates:
+        head, tail = actor_scoped(template).split(ACTOR_PLACEHOLDER)
+        prefixes.append(f"{head}*")
+        exact.append(f"{head}?*{tail}")
+    return prefixes, exact
+
 
 class MemoryStack(cdk.Stack):
     def __init__(
@@ -42,7 +79,7 @@ class MemoryStack(cdk.Stack):
                 user_preference_memory_strategy=agentcore.CfnMemory.UserPreferenceMemoryStrategyProperty(
                     name=f"{name}_user_pref",
                     description="User preference tracking strategy",
-                    namespaces=["USER_ID"],
+                    namespaces=[actor_scoped(USER_PREFERENCE_NAMESPACE)],
                 ),
             ),
         ]
@@ -55,7 +92,7 @@ class MemoryStack(cdk.Stack):
                     semantic_memory_strategy=agentcore.CfnMemory.SemanticMemoryStrategyProperty(
                         name=f"{name}_semantic",
                         description="Semantic fact extraction and override strategy",
-                        namespaces=["AGENT_ID"],
+                        namespaces=[actor_scoped(SEMANTIC_NAMESPACE)],
                     ),
                 ),
             )

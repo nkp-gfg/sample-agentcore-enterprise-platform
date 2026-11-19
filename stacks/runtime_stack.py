@@ -48,6 +48,7 @@ from infra_utils.policy_loader import load_control
 from infra_utils.runtime_network import build_network_config
 from infra_utils.runtime_protocol import needs_jwt_authorizer, resolve_protocol
 from infra_utils.source_hash import component_image_tag, compute_source_hash
+from stacks.memory_stack import retrieve_namespace_patterns
 
 
 class RuntimeStack(cdk.Stack):
@@ -632,6 +633,7 @@ class RuntimeStack(cdk.Stack):
         resource-level permissions; each one says so. Everything that can be
         scoped is scoped, because this role is what a compromised agent inherits.
         """
+        ltm_prefixes, ltm_actor_namespaces = retrieve_namespace_patterns()
         statements = [
             # ECR image pull, limited to this component's own repository. It used
             # to be resources=["*"], which let any runtime role pull every image
@@ -738,7 +740,6 @@ class RuntimeStack(cdk.Stack):
                     "bedrock-agentcore:ListEvents",
                     "bedrock-agentcore:DeleteEvent",
                     "bedrock-agentcore:ListSessions",
-                    "bedrock-agentcore:RetrieveMemoryRecords",
                     "bedrock-agentcore:StartBrowserSession",
                     "bedrock-agentcore:StopBrowserSession",
                     "bedrock-agentcore:ConnectBrowserAutomationStream",
@@ -749,6 +750,41 @@ class RuntimeStack(cdk.Stack):
                     "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
                 ],
                 resources=["*"],
+            ),
+            # Long-term memory reads, limited to the actor-scoped namespaces
+            # MemoryStack creates (stacks/memory_stack.py). Without a namespace
+            # condition this role could read any namespace in the memory,
+            # including records extracted under the old shared USER_ID/AGENT_ID
+            # namespaces.
+            iam.PolicyStatement(
+                sid="AgentCoreMemoryRecordsRead",
+                actions=["bedrock-agentcore:RetrieveMemoryRecords"],
+                resources=["*"],
+                conditions={
+                    "StringLike": {"bedrock-agentcore:namespace": ltm_prefixes}
+                },
+            ),
+            # A namespace that stops short of one actor's path (e.g.
+            # "/preferences/") or a namespacePath hierarchy read would span
+            # every caller. StringNotLike also matches when the namespace key is
+            # absent, so a namespacePath-only request is denied too.
+            iam.PolicyStatement(
+                sid="DenyCrossActorMemoryRecordsRead",
+                effect=iam.Effect.DENY,
+                actions=["bedrock-agentcore:RetrieveMemoryRecords"],
+                resources=["*"],
+                conditions={
+                    "StringNotLike": {
+                        "bedrock-agentcore:namespace": ltm_actor_namespaces
+                    }
+                },
+            ),
+            iam.PolicyStatement(
+                sid="DenyMemoryRecordsNamespacePathRead",
+                effect=iam.Effect.DENY,
+                actions=["bedrock-agentcore:RetrieveMemoryRecords"],
+                resources=["*"],
+                conditions={"Null": {"bedrock-agentcore:namespacePath": "false"}},
             ),
             # The built-in Code Interpreter is session based: the agent must
             # start a session before InvokeCodeInterpreter and may stop it
