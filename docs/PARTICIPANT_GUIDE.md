@@ -135,7 +135,7 @@ real runs — the long ones are container builds in CodeBuild, not hangs.
 | **B** | Code Interpreter | *(no guided narration or verify — not in any profile sequence; redeploys the orchestrator)* | — | — |
 | **C** | Multi-Account Networking | VPC, private subnets, AgentCore VPC endpoints | `check_network.py` | ~5 min |
 | **E** | Security Automation | KMS CMK encryption + CloudTrail audit logging | stack reaches COMPLETE | ~3 min |
-| **D** | CI/CD (discussion) | nothing — read `.gitlab-ci.yml` as the reference | — | — |
+| **D** | CI/CD (discussion) | no CDK stack. Quality gates stay in `.gitlab-ci.yml`. One workflow per runtime: `deploy-orchestrator.yml`, `deploy-code-agent.yml`, `deploy-research-agent.yml` | a reviewed `workflow_dispatch` on the `production` environment | — |
 
 Things that look wrong and are not:
 
