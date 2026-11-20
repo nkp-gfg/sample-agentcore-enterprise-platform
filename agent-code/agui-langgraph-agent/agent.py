@@ -15,6 +15,7 @@ from langchain.agents import create_agent
 from langchain_aws import ChatBedrock
 from langgraph_checkpoint_aws import AgentCoreMemorySaver
 from shared.auth import extract_user_id_from_context
+from shared.long_term_memory import prepare_turn_memory, system_prompt_with_memory
 from shared.region import runtime_region
 from tools.code_interpreter import LangGraphCodeInterpreterTools
 from tools.gateway import create_gateway_mcp_client
@@ -69,7 +70,34 @@ def _create_checkpointer() -> AgentCoreMemorySaver:
     )
 
 
-async def create_langgraph_agent():
+def _latest_user_text(input_data: RunAgentInput) -> str:
+    """Return the newest user message, or an empty string."""
+    for message in reversed(input_data.messages or []):
+        role = str(getattr(message, "role", "")).lower()
+        if role not in {"user", "human"}:
+            continue
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content.strip()
+    return ""
+
+
+def _system_prompt(user_id: str, session_id: str, user_text: str) -> str:
+    """Search long-term notes for this actor and append them to the prompt."""
+    memory_id = os.environ.get("MEMORY_ID", "")
+    if not memory_id:
+        return SYSTEM_PROMPT
+    notes = prepare_turn_memory(
+        memory_id=memory_id,
+        actor_id=user_id,
+        session_id=session_id,
+        text=user_text,
+        region=runtime_region(),
+    )
+    return system_prompt_with_memory(SYSTEM_PROMPT, notes)
+
+
+async def create_langgraph_agent(user_id: str, session_id: str, user_text: str):
     """Create a LangGraph agent with Gateway tools, Memory, and Code Interpreter."""
     tools = []
     try:
@@ -90,7 +118,7 @@ async def create_langgraph_agent():
         tools=tools,
         checkpointer=_create_checkpointer(),
         middleware=[CopilotKitMiddleware()],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=_system_prompt(user_id, session_id, user_text),
     )
 
 
@@ -116,7 +144,9 @@ async def invocations(payload: dict, context: RequestContext):
     agent = LangGraphAGUIAgent(
         name="agui_langgraph_agent",
         description="AG-UI LangGraph agent with Gateway MCP tools and Memory",
-        graph=await create_langgraph_agent(),
+        graph=await create_langgraph_agent(
+            user_id, input_data.thread_id or "", _latest_user_text(input_data)
+        ),
         config={"configurable": {"actor_id": user_id}},
     )
 
