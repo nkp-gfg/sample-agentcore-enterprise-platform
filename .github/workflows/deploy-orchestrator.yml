@@ -1,0 +1,28 @@
+name: Deploy orchestrator
+
+# Customer-facing runtime. The pattern comes from agents.pattern in platform.yaml.
+# Today that pattern is god-agent. This file does not switch the pattern.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: verify checks the live platform. deploy also updates this runtime.
+        type: choice
+        required: true
+        default: verify
+        options:
+          - verify
+          - deploy
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy-agent.yml
+    with:
+      component: orchestrator
+      action: ${{ inputs.action }}
+    secrets: inherit

@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -47,6 +48,7 @@ logger = logging.getLogger("hr-web-bff")
 
 HERE = Path(__file__).resolve().parent
 PUBLIC_DIR = HERE.parent / "public"
+WEB_DIST = HERE.parent / "web" / "dist"
 A2UI_PROTOCOL_VERSION = "1.0"
 SESSION_COOKIE_NAME = "hr_bff_sid"
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{33,128}$")
@@ -76,6 +78,20 @@ STATIC_ASSETS: dict[str, tuple[str, str]] = {
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
     "/hr-catalog.json": ("hr-catalog.json", "application/json; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+}
+
+_TOKEN_HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
+_SPA_INDEX_CACHE_CONTROL = "no-store"
+_SPA_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_SPA_MEDIA_TYPES: dict[str, str] = {
+    ".js": "application/javascript; charset=utf-8",
+    ".mjs": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".html": "text/html; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".woff2": "font/woff2",
+    ".map": "application/json; charset=utf-8",
 }
 
 
@@ -409,7 +425,15 @@ class BffRuntime:
                 > int(time.time()) + TOKEN_REFRESH_SKEW_SECONDS
             ):
                 return latest
-            disc = await self.get_discovery()
+            try:
+                disc = await self.get_discovery()
+            except (httpx.TimeoutException, httpx.HTTPError) as exc:
+                logger.warning(
+                    "OIDC discovery failed during token refresh: %s",
+                    type(exc).__name__,
+                )
+                self.store.delete_session(sid)
+                return None
             token_url = _assert_https_url(disc["token_endpoint"], "token_endpoint")
             form: dict[str, str] = {
                 "grant_type": "refresh_token",
@@ -418,7 +442,11 @@ class BffRuntime:
             }
             if self.settings.oidc_client_secret:
                 form["client_secret"] = self.settings.oidc_client_secret
-            resp = await self.http().post(token_url, data=form, timeout=10.0)
+            try:
+                resp = await _post_with_retry(self.http(), token_url, data=form)
+            except (httpx.TimeoutException, httpx.TransportError):
+                self.store.delete_session(sid)
+                return None
             if resp.status_code != 200:
                 self.store.delete_session(sid)
                 return None
@@ -447,6 +475,117 @@ class BffRuntime:
                 }
             )
             return updated
+
+
+def _discovery_failure_redirect(exc: httpx.HTTPError) -> RedirectResponse:
+    """Send the browser home when OIDC discovery cannot be completed."""
+    logger.warning("OIDC discovery failed: %s", type(exc).__name__)
+    return RedirectResponse(url="/?error=oidc_discovery_failed", status_code=302)
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    data: dict[str, str],
+    *,
+    timeout: httpx.Timeout = _TOKEN_HTTP_TIMEOUT,
+) -> httpx.Response:
+    """POST a token request and retry once on timeout or transport failure.
+
+    When both attempts fail, log only the exception class name and re-raise.
+    """
+    try:
+        return await client.post(url, data=data, timeout=timeout)
+    except (httpx.TimeoutException, httpx.TransportError):
+        # First attempt failed; one retry follows.
+        pass
+    try:
+        return await client.post(url, data=data, timeout=timeout)
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        logger.warning("OIDC token request failed: %s", type(exc).__name__)
+        raise
+
+
+def _media_type_for(path: Path) -> str:
+    explicit = _SPA_MEDIA_TYPES.get(path.suffix.lower())
+    if explicit:
+        return explicit
+    guessed, _encoding = mimetypes.guess_type(path.name)
+    return guessed or "application/octet-stream"
+
+
+def _spa_is_reserved(rel: str) -> bool:
+    if rel in {"healthz", "config.json", "invocations"}:
+        return True
+    return rel in {"api", "auth"} or rel.startswith(("api/", "auth/"))
+
+
+def _resolve_dist_path(dist_root: Path, rel: str) -> Path | None:
+    """Resolve ``rel`` under ``dist_root``, rejecting paths that escape it."""
+    if not rel or "\x00" in rel:
+        return None
+    if Path(rel).is_absolute():
+        return None
+    try:
+        resolved = (dist_root / rel).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not resolved.is_relative_to(dist_root):
+        return None
+    return resolved
+
+
+def _spa_dist_root() -> Path | None:
+    """Vite ``web/dist`` when its index is a file that stays inside that directory."""
+    try:
+        root = WEB_DIST.resolve()
+    except (OSError, RuntimeError):
+        return None
+    index = _resolve_dist_path(root, "index.html")
+    if index is None or not index.is_file():
+        return None
+    return root
+
+
+def _spa_index_response(dist_root: Path) -> FileResponse:
+    index = _resolve_dist_path(dist_root, "index.html")
+    if index is None or not index.is_file():
+        raise HTTPException(status_code=404, detail="Resource not found.")
+    return FileResponse(
+        index,
+        media_type=_SPA_MEDIA_TYPES[".html"],
+        headers={"Cache-Control": _SPA_INDEX_CACHE_CONTROL},
+    )
+
+
+def _serve_spa(dist_root: Path, full_path: str) -> Response:
+    rel = full_path.strip("/")
+    if _spa_is_reserved(rel):
+        raise HTTPException(status_code=404, detail="Resource not found.")
+    if rel in {"", "index.html"}:
+        return _spa_index_response(dist_root)
+    resolved = _resolve_dist_path(dist_root, rel)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Resource not found.")
+    is_asset = rel == "assets" or rel.startswith("assets/")
+    try:
+        is_file = resolved.is_file()
+    except OSError:
+        is_file = False
+    if is_file:
+        if resolved.name == "index.html":
+            cache_control = _SPA_INDEX_CACHE_CONTROL
+        elif is_asset:
+            cache_control = _SPA_ASSET_CACHE_CONTROL
+        else:
+            cache_control = None
+        headers = {"Cache-Control": cache_control} if cache_control else None
+        return FileResponse(
+            resolved, media_type=_media_type_for(resolved), headers=headers
+        )
+    if is_asset:
+        raise HTTPException(status_code=404, detail="Resource not found.")
+    return _spa_index_response(dist_root)
 
 
 def create_app(
@@ -484,6 +623,41 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    def _request_origin(request: Request) -> str:
+        if cfg.oidc_redirect_uri:
+            parts = urlsplit(cfg.oidc_redirect_uri)
+            return f"{parts.scheme}://{parts.netloc}"
+        host = (
+            (
+                request.headers.get("x-forwarded-host")
+                or request.headers.get("host")
+                or ""
+            )
+            .split(",")[0]
+            .strip()
+        )
+        proto = (
+            (request.headers.get("x-forwarded-proto") or "https")
+            .split(",")[0]
+            .strip()
+            .lower()
+        )
+        if proto != "https" or not host.endswith(".on.aws"):
+            raise HTTPException(
+                status_code=400, detail="Public host is not recognized."
+            )
+        return f"https://{host}"
+
+    def _redirect_uri(request: Request) -> str:
+        if cfg.oidc_redirect_uri:
+            return cfg.oidc_redirect_uri
+        return f"{_request_origin(request)}/auth/callback"
+
+    def _logout_uri(request: Request) -> str:
+        if cfg.oidc_logout_uri:
+            return cfg.oidc_logout_uri
+        return f"{_request_origin(request)}/"
+
     def _require_session(request: Request) -> dict[str, Any]:
         sid = request.cookies.get(SESSION_COOKIE_NAME, "")
         session = rt.store.get_session(sid)
@@ -493,12 +667,10 @@ def create_app(
 
     def _require_csrf(request: Request, session: dict[str, Any]) -> None:
         origin = (request.headers.get("origin") or "").strip()
-        if origin and cfg.oidc_redirect_uri:
-            expected_origin = f"{urlsplit(cfg.oidc_redirect_uri).scheme}://{urlsplit(cfg.oidc_redirect_uri).netloc}".lower()
-            if origin.lower() != expected_origin:
-                raise HTTPException(
-                    status_code=403, detail="Cross-origin request rejected."
-                )
+        if origin and origin.lower() != _request_origin(request).lower():
+            raise HTTPException(
+                status_code=403, detail="Cross-origin request rejected."
+            )
         sent_csrf = (request.headers.get("x-bff-csrf") or "").strip()
         expected_csrf = str(session.get("csrf_token") or "")
         if (
@@ -521,8 +693,11 @@ def create_app(
         }
 
     @app.get("/auth/login")
-    async def auth_login():
-        disc = await rt.get_discovery()
+    async def auth_login(request: Request):
+        try:
+            disc = await rt.get_discovery()
+        except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            return _discovery_failure_redirect(exc)
         auth_url = _assert_https_url(
             disc["authorization_endpoint"], "authorization_endpoint"
         )
@@ -534,7 +709,7 @@ def create_app(
             {
                 "response_type": "code",
                 "client_id": cfg.oidc_client_id,
-                "redirect_uri": cfg.oidc_redirect_uri,
+                "redirect_uri": _redirect_uri(request),
                 "scope": cfg.oidc_scope,
                 "state": oauth_state,
                 "nonce": nonce,
@@ -556,18 +731,26 @@ def create_app(
         pkce = rt.store.pop_pkce_state(returned_state)
         if not pkce:
             return RedirectResponse(url="/?error=invalid_state", status_code=302)
-        disc = await rt.get_discovery()
+        try:
+            disc = await rt.get_discovery()
+        except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            return _discovery_failure_redirect(exc)
         token_url = _assert_https_url(disc["token_endpoint"], "token_endpoint")
         form: dict[str, str] = {
             "grant_type": "authorization_code",
             "client_id": cfg.oidc_client_id,
             "code": code,
-            "redirect_uri": cfg.oidc_redirect_uri,
+            "redirect_uri": _redirect_uri(request),
             "code_verifier": str(pkce["verifier"]),
         }
         if cfg.oidc_client_secret:
             form["client_secret"] = cfg.oidc_client_secret
-        resp = await rt.http().post(token_url, data=form, timeout=10.0)
+        try:
+            resp = await _post_with_retry(rt.http(), token_url, data=form)
+        except (httpx.TimeoutException, httpx.TransportError):
+            return RedirectResponse(
+                url="/?error=token_exchange_failed", status_code=302
+            )
         if resp.status_code != 200:
             logger.warning("OIDC token exchange failed: HTTP %s", resp.status_code)
             return RedirectResponse(
@@ -655,14 +838,15 @@ def create_app(
                 if cfg.oidc_client_secret:
                     rev_form["client_secret"] = cfg.oidc_client_secret
                 await rt.http().post(rev_url, data=rev_form, timeout=3.0)
-            if disc.get("end_session_endpoint") and cfg.oidc_logout_uri:
+            logout_uri = _logout_uri(request)
+            if disc.get("end_session_endpoint") and logout_uri:
                 end_url = _assert_https_url(
                     disc["end_session_endpoint"], "end_session_endpoint"
                 )
                 logout_url = f"{end_url}?" + urlencode(
                     {
                         "client_id": cfg.oidc_client_id,
-                        "logout_uri": cfg.oidc_logout_uri,
+                        "logout_uri": logout_uri,
                     }
                 )
         except Exception as exc:  # noqa: BLE001
@@ -852,6 +1036,9 @@ def create_app(
 
     @app.get("/{full_path:path}")
     async def serve_static(full_path: str):
+        dist_root = _spa_dist_root()
+        if dist_root is not None:
+            return _serve_spa(dist_root, full_path)
         req_path = f"/{full_path}" if full_path else "/"
         entry = STATIC_ASSETS.get(req_path)
         if not entry:
@@ -862,6 +1049,14 @@ def create_app(
         if not target.is_relative_to(public_root) or not target.is_file():
             raise HTTPException(status_code=404, detail="Resource not found.")
         return FileResponse(target, media_type=media_type)
+
+    # This FastAPI build does not answer HEAD for GET routes. Opt each GET
+    # route in so / and /config.json both work, without a catch-all HEAD
+    # that would serve the SPA for HEAD /config.json.
+    for route in app.routes:
+        methods = getattr(route, "methods", None)
+        if methods and "GET" in methods:
+            methods.add("HEAD")
 
     return app
 

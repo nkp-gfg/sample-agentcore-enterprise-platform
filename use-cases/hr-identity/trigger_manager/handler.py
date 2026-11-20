@@ -49,6 +49,25 @@ _MUTABLE_POOL_KEYS = (
 )
 
 
+def _resolve_lambda_arn(props: dict, region: str | None) -> str | None:
+    """Return the pre-token Lambda ARN, or None when the repair parameter is absent."""
+    if props.get("LambdaArn"):
+        return props["LambdaArn"]
+    parameter_name = props.get("FunctionArnParameter")
+    if not parameter_name:
+        return None
+    ssm = boto3.client("ssm", region_name=region)
+    try:
+        value = ssm.get_parameter(Name=parameter_name)["Parameter"]["Value"]
+    except ssm.exceptions.ParameterNotFoundException:
+        logger.info(
+            "SSM parameter %s is absent; not changing user pool triggers",
+            parameter_name,
+        )
+        return None
+    return value or None
+
+
 def _clean_update_kwargs(pool: dict) -> dict:
     kwargs: dict = {"UserPoolId": pool["Id"]}
     for key in _MUTABLE_POOL_KEYS:
@@ -70,7 +89,6 @@ def on_event(event: dict, _context) -> dict:
     request_type = event["RequestType"]
     props = event["ResourceProperties"]
     user_pool_id = props["UserPoolId"]
-    lambda_arn = props["LambdaArn"]
     lambda_version = props.get("LambdaVersion") or "V3_0"
     physical_id = (
         event.get("PhysicalResourceId") or f"hr-identity-trigger-{user_pool_id}"
@@ -78,6 +96,15 @@ def on_event(event: dict, _context) -> dict:
 
     region = os.environ.get("AWS_REGION") or None
     cognito = boto3.client("cognito-idp", region_name=region)
+    lambda_arn = _resolve_lambda_arn(props, region)
+    if not lambda_arn:
+        # Auth-stack repairs look up the hr-identity function. Part 1 deploys
+        # have no such parameter, and a delete after hr-identity is gone has
+        # nothing to detach.
+        if props.get("FunctionArnParameter") or request_type == "Delete":
+            logger.info("No pre-token Lambda to %s on %s", request_type, user_pool_id)
+            return {"PhysicalResourceId": physical_id}
+        raise ValueError("LambdaArn is required")
 
     try:
         pool = cognito.describe_user_pool(UserPoolId=user_pool_id)["UserPool"]

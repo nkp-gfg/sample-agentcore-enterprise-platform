@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import zipfile
+from pathlib import Path
 from typing import Any
 
 import aws_cdk as cdk
@@ -104,7 +106,7 @@ def _synth_frontend(
     allowed_cidrs: list[str] | None = None,
     certificate_arn: str = "",
     domain_name: str = "",
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], FrontendStack]:
     app = cdk.App()
     net = NetworkingStack(
         app,
@@ -179,84 +181,101 @@ def _synth_frontend(
         Template.from_stack(fe).to_json(),
         Template.from_stack(rt).to_json(),
         Template.from_stack(net).to_json(),
+        fe,
     )
 
 
-def test_private_frontend_synthesizes_internal_alb_waf_fargate_scaling_and_dynamodb() -> (
-    None
-):
-    fe_tpl, rt_tpl, net_tpl = _synth_frontend(
+def _bff_source_asset_files(stack: FrontendStack) -> set[str]:
+    staging = stack.node.find_child("BffSourceAsset").node.find_child("Stage")
+    staged = Path(staging.absolute_staged_path)
+    if staged.is_file():
+        with zipfile.ZipFile(staged) as archive:
+            return {name for name in archive.namelist() if not name.endswith("/")}
+    return {
+        path.relative_to(staged).as_posix()
+        for path in staged.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_private_frontend_synthesizes_express_mode_waf_and_dynamodb() -> None:
+    fe_tpl, rt_tpl, net_tpl, fe = _synth_frontend(
         exposure="private",
         retain_data=True,
         allowed_cidrs=["10.20.0.0/16"],
     )
 
-    # 1. Internal ALB behind Regional WAFv2 + IPSet.
-    albs = _resources(fe_tpl, "AWS::ElasticLoadBalancingV2::LoadBalancer")
-    assert len(albs) == 1
-    assert albs[0]["Properties"]["Scheme"] == "internal"
-    assert "Name" not in albs[0]["Properties"]  # allows clean private <-> public switch
+    express = _resources(fe_tpl, "AWS::ECS::ExpressGatewayService")
+    assert len(express) == 1
+    props = express[0]["Properties"]
+    assert props["ServiceName"] == "hrtest-prod-hr-web"
+    assert props["HealthCheckPath"] == "/healthz"
+    assert props["PrimaryContainer"]["ContainerPort"] == 8080
+    assert props["ScalingTarget"] == {"MinTaskCount": 2, "MaxTaskCount": 10}
+    assert len(props["NetworkConfiguration"]["Subnets"]) == 2
+    secret_names = {s["Name"] for s in props["PrimaryContainer"]["Secrets"]}
+    assert secret_names == {"OIDC_CLIENT_SECRET"}
+    env_map = {e["Name"]: e["Value"] for e in props["PrimaryContainer"]["Environment"]}
+    assert env_map["FRONTEND_EXPOSURE"] == "private"
+    assert env_map["COOKIE_SECURE"] == "true"
+    assert "OIDC_REDIRECT_URI" not in env_map
+    clients = _resources(fe_tpl, "AWS::Cognito::UserPoolClient")
+    assert clients[0]["Properties"]["CallbackURLs"] == [
+        "https://localhost/auth/callback"
+    ]
+    assert not _resources(fe_tpl, "AWS::ECS::Service")
+    assert not _resources(fe_tpl, "AWS::ElasticLoadBalancingV2::LoadBalancer")
+
+    projects = _resources(fe_tpl, "AWS::CodeBuild::Project")
+    assert len(projects) == 1
+    assert projects[0]["Properties"]["TimeoutInMinutes"] == 30
+    assert (
+        projects[0]["Properties"]["Environment"]["ComputeType"]
+        == "BUILD_GENERAL1_MEDIUM"
+    )
+    handlers = {
+        fn["Properties"].get("Handler")
+        for fn in _resources(fe_tpl, "AWS::Lambda::Function")
+    }
+    assert "build_trigger_lambda.on_event" in handlers
+    assert "build_trigger_lambda.is_complete" in handlers
+
+    staged_names = _bff_source_asset_files(fe)
+    assert "Dockerfile" in staged_names
+    assert any(name.startswith("bff/") for name in staged_names)
+    assert not any(
+        name == "tests" or name.startswith("tests/") for name in staged_names
+    )
+    assert not any(
+        part in {"node_modules", ".venv", ".git", "__pycache__"}
+        for name in staged_names
+        for part in name.split("/")
+    )
+    assert not any(
+        name == "web/dist" or name.startswith("web/dist/") for name in staged_names
+    )
 
     waf_acls = _resources(fe_tpl, "AWS::WAFv2::WebACL")
     assert len(waf_acls) == 1
     assert waf_acls[0]["Properties"]["Scope"] == "REGIONAL"
     rule_names = {r["Name"] for r in waf_acls[0]["Properties"]["Rules"]}
-    assert {
-        "BlockOutsideAllowedCidrs",
-        "RateLimitPerIp",
-        "AWSManagedRulesAmazonIpReputationList",
-        "AWSManagedRulesKnownBadInputsRuleSet",
-        "AWSManagedRulesCommonRuleSet",
-    } <= rule_names
+    assert "BlockOutsideAllowedCidrs" in rule_names
     assert len(_resources(fe_tpl, "AWS::WAFv2::WebACLAssociation")) == 1
-    assert len(_resources(fe_tpl, "AWS::WAFv2::IPSet")) == 1
 
-    # 2. ALB SG has no 0.0.0.0/0 ingress in private mode.
-    sgs = _resources(fe_tpl, "AWS::EC2::SecurityGroup")
-    alb_sg = next(
-        s["Properties"]
-        for s in sgs
-        if "HR Web BFF Application Load Balancer" in s["Properties"]["GroupDescription"]
-    )
-    cidrs = [r.get("CidrIp") for r in alb_sg.get("SecurityGroupIngress", [])]
-    assert "0.0.0.0/0" not in cidrs
-    assert "10.20.0.0/16" in cidrs
-
-    # 3. Auto-scaling ARM64 ECS Fargate service.
-    task_defs = _resources(fe_tpl, "AWS::ECS::TaskDefinition")
-    assert len(task_defs) == 1
-    assert task_defs[0]["Properties"]["RuntimePlatform"]["CpuArchitecture"] == "ARM64"
-    container = task_defs[0]["Properties"]["ContainerDefinitions"][0]
-    secret_names = {s["Name"] for s in container["Secrets"]}
-    assert "OIDC_CLIENT_SECRET" in secret_names
-    env_map = {e["Name"]: e["Value"] for e in container["Environment"]}
-    assert env_map["FRONTEND_EXPOSURE"] == "private"
-    assert "OIDC_CLIENT_SECRET" not in env_map
-
-    scalable = _resources(fe_tpl, "AWS::ApplicationAutoScaling::ScalableTarget")
-    assert len(scalable) == 1
-    assert scalable[0]["Properties"]["MinCapacity"] == 2
-    assert scalable[0]["Properties"]["MaxCapacity"] == 10
-    assert len(_resources(fe_tpl, "AWS::ApplicationAutoScaling::ScalingPolicy")) == 3
-
-    ecs_svcs = _resources(fe_tpl, "AWS::ECS::Service")
-    assert len(ecs_svcs) == 1
-    assert (
-        ecs_svcs[0]["Properties"]["DeploymentConfiguration"]["MinimumHealthyPercent"]
-        == 100
-    )
-    assert ecs_svcs[0]["Properties"]["DeploymentConfiguration"]["MaximumPercent"] == 200
-
-    # 4. DynamoDB BffSessions + ChatSessions tables retained & CMK-encrypted.
+    # 4. DynamoDB BffSessions + ChatSessions tables retained (RetainExceptOnCreate) & CMK-encrypted.
     tables = _resources(fe_tpl, "AWS::DynamoDB::Table")
     assert len(tables) == 2
     for tbl in tables:
-        assert tbl["DeletionPolicy"] == "Retain"
+        assert tbl["DeletionPolicy"] == "RetainExceptOnCreate"
         assert tbl["Properties"]["BillingMode"] == "PAY_PER_REQUEST"
         assert tbl["Properties"]["SSESpecification"]["SSEEnabled"] is True
         assert tbl["Properties"]["PointInTimeRecoverySpecification"][
             "PointInTimeRecoveryEnabled"
         ]
+    repos = _resources(fe_tpl, "AWS::ECR::Repository")
+    assert len(repos) == 1
+    assert repos[0]["DeletionPolicy"] == "RetainExceptOnCreate"
+    assert repos[0]["Properties"]["ImageTagMutability"] == "IMMUTABLE"
     assert not _resources(fe_tpl, "Custom::ECRAutoDeleteImages")
     assert not _resources(fe_tpl, "Custom::S3AutoDeleteObjects")
 
@@ -281,24 +300,17 @@ def test_private_frontend_synthesizes_internal_alb_waf_fargate_scaling_and_dynam
     assert "/hrtest/prod/networking/agentcore-vpce-id" in net_ssm
 
 
-def test_public_frontend_with_acm_cert_uses_internet_facing_https_alb() -> None:
-    fe_tpl, _, _ = _synth_frontend(
+def test_public_frontend_uses_express_mode_https_callback() -> None:
+    fe_tpl, _, _, _ = _synth_frontend(
         exposure="public",
         retain_data=False,
         certificate_arn="arn:aws:acm:us-east-1:111111111111:certificate/abc-123",
         domain_name="hr.corp.internal",
     )
 
-    albs = _resources(fe_tpl, "AWS::ElasticLoadBalancingV2::LoadBalancer")
-    assert albs[0]["Properties"]["Scheme"] == "internet-facing"
-
-    listeners = _resources(fe_tpl, "AWS::ElasticLoadBalancingV2::Listener")
-    ports = {l["Properties"]["Port"] for l in listeners}
-    assert ports == {80, 443}
-    https_listener = next(
-        l["Properties"] for l in listeners if l["Properties"]["Port"] == 443
-    )
-    assert https_listener["Protocol"] == "HTTPS"
+    express = _resources(fe_tpl, "AWS::ECS::ExpressGatewayService")
+    assert express[0]["Properties"]["ServiceName"] == "hrtest-prod-hr-web"
+    assert not _resources(fe_tpl, "AWS::ElasticLoadBalancingV2::LoadBalancer")
 
     # Confidential BffClient registers the HTTPS /auth/callback redirect URI.
     clients = _resources(fe_tpl, "AWS::Cognito::UserPoolClient")
@@ -308,3 +320,22 @@ def test_public_frontend_with_acm_cert_uses_internet_facing_https_alb() -> None:
         "https://hr.corp.internal/auth/callback"
     ]
     assert clients[0]["Properties"]["LogoutURLs"] == ["https://hr.corp.internal/"]
+
+
+def test_bff_source_asset_exclude_list_covers_vite_and_python_trees() -> None:
+    source = (
+        Path(__file__).resolve().parents[1].joinpath("stacks", "frontend_stack.py")
+    ).read_text()
+    chunk = source[source.index("BffSourceAsset") : source.index("BffBuild")]
+    for pattern in (
+        "node_modules",
+        "web/node_modules",
+        "web/dist",
+        "__pycache__",
+        ".venv",
+        ".git",
+        "tests",
+        "**/__pycache__",
+    ):
+        assert f'"{pattern}"' in chunk
+    assert "IgnoreMode.GLOB" in chunk

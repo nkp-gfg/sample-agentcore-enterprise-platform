@@ -6,12 +6,35 @@ Implements Requirement 8: AgentCore Memory Configuration
 - SSM Parameters for cross-stack consumption
 """
 
+import importlib.util
+from pathlib import Path
+
 import aws_cdk as cdk
 from aws_cdk import aws_bedrockagentcore as agentcore
 from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
 from infra_utils.policy_loader import load_control_json
+
+
+def _strategy_namespaces() -> tuple[str, str]:
+    """Load the actor-scoped templates the agents search at runtime.
+
+    The strings live next to the agent code so a retrieval path cannot drift
+    from the path the strategy writes.
+    """
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "agent-code"
+        / "shared"
+        / "long_term_memory.py"
+    )
+    spec = importlib.util.spec_from_file_location("platform_long_term_memory", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"missing memory namespace module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.PREFERENCE_NAMESPACE, module.SEMANTIC_NAMESPACE
 
 
 class MemoryStack(cdk.Stack):
@@ -35,14 +58,17 @@ class MemoryStack(cdk.Stack):
         super().__init__(scope, id, **kwargs)
 
         name = f"{project_name}_{environment}_memory".replace("-", "_")
+        preference_namespace, semantic_namespace = _strategy_namespaces()
 
         # ── Memory Strategies (typed property objects) ──
+        # namespace_templates, not the legacy namespaces field. {actorId} is
+        # substituted per event so one caller cannot retrieve another's records.
         strategies = [
             agentcore.CfnMemory.MemoryStrategyProperty(
                 user_preference_memory_strategy=agentcore.CfnMemory.UserPreferenceMemoryStrategyProperty(
                     name=f"{name}_user_pref",
                     description="User preference tracking strategy",
-                    namespaces=["USER_ID"],
+                    namespace_templates=[preference_namespace],
                 ),
             ),
         ]
@@ -55,7 +81,7 @@ class MemoryStack(cdk.Stack):
                     semantic_memory_strategy=agentcore.CfnMemory.SemanticMemoryStrategyProperty(
                         name=f"{name}_semantic",
                         description="Semantic fact extraction and override strategy",
-                        namespaces=["AGENT_ID"],
+                        namespace_templates=[semantic_namespace],
                     ),
                 ),
             )

@@ -169,6 +169,13 @@ class NetworkingStack(cdk.Stack):
                 ),
                 private_dns_enabled=True,
             )
+            # The Express Mode BFF uses a security group created at deploy
+            # time, so it cannot be named here. Allow the whole VPC CIDR.
+            self.agentcore_data_plane_endpoint.connections.allow_from(
+                ec2.Peer.ipv4(self.vpc.vpc_cidr_block),
+                ec2.Port.tcp(443),
+                "HTTPS from VPC workloads, including the HR web BFF",
+            )
             ssm.StringParameter(
                 self,
                 "SSMAgentCoreVpceId",

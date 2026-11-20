@@ -6,6 +6,7 @@ import os
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from shared.auth import extract_user_id_from_context
+from shared.long_term_memory import retrieval_targets
 from shared.region import runtime_region
 from strands import Agent
 from strands.models import BedrockModel
@@ -65,6 +66,7 @@ def _create_agent(user_id: str, session_id: str) -> Agent:
         try:
             from bedrock_agentcore.memory.integrations.strands.config import (
                 AgentCoreMemoryConfig,
+                RetrievalConfig,
             )
             from bedrock_agentcore.memory.integrations.strands.session_manager import (
                 AgentCoreMemorySessionManager,
@@ -74,6 +76,10 @@ def _create_agent(user_id: str, session_id: str) -> Agent:
                 memory_id=memory_id,
                 session_id=session_id,
                 actor_id=user_id,
+                retrieval_config={
+                    namespace: RetrievalConfig(**params)
+                    for namespace, params in retrieval_targets().items()
+                },
             )
             kwargs["session_manager"] = AgentCoreMemorySessionManager(
                 agentcore_memory_config=config,

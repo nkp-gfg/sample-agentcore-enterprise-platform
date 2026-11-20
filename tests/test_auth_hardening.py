@@ -54,6 +54,37 @@ def _user_client(
     )
 
 
+def test_auth_stack_repairs_pretoken_trigger_after_user_pool_updates() -> None:
+    first = _synth_auth()
+    second = _synth_auth()
+    repairs = [
+        resource
+        for resource in first["Resources"].values()
+        if resource["Type"] == "AWS::CloudFormation::CustomResource"
+        and "FunctionArnParameter" in resource.get("Properties", {})
+    ]
+    assert len(repairs) == 1
+    props = repairs[0]["Properties"]
+    assert props["FunctionArnParameter"] == (
+        "/agentcore/test/use-cases/hr-identity/function-arn"
+    )
+    assert props["LambdaVersion"] == "V3_0"
+    assert props["PoolFingerprint"]
+    again = next(
+        resource["Properties"]["PoolFingerprint"]
+        for resource in second["Resources"].values()
+        if resource["Type"] == "AWS::CloudFormation::CustomResource"
+        and "FunctionArnParameter" in resource.get("Properties", {})
+    )
+    assert again == props["PoolFingerprint"]
+    user_pool_id = next(
+        logical_id
+        for logical_id, resource in first["Resources"].items()
+        if resource["Type"] == "AWS::Cognito::UserPool"
+    )
+    assert user_pool_id in repairs[0].get("DependsOn", [])
+
+
 def test_cognito_only_preserves_workshop_signup_and_native_auth() -> None:
     template = _synth_auth()
     user_pool = _resources(template, "AWS::Cognito::UserPool")[0]["Properties"]

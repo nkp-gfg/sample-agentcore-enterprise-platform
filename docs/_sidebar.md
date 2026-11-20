@@ -8,6 +8,7 @@ Start here
 Design
 - [platform.yaml reference](PLATFORM_YAML.md)
 - [Architecture](ARCHITECTURE.md)
+- [Layered architecture](LAYERED_ARCHITECTURE.md)
 - [Multi-account federation](MULTI_ACCOUNT.md)
 - [Security controls](SECURITY_CONTROLS.md)
 - [Identity](IDENTITY.md)

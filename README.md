@@ -155,6 +155,12 @@ One command stands up the platform and every use case in the design. You can nar
 # Build a design in CI/CD
 NON_INTERACTIVE=1 AWS_REGION=us-east-1 ./scripts/deploy.sh build
 
+# Deploy one agent runtime from GitHub (manual, reviewed).
+# .github/workflows/deploy-orchestrator.yml
+# .github/workflows/deploy-code-agent.yml      # requires agents.a2a: true
+# .github/workflows/deploy-research-agent.yml  # requires agents.a2a: true
+# Each calls: bash scripts/deploy.sh build --stack <project>-<environment>-runtime-<agent>
+
 # Use the guided run for explanations and checks after each module
 # The script needs bash 4 or newer. macOS includes bash 3.2.
 # Install a newer version with `brew install bash`, then run `bash scripts/deploy.sh ...`.

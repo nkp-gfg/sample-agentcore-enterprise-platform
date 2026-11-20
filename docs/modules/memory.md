@@ -28,8 +28,8 @@ the condition.
 | Resource | Name pattern | Purpose |
 |---|---|---|
 | `AWS::BedrockAgentCore::Memory` | `{project}_{environment}_memory` (hyphens become underscores) | The memory store; events expire after 30 days |
-| Memory strategy: `user_preference` | `{name}_user_pref`, namespace `USER_ID` | Always — user preference tracking |
-| Memory strategy: `semantic` (optional) | `{name}_semantic`, namespace `AGENT_ID` | Only with `use_long_term_memory=true` — semantic fact extraction |
+| Memory strategy: `user_preference` | `{name}_user_pref`, namespace `/preferences/{actorId}/` | Always — user preference tracking, one namespace per caller |
+| Memory strategy: `semantic` (optional) | `{name}_semantic`, namespace `/facts/{actorId}/` | Only with `use_long_term_memory=true` — semantic fact extraction, one namespace per caller |
 | `AWS::BedrockAgentCore::ResourcePolicy` (optional) | attached to the memory ARN | Only with `enable_resource_policies=true` — in-account-only access (see Security notes) |
 | 2 × `AWS::SSM::Parameter` | `/{project}/{environment}/memory/*` | `memory-id`, `memory-arn` |
 
@@ -46,11 +46,11 @@ Precedence everywhere: cdk context > env var > `platform.yaml` > default.
 | `org_id` | `ORG_ID` | `security.org_id` | `""` | Required when resource policies are on; synth fails without it |
 | `enable_security` | `ENABLE_SECURITY` | `security.cloudtrail_alerting` | `false` | Indirect: when the security stack exists, its KMS CMK becomes the memory's `encryption_key_arn` |
 
-Two things the table implies but are worth stating: `event_expiry_days` is a
-stack parameter but `app.py` hardcodes it to `30` — it is not configurable
-today. And the two `ltm_*` retrieval knobs shape nothing in this stack; they
-are consumed by the agent at runtime (injected as env vars into the
-orchestrator by `app.py`), not by the memory resource itself.
+The two `ltm_*` retrieval knobs shape nothing in this stack. `app.py` injects
+them into the orchestrator runtime. The Strands patterns pass them as
+`retrieval_config`. The LangGraph patterns pass them to `RetrieveMemoryRecords`.
+Preferences are always searched. Facts are searched only when
+`USE_LONG_TERM_MEMORY` is `true`.
 
 ## Interfaces
 

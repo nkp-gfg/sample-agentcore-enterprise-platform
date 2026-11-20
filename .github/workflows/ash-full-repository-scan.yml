@@ -56,6 +56,11 @@ jobs:
               - path: ".github/workflows/ash-security-comment.yml"
                 rule_id: "zizmor/dangerous-triggers"
                 reason: "Same-repo PR comment workflow reads artifacts without checking out PR code."
+              - path: "hr-web/web/package-lock.json"
+                rule_id: "CVE-2026-112366"
+                package_name: "picomatch"
+                expires: "2027-02-01"
+                reason: "Build-time only dependency (Vite/shadcn during Docker web stage; only static dist/ files are copied into the runtime container); no upstream patched npm release exists yet (GHSA-fc5q-39xc-vjpf)."
           reporters:
             markdown:
               enabled: true

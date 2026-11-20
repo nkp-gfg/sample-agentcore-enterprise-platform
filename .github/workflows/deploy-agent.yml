@@ -1,0 +1,159 @@
+name: Deploy one agent runtime
+
+# Called by the per-agent workflows. Not a button in the Actions tab.
+# CodeBuild builds the ARM64 image. deploy.sh is the deploy path.
+#
+# Before the first run, in this GitHub repository:
+#   1. Create environment "production" with a required reviewer.
+#   2. Limit that environment to the branches allowed to deploy.
+#   3. Add secret AWS_ROLE_ARN. The role trusts
+#      token.actions.githubusercontent.com with sub
+#      repo:nkp-gfg/sample-agentcore-enterprise-platform:environment:production
+#      and audience sts.amazonaws.com.
+#   4. Let that role update the agent runtime stacks and the stacks they
+#      depend on, pass the runtime roles, start their CodeBuild projects,
+#      and push to their ECR repositories. Deny cloudformation:DeleteStack.
+#      Deny a4a-* and FAST-* stacks.
+# The IdP client secret stays in Secrets Manager. Do not copy it here.
+# code-agent and research-agent stay off until platform.yaml sets agents.a2a: true.
+
+on:
+  workflow_call:
+    inputs:
+      component:
+        description: orchestrator, code-agent, or research-agent
+        required: true
+        type: string
+      action:
+        description: verify, or deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+    concurrency:
+      group: deploy-agent-${{ inputs.component }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Reject an unknown agent
+        env:
+          COMPONENT: ${{ inputs.component }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          case "$COMPONENT" in
+            orchestrator|code-agent|research-agent) ;;
+            *) echo "Unknown agent: $COMPONENT"; exit 1 ;;
+          esac
+          case "$ACTION" in
+            verify|deploy) ;;
+            *) echo "Unknown action: $ACTION"; exit 1 ;;
+          esac
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+
+      - name: Read the deploy target from platform.yaml
+        id: target
+        env:
+          COMPONENT: ${{ inputs.component }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          project=$(awk '$1 == "project:" { print $2; exit }' platform.yaml)
+          environment=$(awk '$1 == "environment:" { print $2; exit }' platform.yaml)
+          region=$(awk '$1 == "region:" { print $2; exit }' platform.yaml)
+          if [ -z "$project" ] || [ -z "$environment" ] || [ -z "$region" ]; then
+            echo "platform.yaml must set project, environment, and region."
+            exit 1
+          fi
+          stack="${project}-${environment}-runtime-${COMPONENT}"
+          echo "region=${region}" >> "$GITHUB_OUTPUT"
+          echo "stack=${stack}" >> "$GITHUB_OUTPUT"
+          echo "AWS_REGION=${region}" >> "$GITHUB_ENV"
+          echo "Target stack: ${stack} in ${region}"
+
+      - name: Install the CDK CLI
+        run: npm install -g aws-cdk@2.1148.1
+
+      - name: Install Python dependencies
+        run: |
+          python3.13 -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Require agents.a2a for a specialist runtime
+        if: inputs.component != 'orchestrator'
+        env:
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          import sys
+          from infra_utils.platform_config import load_platform_config
+          cfg = load_platform_config("platform.yaml")
+          if not cfg.agents.a2a:
+              component = os.environ["COMPONENT"]
+              sys.exit(
+                  f"{component} is not in this design. "
+                  "Set agents.a2a: true in platform.yaml. "
+                  "This workflow does not turn that flag on."
+              )
+          PY
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: GitHubActions-Deploy-${{ inputs.component }}
+          aws-region: ${{ steps.target.outputs.region }}
+
+      - name: Preflight
+        env:
+          NON_INTERACTIVE: "1"
+        run: bash scripts/deploy.sh doctor
+
+      - name: Diff this agent
+        if: inputs.action == 'deploy'
+        env:
+          NON_INTERACTIVE: "1"
+        run: bash scripts/deploy.sh diff --stack "${{ steps.target.outputs.stack }}"
+
+      - name: Deploy this agent
+        if: inputs.action == 'deploy'
+        env:
+          NON_INTERACTIVE: "1"
+        run: bash scripts/deploy.sh build --stack "${{ steps.target.outputs.stack }}"
+
+      - name: Verify the orchestrator deployment
+        if: inputs.component == 'orchestrator'
+        env:
+          NON_INTERACTIVE: "1"
+        run: bash scripts/deploy.sh verify
+
+      - name: Verify this A2A agent
+        if: inputs.component != 'orchestrator'
+        env:
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          .venv/bin/python scripts/invoke.py --a2a "$COMPONENT" "Health check: reply with one word."

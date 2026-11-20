@@ -8,8 +8,10 @@ observability, and the opt-in network layer. Solid arrows are the live request
 flow verified end to end by `scripts/verify.py` and `scripts/invoke.py`; dotted
 arrows are opt-in features or control-plane relationships.
 
-This mermaid block is the source of truth for the request flows. For the
-account and trust-boundary view, see the diagram at the top of the
+This mermaid block is the source of truth for the request flows. The
+five-band layer map, including the HR assistant, is in
+[LAYERED_ARCHITECTURE.md](LAYERED_ARCHITECTURE.md). For the account and
+trust-boundary view, see the diagram at the top of the
 [README](https://github.com/aws-samples/sample-agentcore-enterprise-platform#architecture).
 
 ```mermaid

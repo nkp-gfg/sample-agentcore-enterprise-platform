@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import sys
 import time
 from decimal import Decimal
@@ -189,12 +191,18 @@ def test_session_and_chat_history_survive_ecs_restart_and_isolate_users() -> Non
     )
 
 
-def test_bff_http_endpoints_and_restart_resilience() -> None:
+def test_bff_http_endpoints_and_restart_resilience(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
     pytest.importorskip("jwt")
+    import bff.app as bff_app
     from bff.app import BffRuntime, BffSettings, create_app
     from fastapi.testclient import TestClient
+
+    # The allowlist is what this test pins. Hide a local Vite build if one exists.
+    monkeypatch.setattr(bff_app, "WEB_DIST", Path("/no/such/hr-web-dist"))
 
     store, bff_tbl, chat_tbl = _make_store()
     settings = BffSettings(
@@ -262,3 +270,345 @@ def test_bff_http_endpoints_and_restart_resilience() -> None:
     # 4. Path traversal / unallowlisted static paths are 404.
     assert client2.get("/../server.py").status_code == 404
     assert client2.get("/ui-primitives.md").status_code == 404
+
+
+_OIDC_DISCOVERY = {
+    "authorization_endpoint": "https://idp.example/oauth2/authorize",
+    "token_endpoint": "https://idp.example/oauth2/token",
+    "jwks_uri": "https://idp.example/.well-known/jwks.json",
+    "issuer": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test",
+}
+
+
+class _FakeOAuthClient:
+    """httpx stand-in that returns discovery JSON or raises a transport error."""
+
+    def __init__(
+        self,
+        *,
+        get_exc: BaseException | None = None,
+        post_exc: BaseException | None = None,
+    ) -> None:
+        self.get_exc = get_exc
+        self.post_exc = post_exc
+        self.posts = 0
+        self.gets = 0
+        self.post_timeouts: list[object] = []
+        self.get_timeouts: list[object] = []
+        self.posted: list[Any] = []
+
+    async def get(self, url: str, timeout: object = None):
+        self.gets += 1
+        self.get_timeouts.append(timeout)
+        if self.get_exc is not None:
+            raise self.get_exc
+        import httpx
+
+        return httpx.Response(
+            200,
+            json=dict(_OIDC_DISCOVERY),
+            request=httpx.Request("GET", url),
+        )
+
+    async def post(self, url: str, data: object = None, timeout: object = None):
+        self.posts += 1
+        self.post_timeouts.append(timeout)
+        self.posted.append(data)
+        if self.post_exc is not None:
+            raise self.post_exc
+        raise AssertionError("token endpoint should not be called")
+
+
+def _bff_settings():
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from bff.app import BffSettings
+
+    return BffSettings(
+        region="us-east-1",
+        ssm_prefix="/hrtest/prod",
+        oidc_issuer_url="https://cognito-idp.us-east-1.amazonaws.com/us-east-1_test",
+        oidc_client_id="bff-client-id",
+        oidc_client_secret="bff-client-secret-do-not-log",  # pragma: allowlist secret
+        oidc_redirect_uri="https://hr.corp.internal/auth/callback",
+        oidc_logout_uri="https://hr.corp.internal/",
+        oidc_scope="openid email profile",
+        bff_session_table="t1",
+        chat_session_table="t2",
+        exposure="private",
+        cookie_secure=True,
+        session_ttl_hours=12,
+    )
+
+
+def _make_bff_client(http_client: object | None = None):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from bff.app import BffRuntime, create_app
+    from fastapi.testclient import TestClient
+
+    store, _, _ = _make_store()
+    settings = _bff_settings()
+    runtime = BffRuntime(settings, store=store, http_client=http_client)
+    return store, runtime, TestClient(create_app(settings=settings, runtime=runtime))
+
+
+@pytest.mark.parametrize("exc_name", ["ReadTimeout", "ConnectError"])
+def test_auth_callback_token_transport_error_redirects(
+    exc_name: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    httpx = pytest.importorskip("httpx")
+    pytest.importorskip("fastapi")
+    http = _FakeOAuthClient(post_exc=getattr(httpx, exc_name)("timed out"))
+    store, _runtime, client = _make_bff_client(http)
+    store.put_pkce_state(
+        "state-timeout",
+        verifier="pkce-verifier-do-not-log",
+        nonce="nonce-value",
+    )
+    expected_timeout = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
+    with caplog.at_level(logging.WARNING, logger="hr-web-bff"):
+        resp = client.get(
+            "/auth/callback",
+            params={"code": "auth-code-do-not-log", "state": "state-timeout"},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 302, resp.text
+    assert resp.headers["location"].endswith("/?error=token_exchange_failed")
+    assert "Internal Server Error" not in resp.text
+    assert http.posts == 2
+    assert http.get_timeouts == [10.0]
+    assert http.post_timeouts == [expected_timeout, expected_timeout]
+    assert http.posted[0]["code"] == "auth-code-do-not-log"
+    assert "auth-code-do-not-log" not in caplog.text
+    assert "pkce-verifier-do-not-log" not in caplog.text
+    assert "bff-client-secret-do-not-log" not in caplog.text
+    assert caplog.text.count(f"OIDC token request failed: {exc_name}") == 1
+
+
+def test_auth_discovery_timeout_redirects(caplog: pytest.LogCaptureFixture) -> None:
+    httpx = pytest.importorskip("httpx")
+    pytest.importorskip("fastapi")
+    http = _FakeOAuthClient(get_exc=httpx.ReadTimeout("timed out"))
+    store, _runtime, client = _make_bff_client(http)
+    with caplog.at_level(logging.WARNING, logger="hr-web-bff"):
+        login = client.get("/auth/login", follow_redirects=False)
+        store.put_pkce_state("state-discovery", verifier="ver", nonce="nonce")
+        callback = client.get(
+            "/auth/callback",
+            params={"code": "auth-code-do-not-log", "state": "state-discovery"},
+            follow_redirects=False,
+        )
+    assert login.status_code == 302, login.text
+    assert login.headers["location"].endswith("/?error=oidc_discovery_failed")
+    assert callback.status_code == 302, callback.text
+    assert callback.headers["location"].endswith("/?error=oidc_discovery_failed")
+    assert http.posts == 0
+    assert http.get_timeouts == [10.0, 10.0]
+    assert caplog.text.count("OIDC discovery failed: ReadTimeout") == 2
+    assert "auth-code-do-not-log" not in caplog.text
+
+
+def test_ensure_fresh_session_token_timeout_returns_none(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    httpx = pytest.importorskip("httpx")
+    pytest.importorskip("fastapi")
+    http = _FakeOAuthClient(post_exc=httpx.ReadTimeout("timed out"))
+    store, runtime, _client = _make_bff_client(http)
+    session = store.create_session(
+        sub="sub-e1",
+        user_label="e1@corp.example",
+        access_token="access-1",
+        id_token="id-1",
+        refresh_token="refresh-token-do-not-log",
+        expires_at=int(time.time()) - 120,
+    )
+    with caplog.at_level(logging.WARNING, logger="hr-web-bff"):
+        fresh = asyncio.run(runtime.ensure_fresh_session(session))
+    assert fresh is None
+    assert store.get_session(session["session_id"]) is None
+    assert http.posts == 2
+    assert "refresh-token-do-not-log" not in caplog.text
+    assert "bff-client-secret-do-not-log" not in caplog.text
+    assert caplog.text.count("OIDC token request failed: ReadTimeout") == 1
+
+
+def test_ensure_fresh_session_discovery_timeout_returns_none() -> None:
+    httpx = pytest.importorskip("httpx")
+    pytest.importorskip("fastapi")
+    http = _FakeOAuthClient(get_exc=httpx.ReadTimeout("timed out"))
+    store, runtime, _client = _make_bff_client(http)
+    session = store.create_session(
+        sub="sub-e1",
+        user_label="e1@corp.example",
+        access_token="access-1",
+        id_token="id-1",
+        refresh_token="refresh-token-do-not-log",
+        expires_at=int(time.time()) - 120,
+    )
+    fresh = asyncio.run(runtime.ensure_fresh_session(session))
+    assert fresh is None
+    assert http.posts == 0
+    assert store.get_session(session["session_id"]) is None
+
+
+def test_public_allowlist_when_spa_dist_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    import bff.app as bff_app
+
+    monkeypatch.setattr(bff_app, "WEB_DIST", tmp_path / "no-such-dist")
+    _store, _runtime, client = _make_bff_client()
+    home = client.get("/")
+    assert home.status_code == 200
+    assert "AgentCore Enterprise" in home.text
+    assert "text/html" in home.headers["content-type"]
+    css = client.get("/styles.css")
+    assert css.status_code == 200
+    assert css.headers["content-type"] == "text/css; charset=utf-8"
+    assert client.get("/ui-primitives.md").status_code == 404
+    assert client.get("/../server.py").status_code == 404
+    head_home = client.head("/")
+    assert head_home.status_code == 200
+    assert head_home.headers["content-type"].startswith("text/html")
+    config = client.get("/config.json")
+    assert config.status_code == 200
+    assert config.headers["cache-control"] == "no-store"
+    head_config = client.head("/config.json")
+    assert head_config.status_code == 200
+    assert head_config.headers["content-type"].startswith("application/json")
+    assert head_config.headers["cache-control"] == "no-store"
+
+
+def test_spa_dist_is_served_when_index_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    import bff.app as bff_app
+
+    dist = tmp_path / "dist"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    (dist / "index.html").write_text(
+        "<!doctype html><title>spa-marker</title>", encoding="utf-8"
+    )
+    (assets / "app.js").write_text("console.log('spa-asset')", encoding="utf-8")
+    (assets / "app.css").write_text("body{}", encoding="utf-8")
+    (assets / "app.js.map").write_text("{}", encoding="utf-8")
+    (assets / "font.woff2").write_bytes(b"woff")
+    (dist / "favicon.svg").write_text(
+        "<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8"
+    )
+    (dist / "manifest.json").write_text("{}", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP-SECRET-OUTSIDE", encoding="utf-8")
+    (dist / "leak").symlink_to(secret)
+    (assets / "leak.js").symlink_to(secret)
+    (assets / "alias.js").symlink_to("app.js")
+
+    monkeypatch.setattr(bff_app, "WEB_DIST", dist)
+    _store, _runtime, client = _make_bff_client()
+
+    home = client.get("/")
+    assert home.status_code == 200
+    assert "spa-marker" in home.text
+    assert "AgentCore Enterprise" not in home.text
+    assert home.headers["cache-control"] == "no-store"
+    assert home.headers["content-type"].startswith("text/html")
+
+    index = client.get("/index.html")
+    assert index.status_code == 200
+    assert index.headers["cache-control"] == "no-store"
+
+    head_home = client.head("/")
+    assert head_home.status_code == 200
+    assert head_home.headers["content-type"].startswith("text/html")
+    assert head_home.headers["cache-control"] == "no-store"
+
+    config = client.get("/config.json")
+    assert config.status_code == 200
+    assert config.json()["auth_mode"] == "bff"
+    assert config.headers["cache-control"] == "no-store"
+    head_config = client.head("/config.json")
+    assert head_config.status_code == 200
+    assert head_config.headers["content-type"].startswith("application/json")
+    assert head_config.headers["cache-control"] == "no-store"
+    health = client.get("/healthz")
+    assert health.status_code == 200
+    assert health.json() == {"status": "ok"}
+
+    script = client.get("/assets/app.js")
+    assert script.status_code == 200
+    assert "spa-asset" in script.text
+    assert script.headers["content-type"].startswith("application/javascript")
+    assert script.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    css = client.get("/assets/app.css")
+    assert css.status_code == 200
+    assert css.headers["content-type"].startswith("text/css")
+    assert css.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    source_map = client.get("/assets/app.js.map")
+    assert source_map.status_code == 200
+    assert source_map.headers["content-type"].startswith("application/json")
+    assert source_map.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    font = client.get("/assets/font.woff2")
+    assert font.status_code == 200
+    assert font.headers["content-type"] == "font/woff2"
+    assert font.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    icon = client.get("/favicon.svg")
+    assert icon.status_code == 200
+    assert icon.headers["content-type"].startswith("image/svg+xml")
+    assert "immutable" not in icon.headers.get("cache-control", "")
+
+    manifest = client.get("/manifest.json")
+    assert manifest.status_code == 200
+    assert manifest.headers["content-type"].startswith("application/json")
+
+    missing_asset = client.get("/assets/missing.js")
+    assert missing_asset.status_code == 404
+    assert missing_asset.headers["content-type"].startswith("application/json")
+    assert missing_asset.json()["detail"] == "Resource not found."
+
+    route = client.get("/employees/42")
+    assert route.status_code == 200
+    assert "spa-marker" in route.text
+    assert route.headers["cache-control"] == "no-store"
+
+    legacy_css = client.get("/styles.css")
+    assert legacy_css.status_code == 200
+    assert "spa-marker" in legacy_css.text
+    assert "text/html" in legacy_css.headers["content-type"]
+
+    leak = client.get("/leak")
+    assert leak.status_code == 404
+    assert "TOP-SECRET-OUTSIDE" not in leak.text
+    asset_leak = client.get("/assets/leak.js")
+    assert asset_leak.status_code == 404
+    assert "TOP-SECRET-OUTSIDE" not in asset_leak.text
+
+    alias = client.get("/assets/alias.js")
+    assert alias.status_code == 200
+    assert "spa-asset" in alias.text
+
+    unknown_api = client.get("/api/not-a-route")
+    assert unknown_api.status_code == 404
+    assert "spa-marker" not in unknown_api.text
+    assert unknown_api.headers["content-type"].startswith("application/json")
+    unknown_auth = client.get("/auth/not-a-route")
+    assert unknown_auth.status_code == 404
+    assert "spa-marker" not in unknown_auth.text
+    assert client.get("/invocations").status_code == 404
+
+    root = dist.resolve()
+    assert bff_app._resolve_dist_path(root, "leak") is None
+    assert bff_app._resolve_dist_path(root, "../secret.txt") is None
+    assert bff_app._resolve_dist_path(root, "assets/../../secret.txt") is None
+    inside = bff_app._resolve_dist_path(root, "assets/app.js")
+    assert inside is not None and inside.is_file() and inside.is_relative_to(root)

@@ -8,11 +8,25 @@ Implements Requirement 5: Identity Provider Integration
 - SSM Parameters published for cross-stack consumption
 """
 
+import hashlib
+import json
+from pathlib import Path
+
 import aws_cdk as cdk
 from aws_cdk import aws_cognito as cognito
+from aws_cdk import aws_iam as iam
+from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_ssm as ssm
+from aws_cdk import custom_resources as cr
 from constructs import Construct
+
+_TRIGGER_MANAGER = (
+    Path(__file__).resolve().parents[1]
+    / "use-cases"
+    / "hr-identity"
+    / "trigger_manager"
+)
 
 
 class AuthStack(cdk.Stack):
@@ -408,6 +422,12 @@ class AuthStack(cdk.Stack):
             },
         )
 
+        # Cognito resets every omitted UpdateUserPool attribute. CloudFormation
+        # does not send LambdaConfig, so an auth-stack update removes the
+        # hr-identity pre-token trigger. This repair runs after the pool
+        # update and puts that trigger back when the function ARN exists.
+        self._repair_pretoken_trigger(project_name, environment)
+
         # ── Outputs ──
         cdk.CfnOutput(self, "UserPoolId", value=self.user_pool.user_pool_id)
         cdk.CfnOutput(self, "UserPoolArn", value=self.user_pool.user_pool_arn)
@@ -466,6 +486,75 @@ class AuthStack(cdk.Stack):
         cdk.CfnOutput(self, "M2MClientId", value=self._direct_client_id)
         cdk.CfnOutput(self, "IdPType", value=idp_type)
         cdk.CfnOutput(self, "IdPMode", value="direct")
+
+    def _repair_pretoken_trigger(self, project_name: str, environment: str) -> None:
+        parameter_name = (
+            f"/{project_name}/{environment}/use-cases/hr-identity/function-arn"
+        )
+        cfn_pool = self.user_pool.node.default_child
+        rendered = cfn_pool._render_properties(dict(cfn_pool._cfn_properties))
+        fingerprint = hashlib.sha256(
+            json.dumps(rendered, sort_keys=True, default=str).encode()
+        ).hexdigest()[:20]
+        role = iam.Role(
+            self,
+            "PreTokenRepairRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                ),
+            ],
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["cognito-idp:DescribeUserPool", "cognito-idp:UpdateUserPool"],
+                resources=[self.user_pool.user_pool_arn],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["ssm:GetParameter"],
+                resources=[
+                    self.format_arn(
+                        service="ssm",
+                        resource="parameter",
+                        resource_name=parameter_name.lstrip("/"),
+                    )
+                ],
+            )
+        )
+        function = lambda_.Function(
+            self,
+            "PreTokenRepairFunction",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            handler="handler.on_event",
+            code=lambda_.Code.from_asset(str(_TRIGGER_MANAGER)),
+            role=role,
+            timeout=cdk.Duration.minutes(2),
+            memory_size=256,
+            description=(
+                "Restores the hr-identity V3_0 pre-token trigger after this "
+                "stack updates the Cognito user pool."
+            ),
+        )
+        provider = cr.Provider(
+            self,
+            "PreTokenRepairProvider",
+            on_event_handler=function,
+        )
+        repair = cdk.CustomResource(
+            self,
+            "PreTokenRepair",
+            service_token=provider.service_token,
+            properties={
+                "UserPoolId": self.user_pool.user_pool_id,
+                "FunctionArnParameter": parameter_name,
+                "LambdaVersion": "V3_0",
+                "PoolFingerprint": fingerprint,
+            },
+        )
+        repair.node.add_dependency(self.user_pool)
 
     def _publish(self, project_name: str, environment: str, params: dict) -> None:
         for key, value in params.items():
