@@ -348,7 +348,28 @@ def mcp_server(endpoint: str) -> dict:
 
 
 def http_passthrough(endpoint: str) -> dict:
-    return {"http": {"passthrough": {"endpoint": endpoint, "protocolType": "HTTP"}}}
+    # PassthroughProtocolType is MCP, A2A, INFERENCE, or CUSTOM. MCP keeps the
+    # public endpoint on a value the control-plane API accepts.
+    return {"http": {"passthrough": {"endpoint": endpoint, "protocolType": "MCP"}}}
+
+
+def lambda_target() -> dict:
+    return {
+        "mcp": {
+            "lambda": {
+                "lambdaArn": "arn:aws:lambda:us-east-1:111122223333:function:tool",
+                "toolSchema": {
+                    "inlinePayload": [
+                        {
+                            "name": "text_analysis_tool",
+                            "description": "Inspect text.",
+                            "inputSchema": {"type": "object"},
+                        }
+                    ]
+                },
+            }
+        }
+    }
 
 
 def unlisted_subnet(policy_text: str) -> str:
@@ -440,6 +461,7 @@ def test_caller_supplied_endpoints_match_the_control_plane_schema(service_model)
     assert _matches_pattern(service_model, "SubnetId", APPROVED_SUBNET)
     credential_type = _shape(service_model, "CredentialProviderType")
     assert "GATEWAY_IAM_ROLE" in credential_type["enum"]
+    assert "MCP" in _shape(service_model, "PassthroughProtocolType")["enum"]
     managed = _shape(service_model, "ManagedVpcResource")
     assert "subnetIds" in managed["members"]
     assert "routingDomain" in managed["members"]
@@ -520,10 +542,7 @@ def test_public_passthrough_endpoint_on_an_unlisted_subnet_is_denied(scp, action
 @pytest.mark.parametrize("action", TARGET_ACTIONS)
 def test_lambda_target_on_an_unlisted_subnet_is_denied(scp, action):
     subnet_id = unlisted_subnet(json.dumps(scp))
-    body = managed_vpc_body(
-        {"mcp": {"lambda": {"lambdaArn": "arn:aws:lambda:us-east-1:111122223333:function:tool"}}},
-        [subnet_id],
-    )
+    body = managed_vpc_body(lambda_target(), [subnet_id])
     decision = member_admin_decision(scp, action, authorization_context(body))
     assert decision == "denied", decision
 
@@ -544,16 +563,7 @@ def test_approved_subnet_allows_public_url_for_mcp_http_and_lambda(scp, action):
     cases = [
         managed_vpc_body(mcp_server(PUBLIC_MCP_ENDPOINT), [APPROVED_SUBNET]),
         managed_vpc_body(http_passthrough(PUBLIC_PASSTHROUGH_ENDPOINT), [APPROVED_SUBNET]),
-        managed_vpc_body(
-            {
-                "mcp": {
-                    "lambda": {
-                        "lambdaArn": "arn:aws:lambda:us-east-1:111122223333:function:tool"
-                    }
-                }
-            },
-            [APPROVED_SUBNET],
-        ),
+        managed_vpc_body(lambda_target(), [APPROVED_SUBNET]),
         lattice_body(mcp_server(PUBLIC_MCP_ENDPOINT)),
     ]
     # Lattice has no subnet field. The allow case supplies the approved subnet
